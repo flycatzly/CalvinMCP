@@ -29,6 +29,15 @@ const check = (name, cond, extra = '') => {
   log(`${cond ? 'PASS ' : 'FAIL '} ${name}${extra ? `  ${extra}` : ''}`);
 };
 
+// 本套全部断言（LLM 规划→真执行 / 降级骨架 / Fail 语义 / 巡检）都要真实 CLI 执行层。
+// 缺可选依赖时诚实 SKIP（纯净包口径）：可选依赖由被测项目/本机提供，不随纯净发布包分发 ——
+// 硬跑只会把「依赖缺失」报成「判定 Fail」，把人引去查用例的歧路。
+if (!(await import('../lib/runner.js')).resolveCliRunner(ROOT)) {
+  log('SKIP（缺可选依赖 @playwright/cli：纯净包口径 —— 可选依赖由被测项目/本机提供）');
+  log('本套全部断言都需要真实 CLI 执行层，本次未执行任何断言。');
+  process.exit(0);
+}
+
 /* ---- 靶站：一个带交互/死链/坏图的页面 + 一个干净页面 ---- */
 const PNG_1x1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',

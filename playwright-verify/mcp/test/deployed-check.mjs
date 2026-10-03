@@ -123,8 +123,12 @@ for (const [rel, label] of optChecks) {
  *   清单一定会漏。漏掉的后果是「改了源码没重装」静默通过 —— 而这恰恰是最该被抓到的问题。
  *   全树比对还有一个好处：它能同时抓到**缺失**（没复制过去）与**多余**（本该没有的残留）。
  *
- * 忽略项分两类：
+ * 忽略项分三类：
  *   · 依赖与版本控制：node_modules / .git
+ *   · . 前缀的机器基础设施（.gitattributes/.gitignore/.github/.playwright* 等）：
+ *     纯净分发版按发布规范**不含**它们，而安装副本可能装自开发树（带它们）——
+ *     两边都纳入比对只会制造假漂移；装机产物 .playwright/cli.config.json 也在这里，
+ *     它由下面的语义校验负责（判平台，不判字节）。
  *   · 运行时产物：安装后跑测试会新生成它们，不属于「该复制的东西」，
  *     但也不会掩盖真实漂移（真实漂移在 mcp/ 与 skill/ 里）。
  */
@@ -142,7 +146,6 @@ const IGNORE_TOP = new Set(['dsh-bundle']);   // 安装时生成，源码目录�
 const EXPECTED_DEPLOY_EXTRA = [
   /^demo\/generated/,
   /^test-results\//,
-  /^\.playwright(-cli|-artifacts)?\//,
 ];
 
 function manifest(root) {
@@ -151,6 +154,9 @@ function manifest(root) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
+      // . 前缀一律不参与比对（见上方「忽略项分三类」）：纯净分发版不含它，
+      // 装自开发树的安装副本含它 —— 纳入比对=假漂移。
+      if (e.name.startsWith('.')) continue;
       if (e.isDirectory() && IGNORE_DIRS.has(e.name)) continue;
       const abs = path.join(dir, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
@@ -170,13 +176,11 @@ function manifest(root) {
 const srcManifest = manifest(SOURCE);
 const dstManifest = manifest(DIR);
 const missing = [...srcManifest.keys()].filter((k) => !dstManifest.has(k));
-// .playwright/cli.config.json 不参与字节比对：install.mjs 会**按目标平台重新生成它**
-// （跨平台安装时源码里那份是别的平台的产物，字节必然不同）。这不是漂移，是正确行为。
+// .playwright/cli.config.json 根本进不了清单（. 前缀已忽略）：install.mjs 会
+// **按目标平台重新生成它**，字节必然与源码不同 —— 那不是漂移，是正确行为。
 // 它由下面的语义校验负责：部署副本的配置必须适配当前平台。
-const PLATFORM_REGENERATED = new Set(['.playwright/cli.config.json']);
 const differing = [...srcManifest.entries()]
-  .filter(([k, v]) => !PLATFORM_REGENERATED.has(k)
-    && dstManifest.has(k) && (dstManifest.get(k).hash !== v.hash || dstManifest.get(k).size !== v.size))
+  .filter(([k, v]) => dstManifest.has(k) && (dstManifest.get(k).hash !== v.hash || dstManifest.get(k).size !== v.size))
   .map(([k]) => k);
 // 部署目录里比源码多的文件：允许运行时产物（跑过测试就会有），但要把**非预期**的多余文件报出来 ——
 // 那通常意味着源码删了文件而安装目录还留着旧的。
@@ -186,7 +190,7 @@ const unexpectedExtra = extra.filter((k) => !EXPECTED_DEPLOY_EXTRA.some((re) => 
 check('部署副本没有丢文件', missing.length === 0,
   missing.length ? `缺失 ${missing.length} 个：${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ' …' : ''}` : `源码 ${srcManifest.size} 个文件全部在位`);
 check('部署副本内容与源码一致（改了源码没重装会在这里暴露）', differing.length === 0,
-  differing.length ? `不同 ${differing.length} 个：${differing.slice(0, 6).join(', ')}${differing.length > 6 ? ' …' : ''}` : `${srcManifest.size - PLATFORM_REGENERATED.size} 个文件哈希逐一相同（cli.config.json 走语义校验）`);
+  differing.length ? `不同 ${differing.length} 个：${differing.slice(0, 6).join(', ')}${differing.length > 6 ? ' …' : ''}` : `${srcManifest.size} 个文件哈希逐一相同（cli.config.json 走语义校验）`);
 check('部署副本没有多余的陈旧文件', unexpectedExtra.length === 0,
   unexpectedExtra.length ? `多余 ${unexpectedExtra.length} 个：${unexpectedExtra.slice(0, 6).join(', ')}` : '仅含预期的运行时产物');
 
@@ -208,8 +212,9 @@ check('部署副本没有多余的陈旧文件', unexpectedExtra.length === 0,
       `配置声明 ${plat} / 当前 ${process.platform}（不匹配请重跑 install.mjs 或 setup-cli-config.mjs）`);
   }
 }
-if (extra.length) {
-  log(`      部署目录另有 ${extra.length} 个运行时产物（跑过测试就会有，不算漂移）：${extra.slice(0, 4).join(', ')}${extra.length > 4 ? ' …' : ''}`);
+const runtimeExtra = extra.filter((k) => EXPECTED_DEPLOY_EXTRA.some((re) => re.test(k)));
+if (runtimeExtra.length) {
+  log(`      部署目录另有 ${runtimeExtra.length} 个运行时产物（跑过测试就会有，不算漂移）：${runtimeExtra.slice(0, 4).join(', ')}${runtimeExtra.length > 4 ? ' …' : ''}`);
 }
 
 /* ---- 3) 真的启动部署副本的 server，走完整发现与一次调用 ---- */

@@ -205,6 +205,13 @@ playwright-verify/
 
 ## 版本记录
 
+- **v1.2.0（2026-10-03）**：纯净发布包口径收紧（无 `node_modules`、无 `.` 前缀文件/目录，解压/拷贝即可部署，
+  零 npm 依赖，文档全量改为「拷贝即部署」口径）；部署文档拆分为《部署说明.md》+《部署说明.详细版.md》；
+  加固 H18 实跑 `distribute` 验纯净产物；纯净包实测补三处（加固 H10/H14 对 `.` 前缀文件改存在性守卫、
+  `run_verify` 守门前置、缺可选依赖诚实 SKIP 不做假绿假红）；发布流程补强（部署说明.详细版 §15）：验收跑一次性副本、
+  交付树不被证据落盘跑脏，`verify-all` 全绿清理产物目录 / 失败保留现场（`--keep-artifacts` 强制保留）；
+  发版门禁（加固 H19）：`distribute` 收尾自动「一次性副本 verify-all --mode 2 + 终态哈希终查」，发版不可能忘；
+  `verify-all --mode 1|2|3` 一条命令复跑三态判据；全量 12 套件 450 断言。
 - **v1.1.0（2026-10-03）**：智能体线 —— `nl_test_goal`（说目标不说步骤：LLM 只做规划，
   执行与判定走确定性链路，输出 JSON verdict）+ `explore_page`（死链/坏图/表单盘点巡检），
   工具 11 → 13；合并 LangChain PlayWrightBrowserToolkit 七工具语义（映射见 `references/nl-agent.md`）；

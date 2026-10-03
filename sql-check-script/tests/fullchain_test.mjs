@@ -12,13 +12,14 @@
  *
  * 用法：node tests/fullchain_test.mjs [serverDir]
  *   serverDir 默认 <本仓库>/../calvin-db-mcp/mcp（可用 DBMCP_MCP_DIR 覆盖）
- * 退出码：0 = 全部通过；1 = 存在失败。
+ * 退出码：0 = 全部通过且无诚实 SKIP；1 = 存在失败；3 = 无失败但有诚实 SKIP
+ *   （缺 demo fixture / 开了 live 门却没源 / 服务器因缺依赖起不来）—— 未跑的部分明示出来，不冒充全绿。
  *
  * 可选 live 段（默认 SKIP，环境变量门控，严格只读）：
  *   FULLCHAIN_MYSQL=1  第 7 段 MySQL 协议真实源（OceanBase MySQL 模式同走此段，FULLCHAIN_MYSQL_SRC 指定）
  *   FULLCHAIN_PG=1     第 8 段 PostgreSQL 真实源（FULLCHAIN_PG_SRC 直接指定 source id）
  * fixture 自供给：目标配置缺 demo 源（全新部署机）时自动用 ../demo.db 生成临时 DBMCP_CONFIG，
- *   不依赖开发机配置；demo.db 也缺失时整体干净 SKIP（exit 0），部署验收不误报。
+ *   不依赖开发机配置；demo.db 也缺失时整体诚实 SKIP（exit 3 + 明示原因）：不误报失败，也不冒充全绿。
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,14 @@ const SERVER_DIR = process.argv[2] || process.env.DBMCP_MCP_DIR || path.resolve(
 const DEMO_SOURCE = process.env.FULLCHAIN_SOURCE || "sqlite_demo";
 
 const spawnEnv = { ...process.env };
+let passed = 0, failed = 0, skippedHonest = 0;
+const ok = (name, cond, detail = "") => {
+  if (cond) { passed++; console.log(`PASS ${name}`); }
+  else { failed++; console.log(`FAIL ${name}${detail ? " — " + detail : ""}`); }
+};
+// 诚实 SKIP（统一口径，与 mysql-validate 退出码 3 同义）：想跑但环境没给条件 ——
+// 计数并明示原因，不计 passed（那叫假绿）也不计 failed（那叫假红）。
+const skip = (name, reason) => { skippedHonest++; console.log(`SKIP ${name}（${reason}）`); };
 let fixtureCfgPath = null;
 {
   let hasDemo = false;
@@ -55,18 +64,12 @@ let fixtureCfgPath = null;
       spawnEnv.DBMCP_CONFIG = fixtureCfgPath;
       console.log(`FIXTURE 临时配置已生成（${DEMO_SOURCE} → ${demoDb}），本次运行不依赖既有 dbmcp.config.json`);
     } else {
-      console.log(`SKIP 全链路 E2E（缺 demo fixture：${demoDb} 不存在且配置无 ${DEMO_SOURCE} 源）`);
-      console.log("\n=== 全链路 E2E：0 passed, 0 failed ===");
-      process.exit(0);
+      skip("全链路 E2E（整体）", `缺 demo fixture：${demoDb} 不存在且配置无 ${DEMO_SOURCE} 源`);
+      console.log("\n=== 全链路 E2E：0 passed, 0 failed, 1 诚实SKIP ===");
+      process.exit(3);
     }
   }
 }
-
-let passed = 0, failed = 0;
-const ok = (name, cond, detail = "") => {
-  if (cond) { passed++; console.log(`PASS ${name}`); }
-  else { failed++; console.log(`FAIL ${name}${detail ? " — " + detail : ""}`); }
-};
 
 // ---------- stdio JSON-RPC 客户端 ----------
 const child = spawn(process.execPath, ["server.mjs"], { cwd: SERVER_DIR, stdio: ["pipe", "pipe", "pipe"], env: spawnEnv });
@@ -91,7 +94,8 @@ child.stdout.on("data", (d) => {
   }
 });
 child.stderr.setEncoding("utf8");
-child.stderr.on("data", (d) => process.stderr.write(`[server] ${d}`));
+let serverStderr = "";
+child.stderr.on("data", (d) => { serverStderr += d; process.stderr.write(`[server] ${d}`); });
 
 function rpc(method, params, timeoutMs = 15000) {
   const id = nextId++;
@@ -237,11 +241,15 @@ try {
   // 严格只读：find_database / list_tables / describe_table / query(SELECT,EXPLAIN) / count_rows
   if (process.env.FULLCHAIN_MYSQL === "1") {
     const fd = unwrap(await call("find_database", { name: "mysql" }));
-    ok("live-mysql: find_database 定位 mysql 源", (fd.match_count ?? 0) >= 1, JSON.stringify(fd).slice(0, 160));
     const mysqlSrc = process.env.FULLCHAIN_MYSQL_SRC || fd.matches?.[0]?.id;
-    ok("live-mysql: 取得 source id", !!mysqlSrc, String(mysqlSrc));
-
+    if (!mysqlSrc) {
+      // 与 live-pg 同口径：开了门却没有源 = 环境没配好，诚实 SKIP 不判失败。
+      // （此前 MySQL 在这里判 FAIL 而 PG 干净 SKIP —— 同一件事两种裁决，不对称即不诚实）
+      skip("live-mysql", "FULLCHAIN_MYSQL=1 但未发现 mysql 源；配好 mysql 源或设 FULLCHAIN_MYSQL_SRC 后重试（与 live-pg 同口径）");
+    }
     if (mysqlSrc) {
+      ok("live-mysql: find_database/环境定位 mysql 源", (fd.match_count ?? 0) >= 1 || !!process.env.FULLCHAIN_MYSQL_SRC, JSON.stringify(fd).slice(0, 160));
+      ok("live-mysql: 取得 source id", !!mysqlSrc, String(mysqlSrc));
       // 连接默认库可能为空 → 先跨库发现非系统 schema，选表最多的一个
       const sch = unwrap(await call("query", {
         source: mysqlSrc,
@@ -282,7 +290,7 @@ try {
   // 严格只读：find_database / list_tables / describe_table / query(SELECT,EXPLAIN) / count_rows
   // 方言差异点：计划判定字段是 Scan/Sort/cost=（PG）而非 type/key/rows/Extra（MySQL）；
   // 跨 schema 发现用 information_schema.tables 的 table_schema（PG 无 SHOW DATABASES）。
-  // 无 PG 源时干净 SKIP；live 路径需环境配好可达 PG 源后实测（SKIP 路径已实测）。
+  // 无 PG 源时诚实 SKIP（计入 3 号退出码）；live 路径需环境配好可达 PG 源后实测（SKIP 路径已实测）。
   if (process.env.FULLCHAIN_PG === "1") {
     const pgSrcEnv = process.env.FULLCHAIN_PG_SRC || "";
     let pgSrc = pgSrcEnv;
@@ -296,7 +304,7 @@ try {
       if (pgSrc) ok("live-pg: 自动发现 PG 源", true, pgSrc);
     }
     if (!pgSrc) {
-      console.log("SKIP live-pg（FULLCHAIN_PG=1 但未发现 PG 源；配好 PG 源或设 FULLCHAIN_PG_SRC 后重试）");
+      skip("live-pg", "FULLCHAIN_PG=1 但未发现 PG 源；配好 PG 源或设 FULLCHAIN_PG_SRC 后重试");
     } else {
       // 连接默认 schema 可能为空 → 先跨 schema 发现非系统 schema，选表最多的一个
       const sch = unwrap(await call("query", {
@@ -338,13 +346,21 @@ try {
   const after = unwrap(await call("count_rows", { source: DEMO_SOURCE, table: "books" }));
   ok("guard: 全部红线用例跑完后 books 仍为 3 行（未被写坏）", Number(after.total) === 3, JSON.stringify(after));
 } catch (e) {
-  failed++;
-  console.log("FATAL", e?.stack || e);
+  // 只有「缺模块起不来」算诚实 SKIP（环境没装依赖 ≠ 产品失败）；
+  // 其余任何崩溃照旧 FATAL——别让 SKIP 口径变成遮丑布。
+  const missingDep = /Cannot find (?:package|module) |ERR_MODULE_NOT_FOUND/.test(serverStderr);
+  if (missingDep && passed === 0 && failed === 0) {
+    const m = serverStderr.match(/Cannot find (?:package|module) '[^']+'/);
+    skip("全链路 E2E（整体）", `calvin-db-mcp 缺依赖服务器起不来（${m ? m[0] : "模块缺失"}）——先在 calvin-db-mcp/mcp 下 npm ci 再跑`);
+  } else {
+    failed++;
+    console.log("FATAL", e?.stack || e);
+  }
 } finally {
   child.stdin.end();
   child.kill();
   if (fixtureCfgPath) { try { fs.unlinkSync(fixtureCfgPath); } catch { /* 临时 fixture 清理失败不影响裁决 */ } }
 }
 
-console.log(`\n=== 全链路 E2E：${passed} passed, ${failed} failed ===`);
-process.exit(failed ? 1 : 0);
+console.log(`\n=== 全链路 E2E：${passed} passed, ${failed} failed, ${skippedHonest} 诚实SKIP ===`);
+process.exit(failed ? 1 : skippedHonest ? 3 : 0);

@@ -7,8 +7,10 @@
  * live 段随环境变量门控（与 fullchain_test.mjs 同口径）：
  *   FULLCHAIN_MYSQL=1 / FULLCHAIN_PG=1 时 E2E 含对应真实源只读段。
  *
- * 退出码：0 = 全部通过；1 = 存在失败或套件无法运行。
- * 汇总行：RUN_ALL selftest=<p>/<f> e2e=<p>/<f> gates=<...> => OK|FAIL
+ * 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+ *   0 = 全部通过且无诚实 SKIP；1 = 存在失败或套件无法运行；3 = 无失败但有诚实 SKIP
+ *   （缺 fixture / 开了 live 门却没源 / 缺依赖起不来）—— 未跑的部分明示出来，不冒充全绿。
+ * 汇总行：RUN_ALL selftest=<p>/<f>[/<s>] e2e=<p>/<f>[/<s>] gates=<...> => OK|SKIP|FAIL
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -31,29 +33,39 @@ function run(title, args, opts = {}) {
   if (r.stderr) process.stderr.write(r.stderr);
   return r;
 }
-// 同一判定两种计数来源：selftest 与 E2E 各自的机器可读汇总行
-const pick = (text, re) => (text.match(re) ? [text.match(re)[1], text.match(re)[2]] : ["-", "-"]);
+// 同一判定两种计数来源：selftest 与 E2E 各自的机器可读汇总行（第三组 = 诚实 SKIP，旧格式缺省 0）
+const pick = (text, re) => {
+  const m = text.match(re);
+  return m ? [m[1], m[2], m[3] ?? "0"] : ["-", "-", "-"];
+};
 
-let sP = "-", sF = "-", eP = "-", eF = "-";
-let ok = true;
+let sP = "-", sF = "-", sS = "-", eP = "-", eF = "-", eS = "-";
+let failedAny = false, skippedAny = false;
+
+// 子套件退出码口径：1（或其它非 0/3）= 失败；3 = 无失败但有诚实 SKIP；0 = 全绿
+const noteStatus = (label, status) => {
+  if (status === 3) { skippedAny = true; console.log(`（${label}：退出码 3 —— 无失败但有诚实 SKIP，不冒充全绿）`); }
+  else if (status !== 0) { failedAny = true; }
+};
 
 if (!fs.existsSync(SELFTEST)) {
   console.error("✗ 未找到 selftest：" + SELFTEST);
-  ok = false;
+  failedAny = true;
 } else {
   const r = run("calvin-db-mcp selftest", [SELFTEST], { cwd: MCP_DIR });
-  [sP, sF] = pick((r.stdout || "") + (r.stderr || ""), /=== (\d+) passed, (\d+) failed ===/);
-  if (r.status !== 0) ok = false;
+  [sP, sF, sS] = pick((r.stdout || "") + (r.stderr || ""), /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
+  noteStatus("selftest", r.status);
 }
 
 if (!fs.existsSync(E2E)) {
   console.error("✗ 未找到全链路 E2E：" + E2E);
-  ok = false;
+  failedAny = true;
 } else {
   const r = run("全链路 E2E" + (gates.length ? "（含 " + gates.join("+") + " live 段）" : "（核心段）"), [E2E, MCP_DIR], { cwd: here });
-  [eP, eF] = pick((r.stdout || "") + (r.stderr || ""), /=== 全链路 E2E：(\d+) passed, (\d+) failed ===/);
-  if (r.status !== 0) ok = false;
+  [eP, eF, eS] = pick((r.stdout || "") + (r.stderr || ""), /=== 全链路 E2E：(\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
+  noteStatus("全链路 E2E", r.status);
 }
 
-console.log(`\nRUN_ALL selftest=${sP}/${sF} e2e=${eP}/${eF} gates=${gates.join("+") || "core"} => ${ok ? "OK" : "FAIL"}`);
-process.exit(ok ? 0 : 1);
+const verdict = failedAny ? "FAIL" : skippedAny ? "SKIP" : "OK";
+console.log(`\nRUN_ALL selftest=${sP}/${sF}/${sS} e2e=${eP}/${eF}/${eS} gates=${gates.join("+") || "core"} => ${verdict}`);
+process.exit(failedAny ? 1 : skippedAny ? 3 : 0);

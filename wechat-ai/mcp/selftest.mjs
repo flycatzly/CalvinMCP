@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// wechat-ai 自检：断言式验证核心链路。输出末尾固定为 "=== N passed, M failed ==="
+// wechat-ai 自检：断言式验证核心链路。输出末尾固定为 "=== N passed, M failed, K 诚实SKIP ==="
+// 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+//   0 = 全部通过且无诚实 SKIP；1 = 存在失败；3 = 无失败但有诚实 SKIP（模块未就绪 / 能力未提供）——
+//   未跑的部分明示出来，不冒充全绿，也不算失败。
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,13 +10,15 @@ import { fileURLToPath } from "node:url";
 
 let passed = 0;
 let failed = 0;
+let skippedHonest = 0;
 const failures = [];
 const skips = [];
 
 function check(name, fn) {
   try {
     const r = fn();
-    if (r === "SKIP") { skips.push(name); passed += 1; return; }
+    // 诚实 SKIP：想跑但环境没给条件（能力未提供）——计 SKIP，绝不计 passed（假绿）
+    if (r === "SKIP") { skips.push(name + "（能力未提供）"); skippedHonest += 1; return; }
     if (r === false) throw new Error("断言返回 false");
     passed += 1;
   } catch (e) {
@@ -24,7 +29,7 @@ function check(name, fn) {
 async function checkAsync(name, fn) {
   try {
     const r = await fn();
-    if (r === "SKIP") { skips.push(name); passed += 1; return; }
+    if (r === "SKIP") { skips.push(name + "（能力未提供）"); skippedHonest += 1; return; }
     if (r === false) throw new Error("断言返回 false");
     passed += 1;
   } catch (e) {
@@ -321,7 +326,7 @@ const exists = (rel) => fs.existsSync(path.join(TMP, "..", "..")) && fs.existsSy
 const modExists = (rel) => { try { return fs.existsSync(modPath(rel)); } catch { return false; } };
 
 for (const [rel, name] of [["opportunities.mjs", "opportunities"], ["views.mjs", "views"], ["replystyle.mjs", "replystyle"], ["security.mjs", "security"], ["access.mjs", "access"]]) {
-  if (!modExists(rel)) { skips.push(`模块 ${rel} 尚未就绪，跳过其断言`); continue; }
+  if (!modExists(rel)) { skips.push(`模块 ${rel} 尚未就绪，跳过其断言`); skippedHonest += 1; continue; }
   const m = await load(rel);
   check(`${name} 可加载`, () => ok(Object.keys(m).length > 0));
   if (name === "opportunities") {
@@ -366,7 +371,7 @@ for (const [rel, name, fn] of [
   ["wechat/history.mjs", "wechat/history", null],
   ["wechat/batch.mjs", "wechat/batch", null],
 ]) {
-  if (!modExists(rel)) { skips.push(`模块 ${rel} 尚未就绪`); continue; }
+  if (!modExists(rel)) { skips.push(`模块 ${rel} 尚未就绪`); skippedHonest += 1; continue; }
   await checkAsync(`${name} 可加载`, async () => { const m = await load(rel); return ok(Object.keys(m).length > 0); });
 }
 
@@ -439,8 +444,9 @@ if (failures.length) {
   console.log("");
 }
 if (skips.length) {
-  console.log("跳过项（模块未就绪）：" + skips.length + " 条");
+  console.log("诚实 SKIP（不计通过也不计失败，未跑部分明示，不冒充全绿）：" + skips.length + " 条");
+  for (const s of skips) console.log("  ⊹ " + s);
 }
-console.log("=== " + passed + " passed, " + failed + " failed ===");
+console.log("=== " + passed + " passed, " + failed + " failed, " + skippedHonest + " 诚实SKIP ===");
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
-process.exit(failed === 0 ? 0 : 1);
+process.exit(failed ? 1 : skippedHonest ? 3 : 0);

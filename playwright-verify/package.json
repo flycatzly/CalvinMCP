@@ -1,6 +1,6 @@
 {
   "name": "playwright-verify-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Playwright 端到端测试的验收/门禁/执行/智能体 MCP：配置体检、用例静态扫描、失败聚类归因、落盘式执行、PO 分层生成、Excel 编排、自然语言声明式测试、页面巡检",

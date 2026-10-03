@@ -8,6 +8,11 @@
  *         --allow-create-table   导入的配置允许 create_table 建表（默认关闭，安全红线仍然生效）
  *         --force                配置已存在时仍用 .dbp 覆盖重导（与 import-dbeaver.mjs 同语义；
  *                                不加时 .dbp 被忽略并给出提示，防误覆盖现有连接）
+ *         --dry-run              只打印不落盘：跳过依赖安装 / 配置导入 / 自动注册 / 示例配置写出
+ *                                （验收、试跑用；真实装机去掉此参数）
+ * 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+ *   0 = 完成且无诚实 SKIP；1 = 存在问题；3 = 无失败但有诚实 SKIP（如 E2E 缺 fixture / 无凭据）
+ *   —— 未跑的部分明示出来，不冒充全绿。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -21,7 +26,14 @@ const nodeBin = process.execPath;
 const home = os.homedir();
 const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
 let ok = true;
+// 诚实 SKIP（统一口径）：想跑但环境没给条件（缺 fixture / 无凭据 / 缺依赖）——
+// 明示原因、退出码 3，不计成功（假绿）也不计失败（假红）。
+let honestSkip = false;
 const step = (n, t) => console.log("\n== 步骤 " + n + "：" + t + " ==");
+// --dry-run：只打印不落盘（wechat-ai v1.0.1 同款守卫）。旧版无 dry-run 语义 ——
+// 未知参数被静默忽略，「试跑」会真写 mcp-register.example.json，已初始化机器上还会写
+// ~/.claude.json 等用户全局配置：验收/试跑一律加本参数（副本验收口径见共享发布说明）。
+const DRY_RUN = process.argv.includes("--dry-run");
 
 step(1, "Node.js 版本检查");
 // 与 package.json 的 engines（>=18.17）以及文档口径保持一致：主次版本都要比
@@ -52,6 +64,8 @@ if (!process.env.DBMCP_MASTER_KEY) {
 step(2, "运行时依赖（缺失时自动 npm ci --omit=dev）");
 if (fs.existsSync(path.join(MCP, "node_modules", "mysql2")) && fs.existsSync(path.join(MCP, "node_modules", "pg"))) {
   console.log("  ✓ 依赖已就绪（mysql2 / pg）");
+} else if (DRY_RUN) {
+  console.log("  ⊹ dry-run：跳过自动安装（不落盘）——真实装机将执行 npm ci --omit=dev（26 个纯生产包）");
 } else {
   // v1.4.1: --registry=<url> 真实透传给 npm（旧版提示"可加镜像参数"却无参数通道）
   const registry = process.argv.find((a) => a.startsWith("--registry="));
@@ -72,7 +86,9 @@ if (configReady) {
   try { c = JSON.parse(fs.readFileSync(cfgPath, "utf8")); }
   catch { console.error("  ✗ 配置文件损坏（" + cfgPath + "）：请备份后删除该文件，用 .dbp 重新导入"); process.exit(1); }
   console.log("  ✓ 已初始化：" + Object.keys(c.sources || {}).length + " 个源（url 加密存储，无明文）");
-  if (dbp && process.argv.includes("--force")) {
+  if (dbp && process.argv.includes("--force") && DRY_RUN) {
+    console.log("  ⊹ dry-run：跳过覆盖导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\" --force");
+  } else if (dbp && process.argv.includes("--force")) {
     // v1.6.1 幂等对齐：--force 与 import-dbeaver.mjs 同语义——显式覆盖才重导（默认忽略 .dbp 防误覆盖）
     console.log("  … --force 覆盖导入: " + dbp);
     const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp, "--force"];
@@ -89,6 +105,8 @@ if (configReady) {
   } else if (dbp) {
     console.log("  ⊹ 检测到传入的 .dbp 参数，但配置已存在——已忽略（如需覆盖重导请加 --force，或执行 node mcp\\import-dbeaver.mjs \"" + dbp + "\" --force）");
   }
+} else if (dbp && DRY_RUN) {
+  console.log("  ⊹ dry-run：跳过配置导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\"");
 } else if (dbp) {
   console.log("  … 从 DBeaver 项目导入: " + dbp);
   const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp];
@@ -116,18 +134,26 @@ if (configReady) {
   const outAll = (st.stdout || "") + (st.stderr || "");
   // v1.0.3: 解析 selftest 末尾的机器可读汇总行（旧版用 /PASS/g、/FAIL/g 计数，
   // 测试名或报错文本里出现这两个词就会误报）；无汇总行时回退计数并告警。
-  const sum = outAll.match(/=== (\d+) passed, (\d+) failed ===/);
+  // 第三组（可选）= 诚实 SKIP —— 自 v1.6.3 起带统一口径的套件会输出。
+  const sum = outAll.match(/=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
   var passCount = sum ? Number(sum[1]) : (outAll.match(/PASS/g) || []).length;
   var failCount = sum ? Number(sum[2]) : (outAll.match(/FAIL/g) || []).length;
+  var selfSkip = sum && sum[3] ? Number(sum[3]) : 0;
   if (!sum) console.log("  ⚠ selftest 未输出汇总行（版本过旧？），回退到 PASS/FAIL 计数");
-  console.log("  PASS=" + passCount + " FAIL=" + failCount + (st.status === 0 ? "  ✓" : "  ✗ (exit " + st.status + ")"));
-  if (st.status !== 0) ok = false;
+  if (st.status === 3) {
+    // 退出码 3 = 无失败但有诚实 SKIP（如 mysql-validate 无凭据）：不算失败，但绝不算全绿
+    honestSkip = true;
+    console.log("  PASS=" + passCount + " FAIL=" + failCount + " 诚实SKIP=" + selfSkip + "  ⊹ 诚实 SKIP（exit 3）——未跑部分见 selftest 输出，不冒充全绿");
+  } else {
+    console.log("  PASS=" + passCount + " FAIL=" + failCount + (st.status === 0 ? "  ✓" : "  ✗ (exit " + st.status + ")"));
+    if (st.status !== 0) ok = false;
+  }
 } else {
   console.log("  ⊹ 跳过（未初始化）；初始化后重跑本安装器会执行完整自检");
 }
 
 step(5, "全链路 E2E 验收（部署即验证）");
-let e2ePass = "-", e2eFail = "-";
+let e2ePass = "-", e2eFail = "-", e2eSkip = "-";
 {
   // E2E 位于技能仓库（sql-check-script/tests/fullchain_test.mjs），未随包分发时跳过属正常；
   // 可用 DBMCP_E2E=<fullchain_test.mjs 路径> 显式指定。部署验收只跑确定性核心段：
@@ -143,11 +169,17 @@ let e2ePass = "-", e2eFail = "-";
     delete env.FULLCHAIN_PG;
     const e2e = spawnSync(nodeBin, [e2ePath, MCP], { cwd: here, encoding: "utf8", env });
     const outAll = (e2e.stdout || "") + (e2e.stderr || "");
-    const esum = outAll.match(/=== 全链路 E2E：(\d+) passed, (\d+) failed ===/);
-    if (esum) { e2ePass = esum[1]; e2eFail = esum[2]; }
+    const esum = outAll.match(/=== 全链路 E2E：(\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
+    if (esum) { e2ePass = esum[1]; e2eFail = esum[2]; e2eSkip = esum[3] || "0"; }
     else console.log("  ⚠ E2E 未输出汇总行（版本过旧？）");
-    console.log("  E2E PASS=" + e2ePass + " FAIL=" + e2eFail + (e2e.status === 0 ? "  ✓" : "  ✗ (exit " + e2e.status + ")"));
-    if (e2e.status !== 0) ok = false;
+    if (e2e.status === 3) {
+      // 退出码 3 = 无失败但有诚实 SKIP（缺 demo fixture / 缺依赖起不来）：部署机没给条件 ≠ 安装失败
+      honestSkip = true;
+      console.log("  E2E PASS=" + e2ePass + " FAIL=" + e2eFail + " 诚实SKIP=" + e2eSkip + "  ⊹ 诚实 SKIP（exit 3）——原因见 E2E 输出，不冒充全绿");
+    } else {
+      console.log("  E2E PASS=" + e2ePass + " FAIL=" + e2eFail + (e2e.status === 0 ? "  ✓" : "  ✗ (exit " + e2e.status + ")"));
+      if (e2e.status !== 0) ok = false;
+    }
   }
 }
 
@@ -201,16 +233,24 @@ function registerAll() {
   return results.some(([, s2]) => s2 === "ok" || s2 === "created");
 }
 
-if (!configReady) {
+if (DRY_RUN) {
+  console.log("  ⊹ dry-run：跳过自动注册（不落盘）——真实装机将注册到 Claude Code（CLI / ~/.claude.json）、Claude Desktop、Cursor。");
+} else if (!configReady) {
   console.log("  ⊹ 跳过自动注册：需先完成连接配置初始化（见步骤 3 指引），初始化后重跑本安装器即可自动注册。");
 } else {
   const anyOk = registerAll();
   console.log("  注册完成。重启 MCP 客户端后生效；如需移除可删除各配置中的 mcpServers.db 条目。");
   if (!anyOk) console.log("  ⚠ 未检测到已知客户端，请将 mcp-register.example.json 内容手工加入你的客户端配置。");
 }
-fs.writeFileSync(path.join(here, "mcp-register.example.json"), JSON.stringify({ mcpServers: { db: ENTRY } }, null, 2));
+const exampleFile = path.join(here, "mcp-register.example.json");
+if (DRY_RUN) {
+  console.log("  示例配置（dry-run 不落盘）：将写入 " + exampleFile);
+} else {
+  fs.writeFileSync(exampleFile, JSON.stringify({ mcpServers: { db: ENTRY } }, null, 2));
+}
 
-console.log("\n== 安装结果: " + (ok ? "完成 ✓" : "存在问题（见上）") + " ==");
-console.log("INSTALL_STATUS=" + (ok ? "OK" : "FAIL") + " INIT=" + (configReady ? "yes" : "no") + " REG=" + (configReady ? "auto" : "skipped") + " PASS=" + (typeof passCount === "number" ? passCount : "-") + " FAIL=" + (typeof failCount === "number" ? failCount : "-") + " E2E=" + (e2ePass === "-" ? "-" : e2ePass + "/" + e2eFail));
+const verdict = ok ? (honestSkip ? "完成（含诚实 SKIP）⊹" : "完成 ✓") : "存在问题（见上）";
+console.log("\n== 安装结果: " + verdict + " ==");
+console.log("INSTALL_STATUS=" + (ok ? (honestSkip ? "SKIP" : "OK") : "FAIL") + " INIT=" + (configReady ? "yes" : "no") + " REG=" + (DRY_RUN ? "dry" : configReady ? "auto" : "skipped") + " PASS=" + (typeof passCount === "number" ? passCount : "-") + " FAIL=" + (typeof failCount === "number" ? failCount : "-") + " E2E=" + (e2ePass === "-" ? "-" : e2ePass + "/" + e2eFail + "/" + e2eSkip));
 if (!configReady) console.log("下一步: 初始化连接配置后重跑本安装器完成自动注册。");
-process.exit(ok ? 0 : 1);
+process.exit(ok ? (honestSkip ? 3 : 0) : 1);

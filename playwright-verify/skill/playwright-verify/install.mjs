@@ -69,7 +69,7 @@ const hasCli = fs.existsSync(path.join(PROJECT_ROOT, 'node_modules', '@playwrigh
 record('@playwright/test', hasPw ? 'ok' : 'skip', hasPw ? '已安装' : '未安装（run_verify / demo 不可用；其余工具不受影响）');
 record('@playwright/cli', hasCli ? 'ok' : 'skip', hasCli ? '已安装' : '未安装（cli_* 工具不可用）');
 if (!hasPw || !hasCli) {
-  console.log(`     如需补齐：cd "${PROJECT_ROOT}" && npm install`);
+  console.log(`     如需补齐可选依赖（只有执行层需要，部署本工具不需要）：cd "${PROJECT_ROOT}" && npm install`);
 }
 
 /* ---------------- 2) 安装 Skill ---------------- */
@@ -111,9 +111,21 @@ if (OPT.printConfig) {
     //   产物目录不该被误提交，换行符也不该被 Git 改写（CRLF 会破坏 shebang）。
     // CI 工作流也要：它是「怎么用这套门禁」的可执行示范，属于交付物的一部分。
     for (const f of ['package.json', 'package-lock.json', '.gitignore', '.gitattributes',
-      'README.md', '使用文档.md', '部署文档.md']) {
+      'README.md', '使用文档.md', '部署说明.md', '部署说明.详细版.md']) {
       const s = path.join(PROJECT_ROOT, f);
       if (fs.existsSync(s)) fs.copyFileSync(s, path.join(INSTALL_ROOT, f));
+    }
+    // 托管根文件只增不删会留下陈旧文件：文档改名/删除后（如 部署文档.md → 部署说明*.md），
+    // 源码里没了、安装目录还留着 —— deployed-check 的「没有多余的陈旧文件」会一直报。
+    // 所以源码里已不存在的托管文件要清掉（只动这个清单里的名字，不碰用户自己放的东西）。
+    const MANAGED_ROOT_FILES = ['package.json', 'package-lock.json', '.gitignore', '.gitattributes',
+      'README.md', '使用文档.md', '部署文档.md', '部署说明.md', '部署说明.详细版.md'];
+    for (const f of MANAGED_ROOT_FILES) {
+      const d = path.join(INSTALL_ROOT, f);
+      if (!fs.existsSync(path.join(PROJECT_ROOT, f)) && fs.existsSync(d)) {
+        fs.rmSync(d);
+        record('清理陈旧托管文件', 'ok', `${f}（源码已无此文件）`);
+      }
     }
     const ghDir = path.join(PROJECT_ROOT, '.github');
     if (fs.existsSync(ghDir)) {

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // web-rpa-mcp — 安装/初始化：检查依赖、写默认配置、自检、输出 MCP 注册 JSON、安装 skill
+// 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+//   0 = 完成且无诚实 SKIP；1 = 存在问题；3 = 无失败但有诚实 SKIP（如缺 playwright 依赖，浏览器面套件未跑）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -101,8 +103,18 @@ async function main() {
   } catch (e) { warn('浏览器探测失败: ' + String(e && e.message ? e.message : e)); }
 
   step(6, '运行自检');
-  const st = spawnSync(process.execPath, [path.join(MCP_DIR, 'test', 'unit.mjs')], { cwd: MCP_DIR, stdio: 'inherit' });
-  info('  单元测试退出码: ' + st.status);
+  // 诚实 SKIP 口径（与 mysql-validate 退出码 3 同义）：0=全绿；3=无失败但有诚实 SKIP（如缺 playwright 依赖）；1=有失败
+  let honestSkip = false;
+  const st = spawnSync(process.execPath, [path.join(MCP_DIR, 'selftest.mjs')], { cwd: MCP_DIR, encoding: 'utf8' });
+  process.stdout.write(st.stdout || '');
+  process.stderr.write(st.stderr || '');
+  let selfP = '-', selfF = '-', selfS = '-';
+  const sm = ((st.stdout || '') + '\n').match(/SELFTEST \d+ 套：(\d+) 通过 \/ (\d+) 失败 \/ (\d+) 诚实SKIP/);
+  if (sm) { selfP = sm[1]; selfF = sm[2]; selfS = sm[3]; }
+  const selfOk = st.status === 0 || st.status === 3;
+  if (st.status === 0) info('  ok  自检全绿');
+  else if (st.status === 3) { honestSkip = true; info('  ⊹ 诚实 SKIP（exit 3）：无失败，但有套件因缺依赖/前置不可跑——未跑部分见自检输出，不冒充全绿'); }
+  else warn('  自检失败（exit ' + st.status + '）');
 
   step(7, '输出 MCP 注册 JSON');
   const reg = { mcpServers: { webrpa: { command: 'node', args: [path.join(MCP_DIR, 'server.mjs')] } } };
@@ -145,6 +157,11 @@ async function main() {
   info('手工验证：');
   info('  node "' + path.join(MCP_DIR, 'server.mjs') + '" --doctor');
   info('  node "' + path.join(MCP_DIR, 'runner.mjs') + '" list');
+
+  const ok = selfOk;
+  info('');
+  info('INSTALL_STATUS=' + (ok ? (honestSkip ? 'SKIP' : 'OK') : 'FAIL') + ' SELFTEST=' + selfP + '/' + selfF + '/' + selfS);
+  process.exit(ok ? (honestSkip ? 3 : 0) : 1);
 }
 
 main().catch((e) => {

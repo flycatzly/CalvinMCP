@@ -9,6 +9,9 @@
  *   node install.mjs --dry-run       # 只打印将要写入的配置，不落盘
  *
  * 本安装器不会下载任何依赖（零 npm 依赖），不会读取或生成微信密钥。
+ *
+ * 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+ *   0 = 完成且无诚实 SKIP；1 = 存在问题；3 = 无失败但有诚实 SKIP（如模块未就绪，自检有未跑部分）
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -81,20 +84,29 @@ try {
 step(4, "功能自检（selftest）");
 let pass = 0;
 let failC = 0;
+let skipC = 0;
+let honestSkip = false;
 try {
   const r = spawnSync(nodeBin, [SELFTEST], { encoding: "utf8", env: { ...process.env } });
   const all = (r.stdout || "") + (r.stderr || "");
-  const sum = all.match(/=== (\d+) passed, (\d+) failed ===/);
+  const sum = all.match(/=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
   pass = sum ? Number(sum[1]) : (all.match(/PASS/g) || []).length;
   failC = sum ? Number(sum[2]) : (all.match(/FAIL/g) || []).length;
+  skipC = sum && sum[3] !== undefined ? Number(sum[3]) : 0;
   if (!sum) {
     console.log("  ⚠ 未找到汇总行，回退到计数");
     console.log(all.split("\n").slice(-25).join("\n"));
   }
-  console.log("  PASS=" + pass + " FAIL=" + failC + (r.status === 0 ? "  ✓" : "  ✗ (exit " + r.status + ")"));
-  if (r.status !== 0) {
-    console.error(all.split("\n").filter((l) => l.includes("✗")).slice(0, 20).join("\n"));
-    ok = false;
+  // 退出码 3 = 无失败但有诚实 SKIP（模块未就绪 / 能力未提供）：不算失败，但绝不算全绿
+  if (r.status === 3) {
+    honestSkip = true;
+    console.log("  PASS=" + pass + " FAIL=" + failC + " 诚实SKIP=" + skipC + "  ⊹ 诚实 SKIP（exit 3）——未跑部分见 selftest 输出，不冒充全绿");
+  } else {
+    console.log("  PASS=" + pass + " FAIL=" + failC + " 诚实SKIP=" + skipC + (r.status === 0 ? "  ✓" : "  ✗ (exit " + r.status + ")"));
+    if (r.status !== 0) {
+      console.error(all.split("\n").filter((l) => l.includes("✗")).slice(0, 20).join("\n"));
+      ok = false;
+    }
   }
 } catch (e) {
   console.error("  ✗ 自检执行失败：" + String(e.message ?? e));
@@ -166,6 +178,6 @@ console.log("  把上面的 mcpServers 片段加入该插件配置即可；未�
 console.log("    node \"" + SERVER + "\"            # 启动 stdio MCP 服务器");
 console.log("    node \"" + SERVER + "\" --list-tools  # 查看全部工具");
 
-console.log("\n== 安装结果: " + (ok ? "完成 ✓" : "存在问题（见上）") + " ==");
-console.log("INSTALL_STATUS=" + (ok ? "OK" : "FAIL") + " TOOLS=" + toolCount + " PASS=" + pass + " FAIL=" + failC + " REG=" + (NO_REGISTER ? "skipped" : DRY_RUN ? "dry" : "auto"));
-process.exit(ok ? 0 : 1);
+console.log("\n== 安装结果: " + (ok ? (honestSkip ? "完成（含诚实 SKIP）⊹" : "完成 ✓") : "存在问题（见上）") + " ==");
+console.log("INSTALL_STATUS=" + (ok ? (honestSkip ? "SKIP" : "OK") : "FAIL") + " TOOLS=" + toolCount + " PASS=" + pass + " FAIL=" + failC + " 诚实SKIP=" + skipC + " REG=" + (NO_REGISTER ? "skipped" : DRY_RUN ? "dry" : "auto"));
+process.exit(ok ? (honestSkip ? 3 : 0) : 1);

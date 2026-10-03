@@ -234,6 +234,14 @@ const TOOLS = [
       additionalProperties: false,
     },
     async handler(args) {
+      // 守门前置（H6/H17 同类教训）：参数校验必须先于能力检查。
+      // 否则缺 Playwright 的环境会把「参数非法」报成「找不到 Playwright」，
+      // 把调用方引向装依赖的错误修复方向 —— 纯净包（不带 node_modules）里这层次序问题只会在这里现形。
+      const execution = boolArg(args.execution, 'execution', false);
+      const retries = args.retries === undefined || args.retries === null ? undefined : numArg(args.retries, 'retries', 0);
+      const files = arrayArg(args.files, 'files');
+      const timeoutMs = numArg(args.timeoutMs, 'timeoutMs', 600_000) || 600_000;
+
       const cwd = path.resolve(args.cwd);
       if (!fs.existsSync(cwd)) return fail(`目录不存在：${cwd}`, { error: 'NOT_FOUND', cwd });
       const runner = resolvePlaywrightRunner(cwd);
@@ -250,10 +258,10 @@ const TOOLS = [
       if (args.config) pwArgs.push('--config', args.config);
       if (args.grep) pwArgs.push('--grep', args.grep);
       if (args.project) pwArgs.push('--project', args.project);
-      if (args.retries !== undefined) pwArgs.push('--retries', String(args.retries));
-      if (args.files && args.files.length) pwArgs.push(...args.files);
+      if (retries !== undefined) pwArgs.push('--retries', String(retries));
+      if (files.length) pwArgs.push(...files);
 
-      if (!boolArg(args.execution, 'execution', false)) {
+      if (!execution) {
         return result(
           `[干跑] 环境已就绪，未真正执行。\n`
           + `  运行器: ${runner.how}\n  Playwright 版本: ${version || '(未知)'}\n`
@@ -267,7 +275,7 @@ const TOOLS = [
         cwd,
         args: pwArgs,
         env: args.env || {},
-        timeoutMs: args.timeoutMs || 600_000,
+        timeoutMs,
         logDir: path.join(cwd, ARTIFACT_DIRS.logs),
       });
       const tail = (res.stdout || '').split(/\r?\n/).filter((l) => l.trim()).slice(-30).join('\n');

@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boolArg, numArg, arrayArg } from '../lib/args.js';
+import { resolvePlaywrightRunner, resolveCliRunner } from '../lib/runner.js';
 import { handleMessage } from '../server.mjs';
 
 let failures = 0;
@@ -90,14 +91,22 @@ const callTool = async (name, args) => {
 };
 
 // run_verify execution:"false" 必须是干跑（绝不真的执行）
-const dry = await callTool('run_verify', { cwd: ROOT, execution: 'false' });
-check('run_verify execution:"false" → 干跑', dry.structuredContent?.dryRun === true && dry.isError !== true,
-  JSON.stringify(dry.structuredContent?.dryRun));
-const dryTrue = await callTool('run_verify', { cwd: ROOT, execution: 'true' });
-check('run_verify execution:"true" 才会真执行（未执行时至少不是干跑标记）',
-  dryTrue.structuredContent?.dryRun !== true);
+// 干跑/执行语义需要执行层才观察得到；缺可选依赖时诚实 SKIP（纯净包口径）——
+// 「未装 Playwright 时报缺」这条契约由 protocol-check 专门钉，不在这儿重复。
+if (resolvePlaywrightRunner(ROOT)) {
+  const dry = await callTool('run_verify', { cwd: ROOT, execution: 'false' });
+  check('run_verify execution:"false" → 干跑', dry.structuredContent?.dryRun === true && dry.isError !== true,
+    JSON.stringify(dry.structuredContent?.dryRun));
+  const dryTrue = await callTool('run_verify', { cwd: ROOT, execution: 'true' });
+  check('run_verify execution:"true" 才会真执行（未执行时至少不是干跑标记）',
+    dryTrue.structuredContent?.dryRun !== true);
+} else {
+  log('SKIP  run_verify 干跑/执行语义（缺可选依赖 @playwright/test：纯净包口径 —— 可选依赖由被测项目/本机提供）');
+}
 
 // 非法布尔值要以明确错误暴露，而不是静默当成某个值
+// 这条必须**不依赖执行层**也成立（守门前置）：参数校验先于能力检查，
+// 否则纯净包里会把「参数非法」报成「找不到 Playwright」，把人引去装依赖的歧路。
 const bad = await callTool('run_verify', { cwd: ROOT, execution: 'maybe' });
 check('非法 execution 值 → isError 且说明原因',
   bad.isError === true && /应为布尔值/.test(bad.content[0].text),
@@ -141,26 +150,30 @@ fs.rmSync(outDir, { recursive: true, force: true });
 /* ================= C) 产物命名不互相覆盖 ================= */
 log('');
 log('=== C) CLI 产物命名唯一性（并发不覆盖证据） ===');
-const { runCli, ARTIFACT_DIRS } = await import('../lib/cli.js');
-const session = `uniq-${Date.now().toString(36)}`;
-const PAGE = 'data:text/html,' + encodeURIComponent('<h1>uniq</h1>');
+if (!resolveCliRunner(ROOT)) {
+  log('SKIP  C) CLI 产物命名唯一性（缺可选依赖 @playwright/cli：纯净包口径 —— 可选依赖由被测项目/本机提供）');
+} else {
+  const { runCli, ARTIFACT_DIRS } = await import('../lib/cli.js');
+  const session = `uniq-${Date.now().toString(36)}`;
+  const PAGE = 'data:text/html,' + encodeURIComponent('<h1>uniq</h1>');
 
-const opened = await runCli({ cwd: ROOT, session, subcommand: 'open', args: [PAGE] });
-check('CLI 会话打开成功', opened.ok, opened.summary);
+  const opened = await runCli({ cwd: ROOT, session, subcommand: 'open', args: [PAGE] });
+  check('CLI 会话打开成功', opened.ok, opened.summary);
 
-// 并发发 4 次 snapshot：文件名必须互不相同（否则后写的覆盖先写的）
-const shots = await Promise.all([1, 2, 3, 4].map(() =>
-  runCli({ cwd: ROOT, session, subcommand: 'screenshot', args: [] })));
-const files = shots.map((s) => s.artifacts?.file).filter(Boolean);
-check('4 次并发截图都拿到了产物路径', files.length === 4, `${files.length}/4`);
-check('4 个产物路径互不相同（并发不覆盖证据）', new Set(files).size === files.length,
-  files.map((f) => path.basename(f)).join(', '));
-check('4 个截图文件都真实存在', files.every((f) => fs.existsSync(f)),
-  files.filter((f) => !fs.existsSync(f)).join(', ') || '全部存在');
-await runCli({ cwd: ROOT, session, subcommand: 'close', args: [] });
+  // 并发发 4 次 snapshot：文件名必须互不相同（否则后写的覆盖先写的）
+  const shots = await Promise.all([1, 2, 3, 4].map(() =>
+    runCli({ cwd: ROOT, session, subcommand: 'screenshot', args: [] })));
+  const files = shots.map((s) => s.artifacts?.file).filter(Boolean);
+  check('4 次并发截图都拿到了产物路径', files.length === 4, `${files.length}/4`);
+  check('4 个产物路径互不相同（并发不覆盖证据）', new Set(files).size === files.length,
+    files.map((f) => path.basename(f)).join(', '));
+  check('4 个截图文件都真实存在', files.every((f) => fs.existsSync(f)),
+    files.filter((f) => !fs.existsSync(f)).join(', ') || '全部存在');
+  await runCli({ cwd: ROOT, session, subcommand: 'close', args: [] });
 
-// 清理本次产物
-for (const f of files) { try { fs.unlinkSync(f); } catch { /* 忽略 */ } }
+  // 清理本次产物
+  for (const f of files) { try { fs.unlinkSync(f); } catch { /* 忽略 */ } }
+}
 
 log('');
 log(failures === 0 ? '参数规范化与产物命名回归全部通过 ✅' : `${failures} 项失败 ❌`);

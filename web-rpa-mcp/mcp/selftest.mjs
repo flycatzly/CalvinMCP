@@ -3,6 +3,9 @@
 // 用法：node selftest.mjs                全部 7 套
 //       node selftest.mjs unit e2e      只跑指定套件（名字=文件名去掉 .mjs）
 //       node selftest.mjs integration --group 14   套件名后的参数原样透传给测试脚本
+// 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
+//   0 = 全部通过且无诚实 SKIP；1 = 存在失败；3 = 无失败但有诚实 SKIP（如环境缺 playwright）
+//   —— 未跑的部分明示出来，不冒充全绿。
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +39,7 @@ function runOne(suite) {
     const child = spawn(process.execPath, [path.join(__dirname, 'test', suite.file), ...passthrough], { stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', (d) => process.stdout.write(d));
     child.stderr.on('data', (d) => process.stderr.write(d));
-    child.on('close', (code) => resolve({ ...suite, code: code === 0 ? 0 : (code || 1), ms: Date.now() - started }));
+    child.on('close', (code) => resolve({ ...suite, code: code === 0 ? 0 : (code || 1), ms: Date.now() - started })); // code 3 = 诚实 SKIP，原样保留
     child.on('error', (e) => { console.error('无法启动 ' + suite.file + ': ' + e.message); resolve({ ...suite, code: 1, ms: Date.now() - started }); });
   });
 }
@@ -53,11 +56,18 @@ for (const s of suites) {
 }
 
 console.log('\n════════ 全链路汇总 ════════');
-let failed = 0;
+let failed = 0, honestSkip = 0;
 for (const r of results) {
-  const mark = r.code === 0 ? 'ok  ' : (r.code === -1 ? 'skip' : 'FAIL');
-  if (r.code > 0) failed++;
+  const mark = r.code === 0 ? 'ok  ' : (r.code === -1 ? 'skip' : (r.code === 3 ? 'SKIP' : 'FAIL'));
+  if (r.code === 3) honestSkip++;
+  else if (r.code > 0) failed++;
   console.log('  ' + mark + ' ' + r.file.padEnd(18) + (r.code === -1 ? '' : (r.ms / 1000).toFixed(1) + 's'));
 }
-console.log(failed ? '\n全链路失败：' + failed + ' 套未通过' : '\n全链路通过：' + suites.length + ' 套全绿');
-process.exit(failed ? 1 : 0);
+const verdict = failed ? 'FAIL' : honestSkip ? 'SKIP' : 'OK';
+console.log(failed
+  ? '\n全链路失败：' + failed + ' 套未通过'
+  : honestSkip
+    ? '\n全链路诚实 SKIP：' + honestSkip + ' 套（如环境缺 playwright）——未跑部分见上方 SKIP 明细，不冒充全绿'
+    : '\n全链路通过：' + suites.length + ' 套全绿');
+console.log('SELFTEST ' + results.length + ' 套：' + (results.length - failed - honestSkip) + ' 通过 / ' + failed + ' 失败 / ' + honestSkip + ' 诚实SKIP => ' + verdict);
+process.exit(failed ? 1 : honestSkip ? 3 : 0);

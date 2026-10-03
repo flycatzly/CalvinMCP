@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchestrate, readCases, caseToSteps, resolvePython } from '../lib/orchestrate.js';
-import { runPlaywright, runToFiles } from '../lib/runner.js';
+import { runPlaywright, runToFiles, resolvePlaywrightRunner } from '../lib/runner.js';
 import { summarizeFile } from '../lib/signature.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -134,29 +134,35 @@ fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'playwright.config.ts'), configSrc, 'utf8');
 
 /* ---- 5) 真执行 ---- */
-log('\n--- 真跑编排产物 ---');
-const res = await runPlaywright({
-  cwd: ROOT,
-  args: ['--config', path.join(OUT, 'playwright.config.ts')],
-  timeoutMs: 180_000,
-  logDir: path.join(ROOT, '.playwright-artifacts', 'logs'),
-});
-check('Playwright 执行完成（退出码 0）', res.code === 0,
-  `exit=${res.code}，日志 ${res.stdoutFile}`);
-if (res.code !== 0) {
-  log('\n输出尾部：');
-  log((res.stdout || '').split('\n').filter((l) => l.trim()).slice(-25).join('\n'));
-}
-
-/* ---- 6) 报告确认 ---- */
-const reportFile = path.join(OUT, 'report.json');
-if (fs.existsSync(reportFile)) {
-  const s = summarizeFile(reportFile);
-  check('报告显示全部通过', s.totals.failed === 0 && s.totals.passed >= 2,
-    `通过 ${s.totals.passed} / 失败 ${s.totals.failed}`);
-  check('没有偶发（retries=0，通过就是真通过）', s.totals.flaky === 0, `偶发 ${s.totals.flaky}`);
+// 真跑段需要执行层：缺可选依赖时诚实 SKIP（纯净包口径）——
+// 读表/映射/生成/门禁/落盘（上面几步）不依赖 Playwright，照常验收。
+if (!resolvePlaywrightRunner(ROOT)) {
+  log('\nSKIP  真跑编排产物与报告确认（缺可选依赖 @playwright/test：纯净包口径 —— 可选依赖由被测项目/本机提供）');
 } else {
-  check('生成 json 报告', false, reportFile);
+  log('\n--- 真跑编排产物 ---');
+  const res = await runPlaywright({
+    cwd: ROOT,
+    args: ['--config', path.join(OUT, 'playwright.config.ts')],
+    timeoutMs: 180_000,
+    logDir: path.join(ROOT, '.playwright-artifacts', 'logs'),
+  });
+  check('Playwright 执行完成（退出码 0）', res.code === 0,
+    `exit=${res.code}，日志 ${res.stdoutFile}`);
+  if (res.code !== 0) {
+    log('\n输出尾部：');
+    log((res.stdout || '').split('\n').filter((l) => l.trim()).slice(-25).join('\n'));
+  }
+
+  /* ---- 6) 报告确认 ---- */
+  const reportFile = path.join(OUT, 'report.json');
+  if (fs.existsSync(reportFile)) {
+    const s = summarizeFile(reportFile);
+    check('报告显示全部通过', s.totals.failed === 0 && s.totals.passed >= 2,
+      `通过 ${s.totals.passed} / 失败 ${s.totals.failed}`);
+    check('没有偶发（retries=0，通过就是真通过）', s.totals.flaky === 0, `偶发 ${s.totals.flaky}`);
+  } else {
+    check('生成 json 报告', false, reportFile);
+  }
 }
 
 log('');

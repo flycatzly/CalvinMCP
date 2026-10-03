@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCli, ensureArtifactDirs, ARTIFACT_DIRS } from '../lib/cli.js';
+import { resolveCliRunner } from '../lib/runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -26,6 +27,15 @@ const check = (name, cond, extra = '') => {
   if (!cond) failures++;
   log(`${cond ? 'PASS ' : 'FAIL '} ${name}${extra ? `  ${extra}` : ''}`);
 };
+
+// 本套全部断言都建立在真实 CLI 交互上。缺可选依赖时诚实 SKIP（纯净包口径）：
+// 可选依赖由被测项目/本机提供，不随纯净发布包分发 —— 没有执行层时红着脸
+// 报「open 失败」只会把「依赖缺失」误导成「产品坏了」，修法完全不同。
+if (!resolveCliRunner(ROOT)) {
+  log('SKIP（缺可选依赖 @playwright/cli：纯净包口径 —— 可选依赖由被测项目/本机提供）');
+  log('本套全部断言都需要真实 CLI 执行层，本次未执行任何断言。');
+  process.exit(0);
+}
 
 const SESSION = `e2e-${Date.now().toString(36)}`;
 const dirs = ensureArtifactDirs(ROOT);

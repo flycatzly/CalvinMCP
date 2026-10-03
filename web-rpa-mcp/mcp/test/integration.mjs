@@ -18,11 +18,18 @@ import {
   statusReport, pruneRuns, pruneLogs, acquireLock, releaseLock, lockInfo,
   writeRunningMarker, interruptedRun,
 } from '../lib/ops.mjs';
-import { closeAll } from '../lib/browser.mjs';
+import { closeAll, getPlaywright } from '../lib/browser.mjs';
 import { formatDate, DIRS, readConfig, writeConfig } from '../lib/core.mjs';
 
 let pass = 0, fail = 0, skip = 0;
 const failures = [];
+// 诚实 SKIP 口径（同 mysql-validate 退出码 3）：缺 playwright 级联出来的失败降级为 SKIP ——
+// 签名直配 + 级联（上游缺依赖导致 null 解引用）两类。探针守卫：只有环境真的解析不到
+// playwright 才降级；装了仍报缺 = 产品缺陷 = 照旧 FAIL。
+const depSig = /未找到可用的 playwright|PLAYWRIGHT_NOT_FOUND/;
+let depTainted = false;
+let pwMissing = false;
+try { await getPlaywright(); } catch (e) { pwMissing = !!(e && e.code === 'PLAYWRIGHT_NOT_FOUND'); }
 
 /* 按组过滤（日常迭代提速）：node test/integration.mjs --group 4,17 只跑指定组。
    注意：个别组依赖前面组造出来的流程/数据，单独跑不过时要连着它依赖的组一起跑。 */
@@ -43,7 +50,16 @@ function groupActive() { return !onlyGroups.size || !curGroup || onlyGroups.has(
 async function A(name, fn) {
   if (!groupActive()) return;
   try { await fn(); pass++; console.log('  ok   ' + name); }
-  catch (e) { fail++; failures.push(name + ' -> ' + (e && e.message ? e.message : e)); console.log('  FAIL ' + name + '\n       ' + (e && e.message ? e.message : e)); }
+  catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    const dep = pwMissing && (depSig.test(msg) || (depTainted && /Cannot read properties of null/.test(msg)));
+    if (dep) {
+      if (depSig.test(msg)) depTainted = true;
+      skip++; console.log('  SKIP ' + name + '\n       （诚实 SKIP：' + (depSig.test(msg) ? '环境缺 playwright 依赖' : '级联自上游缺依赖，前置未跑') + '）');
+      return;
+    }
+    fail++; failures.push(name + ' -> ' + msg); console.log('  FAIL ' + name + '\n       ' + msg);
+  }
 }
 function S(name, why) { if (!groupActive()) return; skip++; console.log('  skip ' + name + '  (' + why + ')'); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,7 +85,15 @@ function F(id, steps, extra) {
   }, extra || {});
 }
 async function run(flow, opts) {
-  return runFlow(flow, Object.assign({ params: {}, headed: false, trigger: 'integration', allowLintErrors: true }, opts || {}));
+  const rep = await runFlow(flow, Object.assign({ params: {}, headed: false, trigger: 'integration', allowLintErrors: true }, opts || {}));
+  // 诚实 SKIP 证据口径：探针确认缺 playwright，且这份报告就是被缺依赖打断的——
+  // 把报告里的缺依赖原文带出去，让 A() 按证据降级，别让后续断言（期望失败/报告明细）吞掉根因。
+  // 报告里没有缺依赖字样的照旧返回给断言（不遮真实缺陷）。
+  if (pwMissing && depSig.test(JSON.stringify(rep))) {
+    const m = JSON.stringify(rep).match(depSig);
+    throw new Error('run 报告含缺依赖根因: ' + (m ? m[0] : 'PLAYWRIGHT_NOT_FOUND'));
+  }
+  return rep;
 }
 
 /* 本地告警接收器 */
@@ -1149,9 +1173,9 @@ async function main() {
   await closeAll();
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 
-  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed, ' + skip + ' skipped');
+  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed, ' + skip + ' 诚实SKIP');
   if (fail) console.log('\n失败项:\n' + failures.join('\n'));
-  process.exit(fail ? 1 : 0);
+  process.exit(fail ? 1 : skip ? 3 : 0);
 }
 
 /* 临时开启告警配置以便测试真实链路 */
@@ -1165,7 +1189,13 @@ function restoreNotifyConfig() {
 }
 
 main().catch(async (e) => {
-  console.error('\n集成测试异常: ' + String(e && e.stack ? e.stack : e));
+  const msg = String(e && e.message ? e.message : e);
   try { await closeAll(); } catch { /* ignore */ }
+  if (pwMissing && depSig.test(msg)) {
+    console.log('\nSKIP 集成测试（整体）（诚实 SKIP：环境缺 playwright 依赖——先在 mcp 目录 npm install）');
+    console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed, 1 诚实SKIP');
+    process.exit(3);
+  }
+  console.error('\n集成测试异常: ' + String(e && e.stack ? e.stack : e));
   process.exit(1);
 });

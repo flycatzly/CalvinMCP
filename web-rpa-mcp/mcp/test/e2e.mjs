@@ -10,14 +10,25 @@ import { runFlow } from '../lib/player.mjs';
 import { loadFlow, saveFlow, deleteFlow, stepLabel } from '../lib/store.mjs';
 import { lintFlow } from '../lib/lint.mjs';
 import { formatDate, DIRS } from '../lib/core.mjs';
-import { closeAll } from '../lib/browser.mjs';
+import { closeAll, getPlaywright } from '../lib/browser.mjs';
 
 const created = [];
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const failures = [];
+const skips = [];
+// 诚实 SKIP 口径（同 tools.mjs / mysql-validate 退出码 3）：缺 playwright 环境下整个
+// 录制/回放链路都跑不了 —— 明示 SKIP 不冒充失败（假红）也不冒充通过（假绿）。
+// 探针守卫：只有环境真的解析不到 playwright 才降级；装了仍报缺 = 产品缺陷 = 照旧 FAIL。
+const depSig = /未找到可用的 playwright|PLAYWRIGHT_NOT_FOUND/;
+let pwMissing = false;
+try { await getPlaywright(); } catch (e) { pwMissing = !!(e && e.code === 'PLAYWRIGHT_NOT_FOUND'); }
 function check(name, fn) {
   try { fn(); pass++; console.log('  ok   ' + name); }
-  catch (e) { fail++; failures.push(name + ' -> ' + (e && e.message ? e.message : e)); console.log('  FAIL ' + name + '\n       ' + (e && e.message ? e.message : e)); }
+  catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    if (pwMissing && depSig.test(msg)) { skip++; skips.push(name + ' -> 缺 playwright 依赖'); console.log('  SKIP ' + name + '\n       （诚实 SKIP：环境缺 playwright 依赖）'); return; }
+    fail++; failures.push(name + ' -> ' + msg); console.log('  FAIL ' + name + '\n       ' + msg);
+  }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -238,13 +249,21 @@ async function main() {
   await closeAll();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
 
-  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');
+  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed' + (skip ? ', ' + skip + ' 诚实SKIP' : ''));
   if (fail) console.log('\n失败项:\n' + failures.join('\n'));
-  process.exit(fail ? 1 : 0);
+  if (skip) console.log('\n诚实 SKIP（不计通过也不计失败）:\n' + skips.join('\n'));
+  process.exit(fail ? 1 : skip ? 3 : 0);
 }
 
 main().catch(async (e) => {
-  console.error('\n端到端测试异常: ' + String(e && e.stack ? e.stack : e));
+  const msg = String(e && e.message ? e.message : e);
   try { await closeAll(); } catch { /* ignore */ }
+  // 整条链路在起点就因缺依赖中断：诚实 SKIP（exit 3），不冒充失败
+  if (pwMissing && depSig.test(msg)) {
+    console.log('\nSKIP 端到端（整体）（诚实 SKIP：环境缺 playwright 依赖——先在 mcp 目录 npm install）');
+    console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed, 1 诚实SKIP');
+    process.exit(3);
+  }
+  console.error('\n端到端测试异常: ' + String(e && e.stack ? e.stack : e));
   process.exit(1);
 });

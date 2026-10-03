@@ -7,16 +7,42 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startDemoServer } from '../../demo/app.mjs';
+import { getPlaywright } from '../lib/browser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.join(__dirname, '..', 'server.mjs');
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const failures = [];
+const skips = [];
+// 诚实 SKIP 口径（与 mysql-validate 退出码 3 同义）：探针证明环境解析不到 playwright，
+// 且失败原因就是缺依赖（或其级联）时降级为 SKIP；装了依赖还报缺 = 产品缺陷 = 照旧 FAIL。
+const depSig = /未找到可用的 playwright|PLAYWRIGHT_NOT_FOUND/;
+let pwMissing = false, depTainted = false;
+try { await getPlaywright(); } catch (e) { pwMissing = !!(e && e.code === 'PLAYWRIGHT_NOT_FOUND'); }
 function ok(name) { pass++; console.log('  ok   ' + name); }
+// 状态前置依赖：这些用例的前提状态（profile / 录制会话）由上游浏览器面用例创建。
+// 上游因缺依赖诚实 SKIP 后它们的失败只是级联（前置状态根本没机会建），不是产品缺陷。
+const stateDep = {
+  profile_info: ['profile_login'], profile_reset: ['profile_login'],
+  record_status: ['record_start'], record_cancel: ['record_start', 'record_splice_start'],
+};
+const depSkippedNames = new Set();
 function bad(name, e) {
-  fail++;
   const msg = e && e.message ? e.message : String(e);
+  const stateProducers = stateDep[name] || [];
+  const stateCascade = pwMissing && stateProducers.some((p) => depSkippedNames.has(p));
+  const dep = pwMissing && (depSig.test(msg) || stateCascade || (depTainted && /Cannot read properties of null/.test(msg)));
+  if (dep) {
+    if (depSig.test(msg)) depTainted = true;
+    depSkippedNames.add(name);
+    skip++;
+    const why = depSig.test(msg) ? '缺 playwright 依赖' : (stateCascade ? '级联自上游缺依赖，前置状态未创建' : '级联自上游缺依赖');
+    skips.push(name + ' -> ' + why);
+    console.log('  SKIP ' + name + '\n       （诚实 SKIP：' + (depSig.test(msg) ? '环境缺 playwright 依赖' : (stateCascade ? '级联自上游缺依赖，前置状态未创建（' + stateProducers.join('/') + ' 因缺依赖未跑）' : '级联自上游缺依赖，前置未跑')) + '）');
+    return;
+  }
+  fail++;
   failures.push(name + ' -> ' + msg);
   console.log('  FAIL ' + name + '\n       ' + msg);
 }
@@ -100,7 +126,14 @@ async function main() {
   const allTools = list.result.tools.map((t) => t.name);
   console.log('服务器声明工具数: ' + allTools.length);
 
-  const CHECK = (fn, label) => (res, data) => { if (!fn(res, data)) throw new Error(label || '校验未通过'); };
+  const CHECK = (fn, label) => (res, data) => {
+    if (fn(res, data)) return;
+    // 断言失败先看底层输出有没有缺依赖原文：有就把证据拼进错误消息，让 bad() 按证据降级，
+    // 不让标签（如「回放未通过」）吞掉根因；输出里没有缺依赖字样的照旧 FAIL（不遮真实缺陷）
+    const raw = JSON.stringify(data) + ' ' + (res && res.content && res.content[0] ? res.content[0].text : '');
+    const m = raw.match(depSig);
+    throw new Error((label || '校验未通过') + (m ? ' — 根因: ' + m[0] : ''));
+  };
 
   console.log('\n[环境与 profile]');
   await T('doctor', {}, { isError: false, check: CHECK((res, d) => d && d.version && d.browser, 'doctor 缺少关键字段') });
@@ -270,9 +303,10 @@ async function main() {
     for (const f of fs.readdirSync(bdir)) if (f.indexOf('t-tool-') === 0) fs.rmSync(path.join(bdir, f), { force: true });
   } catch { /* ignore */ }
 
-  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');
+  console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed' + (skip ? ', ' + skip + ' 诚实SKIP' : ''));
   if (fail) console.log('\n失败项:\n' + failures.join('\n'));
-  process.exit(fail ? 1 : 0);
+  if (skip) console.log('\n诚实 SKIP（不计通过也不计失败）:\n' + skips.join('\n'));
+  process.exit(fail ? 1 : skip ? 3 : 0);
 }
 
 main().catch((e) => {

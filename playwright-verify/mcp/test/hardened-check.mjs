@@ -20,10 +20,15 @@
  *   H13 安装时 CLI 通道配置的决策矩阵（保留/重生成/显式优先/字节确定）
  *   H14 Python 字节码（__pycache__/*.pyc）四层排除：入库/复制/分发/比对一个都不能漏
  *   H15 路径解析禁用 URL 的 pathname（中文/空格路径被百分号编码，静默指错位置）
- *   H16 版本/文档同步：版本号唯一源 package.json，四份文档的版本记录与自然语言使用示例缺一即发版未完成
+ *   H16 版本/文档同步：版本号唯一源 package.json，五份文档的版本记录与自然语言使用示例缺一即发版未完成
+ *   H17 智能体线守门：凭据只走环境变量、危险目标拒绝表非空、白名单外动作不静默丢弃
+ *   H18 纯净发布包口径：实跑 distribute 验产物 —— 无 node_modules、无 . 前缀内容
+ *   H19 发版门禁：distribute 收尾自动一次性副本 verify-all + 终态哈希终查（发版不可能忘）
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { RULES, lintSource, lint } from '../lib/lint.js';
 import { generate, writeGenerated } from '../lib/generate.js';
@@ -288,8 +293,16 @@ for (const f of LF_FILES) {
 }
 check('关键文件是 LF 换行（CRLF 会破坏 shebang 与哈希比对）', crlfFiles.length === 0,
   crlfFiles.length ? `CRLF：${crlfFiles.join(', ')}` : `${LF_FILES.length} 个文件均为 LF`);
-check('.gitattributes 声明了 eol=lf',
-  /text=auto\s+eol=lf|\* text=auto/.test(fs.readFileSync(path.join(ROOT, '.gitattributes'), 'utf8')));
+{
+  // 纯净发布包按发布规范不含 . 前缀文件 —— 该钉在源码树验证，包里诚实跳过而不是误报缺失。
+  const ga = path.join(ROOT, '.gitattributes');
+  if (fs.existsSync(ga)) {
+    check('.gitattributes 声明了 eol=lf',
+      /text=auto\s+eol=lf|\* text=auto/.test(fs.readFileSync(ga, 'utf8')));
+  } else {
+    log('SKIP  .gitattributes 声明 eol=lf（纯净发布包不含 . 前缀文件 —— 该钉在源码树验证）');
+  }
+}
 
 log('');
 log('=== H11) 环境不可达必须归成 env（缺浏览器不能落进 unknown）===');
@@ -380,13 +393,21 @@ log('=== H13) 安装时的 CLI 通道配置决策不能漂移 ===');
 log('=== H14) Python 字节码不能污染一致性比对与分发 ===');
 {
   const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-  const gitignore = read('.gitignore');
   const install = read('skill/playwright-verify/install.mjs');
   const distribute = read('skill/playwright-verify/scripts/distribute.mjs');
   const deployed = read('mcp/test/deployed-check.mjs');
 
-  check('H14 .gitignore 挡住字节码（__pycache__/ 与 *.pyc）',
-    gitignore.includes('__pycache__/') && gitignore.includes('*.pyc'));
+  {
+    // 纯净发布包按发布规范不含 . 前缀文件 —— 该钉在源码树验证，包里诚实跳过而不是误报缺失。
+    const gi = path.join(ROOT, '.gitignore');
+    if (fs.existsSync(gi)) {
+      const gitignore = read('.gitignore');
+      check('H14 .gitignore 挡住字节码（__pycache__/ 与 *.pyc）',
+        gitignore.includes('__pycache__/') && gitignore.includes('*.pyc'));
+    } else {
+      log('SKIP  H14 .gitignore 挡住字节码（纯净发布包不含 . 前缀文件 —— 该钉在源码树验证）');
+    }
+  }
   check('H14 install 不复制 __pycache__（否则字节码被带进部署副本）',
     install.includes("'__pycache__'"));
   check('H14 纯净分发版排除 __pycache__ 与 *.pyc',
@@ -433,27 +454,27 @@ log('=== H15) 路径解析不得取 URL 的 pathname（编码后静默指错位�
  * 发版纪律是「每次版本更新，版本号 + 版本说明同步到全部对应文档，缺一处即视为
  * 发版未完成」。纪律靠人记就一定会漏 —— 版本号在文档间漂移是静默的：没人报错，
  * 只是读者拿着对不上的版本号来问。所以钉三件事：版本号唯一源是 package.json
- * （server 运行时读它，不另存副本）、四份文档都带当前版本号与两节固定内容
+ * （server 运行时读它，不另存副本）、五份文档都带当前版本号与两节固定内容
  * （版本记录 + 自然语言使用示例）、README 的同步规范写明「缺一处」的后果。
  */
 log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const V = String(pkg.version || '');
-  const docs = ['README.md', '使用文档.md', '部署文档.md', 'skill/playwright-verify/SKILL.md'];
+  const docs = ['README.md', '使用文档.md', '部署说明.md', '部署说明.详细版.md', 'skill/playwright-verify/SKILL.md'];
   const texts = new Map(docs.map((d) => [d, fs.readFileSync(path.join(ROOT, d), 'utf8')]));
 
   const missingVer = docs.filter((d) => !texts.get(d).includes(`v${V}`));
-  check('H16 四份文档都带当前版本号（唯一源 package.json）',
+  check('H16 五份文档都带当前版本号（唯一源 package.json）',
     /^\d+\.\d+\.\d+$/.test(V) && missingVer.length === 0,
     `v${V}${missingVer.length ? ` 缺：${missingVer.join(', ')}` : ' 全部在位'}`);
 
   const missingRecord = docs.filter((d) => !texts.get(d).includes('版本记录'));
-  check('H16 四份文档都有「版本记录」节（版本说明同步落点）',
+  check('H16 五份文档都有「版本记录」节（版本说明同步落点）',
     missingRecord.length === 0, missingRecord.length ? `缺：${missingRecord.join(', ')}` : '全部在位');
 
   const missingNl = docs.filter((d) => !texts.get(d).includes('自然语言使用示例'));
-  check('H16 四份文档都有「自然语言使用示例」（说人话就能用）',
+  check('H16 五份文档都有「自然语言使用示例」（说人话就能用）',
     missingNl.length === 0, missingNl.length ? `缺：${missingNl.join(', ')}` : '全部在位');
 
   const firstEntry = (texts.get('README.md').match(/###\s*v(\d+\.\d+\.\d+)/) || [])[1];
@@ -498,6 +519,92 @@ log('=== H17) 智能体线：凭据/守门/判定不得静默失效 ===');
     bad.ok === false && bad.steps.length === 0 && bad.problems.length > 0);
   check('H17 无断言的执行不算通过（Blocked，防「全绿但什么都没验」）',
     verdictOf([{ act: 'goto', ok: true }]) === 'Blocked');
+}
+
+/* ---------------- H18:纯净发布包口径不得静默失守 ---------------- */
+/*
+ * 发布口径是「纯净发布包：无 node_modules、无任何 . 前缀内容，解压/拷贝即可部署」。
+ * 只钉「排除规则写在脚本里」不够 —— 规则写对了但没生效（或被新增的复制分支绕过）
+ * 是静默失效，静态检查看不见。所以**真跑一次 distribute** 到临时目录，验产物本身：
+ * 独立于 distribute 自己的自校验再走一遍（同一个规则自查自己不算证据）。
+ */
+log('=== H18) 纯净发布包：无 node_modules / 无 . 前缀内容 ===');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pvmcp-dist-pin-'));
+  const out = path.join(tmp, 'dist');
+  try {
+    const r = spawnSync(process.execPath,
+      [path.join(ROOT, 'skill', 'playwright-verify', 'scripts', 'distribute.mjs'), '--out', out, '--force', '--no-gate'],
+      { encoding: 'utf8', timeout: 120_000 });
+    const offenders = [];
+    const walk = (dir, rel = '') => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const r2 = rel ? `${rel}/${e.name}` : e.name;
+        if (e.name.startsWith('.') || e.name === 'node_modules') { offenders.push(r2); continue; }
+        if (e.isDirectory()) walk(path.join(dir, e.name), r2);
+      }
+    };
+    const ran = r.status === 0 && fs.existsSync(out);
+    if (ran) walk(out);
+    check('H18 纯净分发版实跑产物无 node_modules / 无 . 前缀内容（拷贝即部署）',
+      ran && offenders.length === 0,
+      !ran ? `distribute 退出 ${r.status}：${String(r.stderr || r.stdout || '').trim().split('\n').slice(-2).join(' ')}`
+        : offenders.length ? `违例：${offenders.slice(0, 6).join(', ')}${offenders.length > 6 ? ' …' : ''}`
+          : `实跑通过：${fs.readdirSync(out).length} 个顶层条目全净`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/* ---------------- H19: 发版门禁不得静默失效 ---------------- */
+/*
+ * 交付树纯净性最大的敌人是「验收跑在交付树里」：证据落盘约定会把 <cwd> 跑脏
+ * （实测抓过 3 个证据文件残留）。§15 把「验收跑一次性副本 + 终态哈希终查」定为
+ * 发版流程；流程靠人记就会忘，所以门禁长在 distribute 收尾 —— 发版=跑 distribute，
+ * 不可能忘。三件事必须钉死，任何一件被「优化」掉都属于静默失效：
+ *   1) 门禁接线在位 —— 自动跑、--no-gate 显式跳过、PV_SKIP_RELEASE_GATE 防嵌套递归；
+ *   2) 机械链路真的走 —— 实跑 distribute：副本 → 终态哈希终查 → 副本删除一个不少；
+ *   3) --no-gate 真的跳 —— 跳过是显式能力：跳过要留痕、也不误拦。
+ * 实跑带 PV_GATE_SKIP_VERIFY=1（只跳嵌套 verify-all —— 那步是套娃；真实发版必跑）。
+ * 嵌套 verify-all 自身带 PV_SKIP_RELEASE_GATE=1，与本节实跑互不递归。
+ */
+log('=== H19) 发版门禁：副本验收 + 终态哈希终查不得静默失效 ===');
+{
+  const distPath = path.join(ROOT, 'skill', 'playwright-verify', 'scripts', 'distribute.mjs');
+  const dsrc = fs.readFileSync(distPath, 'utf8');
+  check('H19 门禁接线在位（自动跑 / --no-gate 显式跳过 / 嵌套防递归 / 自检开关）',
+    dsrc.includes('发版门禁') && dsrc.includes("'no-gate'") && dsrc.includes('PV_SKIP_RELEASE_GATE') && dsrc.includes('PV_GATE_SKIP_VERIFY'));
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pvmcp-gate-pin-'));
+  const out = path.join(tmp, 'dist');
+  const env = { ...process.env, PV_GATE_SKIP_VERIFY: '1' };
+  delete env.PV_SKIP_RELEASE_GATE;
+  try {
+    const r = spawnSync(process.execPath, [distPath, '--out', out, '--force'],
+      { encoding: 'utf8', timeout: 120_000, env });
+    const text = (r.stdout || '') + (r.stderr || '');
+    check('H19 门禁实跑通过（副本验收 + 终态哈希终查 + 副本删除）',
+      r.status === 0 && text.includes('发版门禁: 通过') && text.includes('终态哈希终查') && text.includes('副本已删除'),
+      r.status !== 0 ? `distribute 退出 ${r.status}：${text.trim().split('\n').slice(-2).join(' ')}`
+        : (text.split('\n').find((l) => l.includes('发版门禁: 通过')) || '').trim());
+    const copyLine = text.split('\n').find((l) => l.includes('副本: ')) || '';
+    const copyPath = copyLine.split('副本: ')[1] || '';
+    check('H19 门禁副本验后整目录删除（临时目录不留存）',
+      copyPath !== '' && !fs.existsSync(copyPath), copyPath || '未见副本路径行');
+
+    const r2 = spawnSync(process.execPath, [distPath, '--out', out, '--force', '--no-gate'],
+      { encoding: 'utf8', timeout: 120_000, env });
+    const text2 = (r2.stdout || '') + (r2.stderr || '');
+    check('H19 --no-gate 显式跳过生效（跳过留痕、不误拦）',
+      r2.status === 0 && text2.includes('发版门禁: 已跳过') && !text2.includes('发版门禁: 通过'),
+      (text2.split('\n').find((l) => l.includes('发版门禁')) || '').trim());
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  const depDoc = fs.readFileSync(path.join(ROOT, '部署说明.详细版.md'), 'utf8');
+  check('H19 发版文档写明门禁（§15 发布流程 + 发版门禁字样，发版者看得到）',
+    depDoc.includes('发版门禁') && depDoc.includes('## 15. 发布流程'));
 }
 
 log('');
