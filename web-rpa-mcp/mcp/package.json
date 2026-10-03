@@ -1,0 +1,19 @@
+{
+  "name": "web-rpa-mcp",
+  "version": "1.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Web RPA MCP — record browser click-flows once, replay them as AI skills, with variables, self-healing locators, assertions, screenshots, scheduling and alerts.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node selftest.mjs",
+    "doctor": "node server.mjs --doctor"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  }
+}
