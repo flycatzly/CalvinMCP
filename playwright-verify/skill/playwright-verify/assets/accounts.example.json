@@ -1,0 +1,52 @@
+{
+  "_说明": "环境与账号映射示例。复制成 accounts.json 并替换成你团队的真实口径。",
+  "_为什么外置": "同事不知道用哪个账号 —— 他只说「test 环境」，账号映射由 Skill 自己查。口径外置后换项目只换本文件，主流程一行不动。",
+  "_凭据规则": "这里只写「账号名 + 环境变量名」，绝不写明文密码。明文密码一旦落盘就会进 git 历史。",
+
+  "environments": {
+    "test": {
+      "baseURL": "http://test.internal.example.com",
+      "allowed": true,
+      "note": "日常回归默认环境"
+    },
+    "staging": {
+      "baseURL": "http://staging.internal.example.com",
+      "allowed": true,
+      "note": "预发验证"
+    },
+    "prod": {
+      "baseURL": "https://www.example.com",
+      "allowed": false,
+      "note": "禁止自动化执行。生产验证必须走独立审批，避免误触真实交易。"
+    }
+  },
+
+  "accounts": {
+    "u1": {
+      "username": "u1",
+      "username_env": "PW_U1_USERNAME",
+      "password_env": "PW_U1_PASSWORD",
+      "valid_in": ["test", "staging"],
+      "roles": ["普通用户"],
+      "note": "下单主流程用"
+    },
+    "u2": {
+      "username": "u2",
+      "username_env": "PW_U2_USERNAME",
+      "password_env": "PW_U2_PASSWORD",
+      "valid_in": ["test"],
+      "roles": ["审批人"],
+      "note": "只在下单加审批的回归里用；staging 上这个账号不存在"
+    }
+  },
+
+  "state": {
+    "dir": ".playwright-artifacts/state",
+    "note": "登录态按账号命名，如 .playwright-artifacts/state/u1.json；不要提交进仓库。"
+  },
+
+  "safety": {
+    "deny_baseurl_patterns": ["prod", "production", "www"],
+    "note": "CI 上显式拒绝 baseURL 命中这些模式（对应 check_config 的 CFG012），双保险。"
+  }
+}

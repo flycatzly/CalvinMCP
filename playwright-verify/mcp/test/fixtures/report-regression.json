@@ -1,0 +1,1004 @@
+{
+  "config": {
+    "argv": [
+      "D:\\Users\\node-v24.15.0-win-x64\\node.exe",
+      "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\node_modules\\@playwright\\test\\cli.js",
+      "test",
+      "--config",
+      "demo/regression/playwright.config.ts"
+    ],
+    "configFile": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\playwright.config.ts",
+    "rootDir": "D:/Users/DeepSeekWeb/playwright-verify-mcp/demo/regression",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "D:/Users/DeepSeekWeb/playwright-verify-mcp/test-results",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "D:/Users/DeepSeekWeb/playwright-verify-mcp/demo/regression",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 15000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\test-results\\report.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "regression.spec.ts",
+      "file": "regression.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "页面标题渲染正确",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 172,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:38.557Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-ef74108f6f476a98e14f",
+          "file": "regression.spec.ts",
+          "line": 30,
+          "column": 1
+        },
+        {
+          "title": "按钮可点击",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 90,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:41.129Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-12ce9c322ebcce997a26",
+          "file": "regression.spec.ts",
+          "line": 35,
+          "column": 1
+        },
+        {
+          "title": "订单金额等于 99 元",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2099,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:44:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 44
+                    },
+                    "snippet": "  42 | test('订单金额等于 99 元', async ({ page }) => {\n  43 |   await page.setContent(page1);\n> 44 |   await expect(page.getByTestId('order-amount')).toHaveText('¥99.00');\n     |                                                  ^\n  45 | });\n  46 |\n  47 | test('订单金额等于 98 元', async ({ page }) => {"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 44
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  42 | test('订单金额等于 99 元', async ({ page }) => {\n  43 |   await page.setContent(page1);\n> 44 |   await expect(page.getByTestId('order-amount')).toHaveText('¥99.00');\n     |                                                  ^\n  45 | });\n  46 |\n  47 | test('订单金额等于 98 元', async ({ page }) => {\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:44:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:41.224Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 44
+                  }
+                },
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2129,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:44:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 44
+                    },
+                    "snippet": "  42 | test('订单金额等于 99 元', async ({ page }) => {\n  43 |   await page.setContent(page1);\n> 44 |   await expect(page.getByTestId('order-amount')).toHaveText('¥99.00');\n     |                                                  ^\n  45 | });\n  46 |\n  47 | test('订单金额等于 98 元', async ({ page }) => {"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 44
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m99\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  42 | test('订单金额等于 99 元', async ({ page }) => {\n  43 |   await page.setContent(page1);\n> 44 |   await expect(page.getByTestId('order-amount')).toHaveText('¥99.00');\n     |                                                  ^\n  45 | });\n  46 |\n  47 | test('订单金额等于 98 元', async ({ page }) => {\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:44:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:55:43.629Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-99-元-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 44
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-20c01f039ecf7dfbdde0",
+          "file": "regression.spec.ts",
+          "line": 42,
+          "column": 1
+        },
+        {
+          "title": "订单金额等于 98 元",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2125,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:49:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 49
+                    },
+                    "snippet": "  47 | test('订单金额等于 98 元', async ({ page }) => {\n  48 |   await page.setContent(page1);\n> 49 |   await expect(page.getByTestId('order-amount')).toHaveText('¥98.00');\n     |                                                  ^\n  50 | });\n  51 |\n  52 | test('订单金额等于 97 元', async ({ page }) => {"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 49
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  47 | test('订单金额等于 98 元', async ({ page }) => {\n  48 |   await page.setContent(page1);\n> 49 |   await expect(page.getByTestId('order-amount')).toHaveText('¥98.00');\n     |                                                  ^\n  50 | });\n  51 |\n  52 | test('订单金额等于 97 元', async ({ page }) => {\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:49:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:46.165Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 49
+                  }
+                },
+                {
+                  "workerIndex": 3,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2130,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:49:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 49
+                    },
+                    "snippet": "  47 | test('订单金额等于 98 元', async ({ page }) => {\n  48 |   await page.setContent(page1);\n> 49 |   await expect(page.getByTestId('order-amount')).toHaveText('¥98.00');\n     |                                                  ^\n  50 | });\n  51 |\n  52 | test('订单金额等于 97 元', async ({ page }) => {"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 49
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m98\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    19 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  47 | test('订单金额等于 98 元', async ({ page }) => {\n  48 |   await page.setContent(page1);\n> 49 |   await expect(page.getByTestId('order-amount')).toHaveText('¥98.00');\n     |                                                  ^\n  50 | });\n  51 |\n  52 | test('订单金额等于 97 元', async ({ page }) => {\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:49:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:55:48.690Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-98-元-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 49
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-377869a5e74cbd8c8985",
+          "file": "regression.spec.ts",
+          "line": 47,
+          "column": 1
+        },
+        {
+          "title": "订单金额等于 97 元",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 4,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2131,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:54:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 54
+                    },
+                    "snippet": "  52 | test('订单金额等于 97 元', async ({ page }) => {\n  53 |   await page.setContent(page1);\n> 54 |   await expect(page.getByTestId('order-amount')).toHaveText('¥97.00');\n     |                                                  ^\n  55 | });\n  56 |\n  57 | /* ---------------- 定位器命中多个元素 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 54
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  52 | test('订单金额等于 97 元', async ({ page }) => {\n  53 |   await page.setContent(page1);\n> 54 |   await expect(page.getByTestId('order-amount')).toHaveText('¥97.00');\n     |                                                  ^\n  55 | });\n  56 |\n  57 | /* ---------------- 定位器命中多个元素 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:54:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:51.240Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 54
+                  }
+                },
+                {
+                  "workerIndex": 5,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 2137,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:54:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 54
+                    },
+                    "snippet": "  52 | test('订单金额等于 97 元', async ({ page }) => {\n  53 |   await page.setContent(page1);\n> 54 |   await expect(page.getByTestId('order-amount')).toHaveText('¥97.00');\n     |                                                  ^\n  55 | });\n  56 |\n  57 | /* ---------------- 定位器命中多个元素 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 54
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  getByTestId('order-amount')\nExpected: \u001b[32m\"¥\u001b[7m97\u001b[27m.00\"\u001b[39m\nReceived: \u001b[31m\"¥\u001b[7m100\u001b[27m.00\"\u001b[39m\nTimeout:  2000ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" getByTestId('order-amount') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('order-amount')\u001b[22m\n\u001b[2m    20 × locator resolved to <div data-testid=\"order-amount\">¥100.00</div>\u001b[22m\n\u001b[2m       - unexpected value \"¥100.00\"\u001b[22m\n\n\n  52 | test('订单金额等于 97 元', async ({ page }) => {\n  53 |   await page.setContent(page1);\n> 54 |   await expect(page.getByTestId('order-amount')).toHaveText('¥97.00');\n     |                                                  ^\n  55 | });\n  56 |\n  57 | /* ---------------- 定位器命中多个元素 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:54:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:55:53.790Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-订单金额等于-97-元-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 54
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-4682fc33b13effab5b1a",
+          "file": "regression.spec.ts",
+          "line": 52,
+          "column": 1
+        },
+        {
+          "title": "列表项断言命中多个元素",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 6,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 173,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:62:39",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 39,
+                      "line": 62
+                    },
+                    "snippet": "  60 |   await page.setContent(listPage);\n  61 |   // 三个 li 文本相同 → getByText 解析出多个元素 → strict mode violation\n> 62 |   await expect(page.getByText('验证码')).toBeVisible();\n     |                                       ^\n  63 | });\n  64 |\n  65 | /* ---------------- 操作等待超时 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 39,
+                        "line": 62
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n\n\n  60 |   await page.setContent(listPage);\n  61 |   // 三个 li 文本相同 → getByText 解析出多个元素 → strict mode violation\n> 62 |   await expect(page.getByText('验证码')).toBeVisible();\n     |                                       ^\n  63 | });\n  64 |\n  65 | /* ---------------- 操作等待超时 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:62:39"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:56.386Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 39,
+                    "line": 62
+                  }
+                },
+                {
+                  "workerIndex": 7,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 171,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:62:39",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 39,
+                      "line": 62
+                    },
+                    "snippet": "  60 |   await page.setContent(listPage);\n  61 |   // 三个 li 文本相同 → getByText 解析出多个元素 → strict mode violation\n> 62 |   await expect(page.getByText('验证码')).toBeVisible();\n     |                                       ^\n  63 | });\n  64 |\n  65 | /* ---------------- 操作等待超时 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 39,
+                        "line": 62
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('验证码')\nExpected: visible\nError: strict mode violation: getByText('验证码') resolved to 3 elements:\n    1) <li>验证码</li> aka getByText('验证码').first()\n    2) <li>验证码</li> aka getByText('验证码').nth(1)\n    3) <li>验证码</li> aka getByText('验证码').nth(2)\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('验证码') with timeout 2000ms\u001b[22m\n\u001b[2m  - waiting for getByText('验证码')\u001b[22m\n\n\n  60 |   await page.setContent(listPage);\n  61 |   // 三个 li 文本相同 → getByText 解析出多个元素 → strict mode violation\n> 62 |   await expect(page.getByText('验证码')).toBeVisible();\n     |                                       ^\n  63 | });\n  64 |\n  65 | /* ---------------- 操作等待超时 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:62:39"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:55:56.998Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-列表项断言命中多个元素-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 39,
+                    "line": 62
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-caa4dd3aeec30a58608b",
+          "file": "regression.spec.ts",
+          "line": 59,
+          "column": 1
+        },
+        {
+          "title": "点击不存在的结算按钮",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 8,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 3126,
+                  "error": {
+                    "message": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n",
+                    "stack": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:71:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 71
+                    },
+                    "snippet": "  69 |   // 元素不存在，操作级超时（actionTimeout 压到 3 秒）先暴露，\n  70 |   // 而不是被整条用例超时盖住 —— 这样失败信息才能直接指向那一步。\n> 71 |   await page.locator('#checkout-does-not-exist').click();\n     |                                                  ^\n  72 | });\n  73 |\n  74 | /* ---------------- 环境不可达 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 71
+                      },
+                      "message": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n\n\n  69 |   // 元素不存在，操作级超时（actionTimeout 压到 3 秒）先暴露，\n  70 |   // 而不是被整条用例超时盖住 —— 这样失败信息才能直接指向那一步。\n> 71 |   await page.locator('#checkout-does-not-exist').click();\n     |                                                  ^\n  72 | });\n  73 |\n  74 | /* ---------------- 环境不可达 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:71:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:55:57.598Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 71
+                  }
+                },
+                {
+                  "workerIndex": 9,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 3130,
+                  "error": {
+                    "message": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n",
+                    "stack": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:71:50",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 50,
+                      "line": 71
+                    },
+                    "snippet": "  69 |   // 元素不存在，操作级超时（actionTimeout 压到 3 秒）先暴露，\n  70 |   // 而不是被整条用例超时盖住 —— 这样失败信息才能直接指向那一步。\n> 71 |   await page.locator('#checkout-does-not-exist').click();\n     |                                                  ^\n  72 | });\n  73 |\n  74 | /* ---------------- 环境不可达 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 50,
+                        "line": 71
+                      },
+                      "message": "TimeoutError: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#checkout-does-not-exist')\u001b[22m\n\n\n  69 |   // 元素不存在，操作级超时（actionTimeout 压到 3 秒）先暴露，\n  70 |   // 而不是被整条用例超时盖住 —— 这样失败信息才能直接指向那一步。\n> 71 |   await page.locator('#checkout-does-not-exist').click();\n     |                                                  ^\n  72 | });\n  73 |\n  74 | /* ---------------- 环境不可达 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:71:50"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:56:01.138Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-点击不存在的结算按钮-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 50,
+                    "line": 71
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-fd995b1453e723688563",
+          "file": "regression.spec.ts",
+          "line": 67,
+          "column": 1
+        },
+        {
+          "title": "访问未启动的服务",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 10,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 178,
+                  "error": {
+                    "message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n",
+                    "stack": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:77:14",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 14,
+                      "line": 77
+                    },
+                    "snippet": "  75 |\n  76 | test('访问未启动的服务', async ({ page }) => {\n> 77 |   await page.goto('http://127.0.0.1:59999/health');\n     |              ^\n  78 | });\n  79 |\n  80 | /* ---------------- 偶发：首次失败、重试通过 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 14,
+                        "line": 77
+                      },
+                      "message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n\n\n  75 |\n  76 | test('访问未启动的服务', async ({ page }) => {\n> 77 |   await page.goto('http://127.0.0.1:59999/health');\n     |              ^\n  78 | });\n  79 |\n  80 | /* ---------------- 偶发：首次失败、重试通过 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:77:14"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:56:04.678Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 14,
+                    "line": 77
+                  }
+                },
+                {
+                  "workerIndex": 11,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 171,
+                  "error": {
+                    "message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n",
+                    "stack": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:77:14",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 14,
+                      "line": 77
+                    },
+                    "snippet": "  75 |\n  76 | test('访问未启动的服务', async ({ page }) => {\n> 77 |   await page.goto('http://127.0.0.1:59999/health');\n     |              ^\n  78 | });\n  79 |\n  80 | /* ---------------- 偶发：首次失败、重试通过 ---------------- */"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 14,
+                        "line": 77
+                      },
+                      "message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:59999/health\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:59999/health\", waiting until \"load\"\u001b[22m\n\n\n  75 |\n  76 | test('访问未启动的服务', async ({ page }) => {\n> 77 |   await page.goto('http://127.0.0.1:59999/health');\n     |              ^\n  78 | });\n  79 |\n  80 | /* ---------------- 偶发：首次失败、重试通过 ---------------- */\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:77:14"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:56:05.264Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务-retry1\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务-retry1\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-访问未启动的服务-retry1\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 14,
+                    "line": 77
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-4c4e7ac1ad21af309477",
+          "file": "regression.spec.ts",
+          "line": 76,
+          "column": 1
+        },
+        {
+          "title": "偶发用例（首次失败，重试通过）",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 15000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 12,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 177,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"重试后通过\"\u001b[39m\nReceived: \u001b[31m\"首次尝试失败\"\u001b[39m",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"重试后通过\"\u001b[39m\nReceived: \u001b[31m\"首次尝试失败\"\u001b[39m\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:87:27",
+                    "location": {
+                      "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                      "column": 27,
+                      "line": 87
+                    },
+                    "snippet": "  85 |   // 这是用来验证归因工具「偶发不吃进失败聚类」的钉子。\n  86 |   if (testInfo.retry === 0) {\n> 87 |     expect.soft('首次尝试失败').toBe('重试后通过');\n     |                           ^\n  88 |   }\n  89 |   await expect(page.getByRole('heading', { name: '订单中心' })).toBeVisible();\n  90 | });"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                        "column": 27,
+                        "line": 87
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m\"重试后通过\"\u001b[39m\nReceived: \u001b[31m\"首次尝试失败\"\u001b[39m\n\n  85 |   // 这是用来验证归因工具「偶发不吃进失败聚类」的钉子。\n  86 |   if (testInfo.retry === 0) {\n> 87 |     expect.soft('首次尝试失败').toBe('重试后通过');\n     |                           ^\n  88 |   }\n  89 |   await expect(page.getByRole('heading', { name: '订单中心' })).toBeVisible();\n  90 | });\n    at D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts:87:27"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-03T08:56:05.850Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-偶发用例（首次失败，重试通过）\\test-failed-1.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-偶发用例（首次失败，重试通过）\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\test-results\\regression-偶发用例（首次失败，重试通过）\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "D:\\Users\\DeepSeekWeb\\playwright-verify-mcp\\demo\\regression\\regression.spec.ts",
+                    "column": 27,
+                    "line": 87
+                  }
+                },
+                {
+                  "workerIndex": 13,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 139,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 1,
+                  "startTime": "2026-10-03T08:56:06.448Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "flaky"
+            }
+          ],
+          "id": "9dc370239c4a30f174fb-eacd9cb27b1bce80ff8f",
+          "file": "regression.spec.ts",
+          "line": 82,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-03T08:55:38.269Z",
+    "duration": 28465.085,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 6,
+    "flaky": 1
+  }
+}

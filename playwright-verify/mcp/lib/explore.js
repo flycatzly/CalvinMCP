@@ -1,0 +1,218 @@
+/**
+ * explore.js — 页面探索巡检（explore_page 的取数与判定，纯函数 + 一次网络探活）
+ *
+ * 对应文章「下一步行动建议」里的探索性测试：死链、坏图、表单盘点。
+ * 这件事**不需要 LLM** —— 判据是确定的（图片 naturalWidth 为 0、链接 HTTP 4xx/5xx），
+ * 用 LLM 判定反而会把确定的事变成概率的事，所以这里全是确定性逻辑。
+ *
+ * 取数方式：playwright-cli 的 eval（函数体自包含，结果走 --filename 落盘）——
+ * 与全项目「产出落盘、返回摘要」的口径一致。
+ *
+ * 网络探活的诚实口径：
+ *   - HTTP 4xx/5xx → 记「死链」（进 Fail）；
+ *   - 网络不可达/超时 → 记「不可达」（只警告，不进 Fail）——
+ *     离线环境下外链必然不可达，把环境问题算成页面问题就是制造假警报，
+ *     一个会假报警的巡检比没有巡检更糟。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { ARTIFACT_DIRS, safeSession } from './cli.js';
+
+/** 页面事实采集脚本（自包含：不引用外部变量）。返回 JSON 字符串。 */
+export const FACTS_EVAL_FN = `() => JSON.stringify({
+  url: location.href,
+  title: document.title,
+  lang: document.documentElement.lang || '',
+  links: Array.from(document.querySelectorAll('a[href]')).slice(0, 300).map((a) => ({
+    href: a.href,
+    text: (a.innerText || '').trim().slice(0, 80),
+  })),
+  images: Array.from(document.images).slice(0, 300).map((i) => ({
+    src: i.currentSrc || i.src || '',
+    alt: i.alt || '',
+    complete: i.complete,
+    naturalWidth: i.naturalWidth,
+  })),
+  forms: Array.from(document.forms).slice(0, 50).map((f) => ({
+    action: f.action || '',
+    method: (f.method || 'get').toLowerCase(),
+    inputs: Array.from(f.querySelectorAll('input,select,textarea')).slice(0, 50).map((i) => ({
+      name: i.name || i.id || '',
+      type: i.type || i.tagName.toLowerCase(),
+    })),
+  })),
+})`;
+
+/**
+ * 事实文件路径：eval 的结果显式落盘到报告目录（不回灌上下文）。
+ * 命名沿用「session-序号-随机码」的构造即唯一约定。
+ */
+export function factsPath(cwd, session = 'explore') {
+  const dir = path.join(cwd, ARTIFACT_DIRS.reports);
+  fs.mkdirSync(dir, { recursive: true });
+  const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  return path.join(dir, `facts-${safeSession(session)}-${uniq}.json`);
+}
+
+/** 判断对象是不是「页面事实」本体（而不是 CLI 信封之类）。 */
+function looksLikeFacts(obj) {
+  return !!obj && typeof obj === 'object' && ('links' in obj || 'images' in obj || 'url' in obj);
+}
+
+/**
+ * 解析 eval 落盘的结果。三种形态都见过，都得认：
+ *   1) 裸 JSON 事实对象；
+ *   2) 「JSON 字符串的 JSON」（eval 返回字符串时外层带引号/转义）；
+ *   3) CLI --json 信封（{result: ...}）或裹了杂讯的文本 —— 解包/截取后继续认。
+ * 认不出就返回 null（宁可报「采集失败」，也不把信封当事实返回 —— 后者会让
+ * 坏图/死链判定在空数组上「通过」，是最典型的静默假结果）。
+ */
+export function parseFactsFile(text) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+
+  const tryOne = (input, depth = 0) => {
+    if (depth > 3) return null;
+    let obj = input;
+    if (typeof obj === 'string') {
+      try { obj = JSON.parse(obj); } catch {
+        const i = obj.indexOf('{');
+        const j = obj.lastIndexOf('}');
+        if (i < 0 || j <= i) return null;
+        try { obj = JSON.parse(obj.slice(i, j + 1)); } catch { return null; }
+      }
+      // 解析出来还是字符串（双层编码）→ 继续解包
+      if (typeof obj === 'string') return tryOne(obj, depth + 1);
+    }
+    if (!obj || typeof obj !== 'object') return null;
+    if (looksLikeFacts(obj)) return obj;
+    // CLI 信封：{result: <事实或其字符串>}/{stdout: ...} —— 解包再认
+    for (const key of ['result', 'stdout', 'content', 'data']) {
+      if (obj[key] !== undefined) {
+        const inner = tryOne(obj[key], depth + 1);
+        if (inner) return inner;
+      }
+    }
+    return null;
+  };
+
+  return tryOne(t);
+}
+
+/**
+ * 图片判定：加载完成但宽度为 0 = 坏图（broken）。
+ * 还没加载完（complete=false）不算坏图 —— 拿加载中的状态当坏图是假警报。
+ */
+export function judgeImages(images = []) {
+  const broken = [];
+  let skipped = 0;
+  for (const img of images) {
+    if (!img || !img.src) { skipped++; continue; }
+    if (img.complete === true && Number(img.naturalWidth) === 0) {
+      broken.push({ src: img.src, alt: img.alt || '' });
+    }
+  }
+  return { total: images.length, broken, skipped };
+}
+
+/** 链接分类：只探 http/https，其余（mailto/javascript/data/锚点）跳过并计数。 */
+export function classifyLinks(links = [], { max = 20, skipHosts = [] } = {}) {
+  const probe = [];
+  const skipped = [];
+  const seen = new Set();
+  for (const l of links) {
+    const href = String(l?.href || '').trim();
+    if (!href) { skipped.push({ href, why: '空 href' }); continue; }
+    if (!/^https?:\/\//i.test(href)) { skipped.push({ href, why: '非 http(s)' }); continue; }
+    if (seen.has(href)) continue;
+    seen.add(href);
+    if (skipHosts.some((h) => href.includes(h))) { skipped.push({ href, why: '命中跳过名单' }); continue; }
+    if (probe.length >= max) { skipped.push({ href, why: `超出抽样上限 ${max}` }); continue; }
+    probe.push({ href, text: String(l?.text || '').slice(0, 80) });
+  }
+  return { probe, skipped, total: links.length };
+}
+
+/**
+ * 探活（HEAD，405/501 回落 GET 一次）。判定口径见文件头注释：
+ * HTTP ≥400 是死链；网络层失败是「不可达」，只警告。
+ */
+export async function probeLinks(links, { fetchImpl, timeoutMs = 5000, concurrency = 4 } = {}) {
+  const doFetch = fetchImpl || globalThis.fetch;
+  const out = [];
+  const queue = [...links];
+  async function one(link) {
+    const started = Date.now();
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      let res = await doFetch(link.href, { method: 'HEAD', redirect: 'follow', signal: ctl.signal });
+      if (res.status === 405 || res.status === 501) {
+        res = await doFetch(link.href, { method: 'GET', redirect: 'follow', signal: ctl.signal });
+      }
+      out.push({
+        ...link,
+        status: res.status,
+        ok: res.status < 400,
+        kind: res.status < 400 ? 'ok' : 'dead',
+        latencyMs: Date.now() - started,
+      });
+    } catch (e) {
+      out.push({
+        ...link,
+        status: 0,
+        ok: false,
+        kind: 'unreachable',
+        detail: String(e?.message || e).slice(0, 120),
+        latencyMs: Date.now() - started,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
+    while (queue.length) await one(queue.shift());
+  });
+  await Promise.all(workers);
+  // 保持输入顺序，报告稳定可比
+  out.sort((a, b) => links.findIndex((l) => l.href === a.href) - links.findIndex((l) => l.href === b.href));
+  return out;
+}
+
+/**
+ * 巡检总判定：
+ *   Fail —— 有死链（HTTP ≥400）或坏图；
+ *   Pass —— 无上述问题（不可达与跳过项只进 warnings）。
+ */
+export function judgeExplore({ images, linkResults, consoleErrors = [] }) {
+  const issues = [];
+  const warnings = [];
+  for (const b of images?.broken || []) issues.push({ kind: 'broken-image', ...b });
+  for (const l of linkResults || []) {
+    if (l.kind === 'dead') issues.push({ kind: 'dead-link', href: l.href, status: l.status, text: l.text });
+    if (l.kind === 'unreachable') warnings.push({ kind: 'link-unreachable', href: l.href, detail: l.detail });
+  }
+  for (const c of consoleErrors) warnings.push({ kind: 'console-error', detail: String(c).slice(0, 200) });
+  return { verdict: issues.length ? 'Fail' : 'Pass', issues, warnings };
+}
+
+/** 从 CLI console 命令的落盘/输出文本里抽取 error 级条目（尽力而为）。 */
+export function parseConsoleErrors(text) {
+  const out = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/\b(error|failed|uncaught)\b/i.test(line)) out.push(line.trim());
+  }
+  return out.slice(0, 20);
+}
+
+/** 读 eval 落盘件并解析（统一入口，含缺失容错）。 */
+export function readFacts(file) {
+  if (!file || !fs.existsSync(file)) return null;
+  try { return parseFactsFile(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+export default {
+  FACTS_EVAL_FN, parseFactsFile, judgeImages, classifyLinks, probeLinks,
+  judgeExplore, parseConsoleErrors, readFacts,
+};

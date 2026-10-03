@@ -1,0 +1,32 @@
+# 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+# 白名单与脱敏配置（用户维护）
+# 只在白名单库表上做分析；不在白名单 → 拒绝执行，请用户确认是否加入。
+# 多库：在 allowed_databases 加库即支持；同一实例跨库读取用 库名.表名。
+#
+# 校验规则：SQL 中每个表名都必须命中 allowed_tables；
+#           跨库用「库名.表名」时，库也必须在 allowed_databases 内。
+# 脱敏执行：必须以 SQL 实现脱敏（写法见 分析模板库.md 第 7 节）；
+#           无法脱敏时直接排除该列，禁止原样输出。
+
+allowed_databases:
+  - test_order_db
+  - shadow_user_db
+
+allowed_tables:
+  - orders
+  - order_info
+  - pay_flow
+  - user_action_log
+
+sensitive_columns:   # 命中即脱敏或排除，禁止原样输出
+  mobile: "脱敏：保留前3后4（138****1234）"
+  phone: "同 mobile"
+  id_card: "脱敏：保留前3后4（110***********1234）"
+  email: "脱敏：保留首字母（t***@example.com）"
+
+max_result_rows: 5000   # 预计超过时：先 COUNT 再抽样
+
+environment_allowlist:  # 允许取证的库环境；生产库默认禁止
+  - TEST
+  - PRE
+  - UAT

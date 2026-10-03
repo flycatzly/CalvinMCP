@@ -1,0 +1,48 @@
+# 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+# SQL 输入契约（用户填写）
+# 全链路检测前必填；缺了它 AI 只能瞎猜。
+
+mode: check                     # check=模式A质量检测 / analysis=模式B数据分析
+
+project_path: <项目根目录>   # 项目根目录（探查 SQL 用）
+datasource: 订单库                          # 数据源/库名（定位用）
+environment: production                     # TEST / PRE / UAT / DEV / PROD
+source: <source_id>                         # calvin-db-mcp 的 source id（find_database 定位后填）
+
+sql: |
+  SELECT * FROM order_info WHERE status = 1
+  ORDER BY create_time DESC LIMIT 100000, 20;
+
+tables:
+  - order_info
+
+business_scene: 订单列表查询
+
+data_volume: 订单表 500 万+ 行
+
+api_name: GET /api/orders
+
+symptom: 列表加载慢，偶发超时
+
+has_explain: false   # 无则用 calvin-db-mcp query 跑 EXPLAIN 取证
+
+# ============================================================
+# 返回契约（calvin-db-mcp v1.6 实测口径，与 calvin-db-mcp工具映射.md 一致）
+# 消费工具返回值时按此解析；比对计数时注意 bigint 字段是字符串。
+# ============================================================
+return_contract:
+  query:
+    rows_field: rows              # JSON 对象数组
+    count_field: row_count        # 数字（当前可见行数，可能被自动 LIMIT 截断，看 truncated）
+  count_rows:
+    count_field: total            # ⚠️ 字符串型 bigint（防精度丢失），比对用 Number(total) 或字符串原样比较
+  distinct_values:
+    count_field: distinct_total   # ⚠️ 字符串型 bigint
+  find_database:
+    param: name                   # 参数名是 name（大小写不敏感子串），不是 keyword
+    result_field: matches         # matches[].id 作为后续工具的 source
+  list_tables:
+    count_field: table_count
+    rows_field: tables            # tables[].name 为表名（可带 schema 参数指定库）
+  describe_table:
+    note: columns / indexes / table_comment / approx_rows（先于写 SQL 调用，防幻觉字段）

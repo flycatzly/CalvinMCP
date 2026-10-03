@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>演练站</title></head>
+<body>
+  <!--
+    这是一个「按本 Skill 的定位器策略写好」的演练页：
+    交互元素都带 aria-label（getByLabel 可用）与 data-testid（getByTestId 可用）。
+
+    这一点很关键：定位器策略要求级别 1–3（role / label / testid）优先，
+    而级别 3 的前提正是「前端加了 data-testid」。
+    演练页必须体现这个前提，否则演示会得出「testid 定位不可用」的错误结论 ——
+    那会把人引向级别 4（文案定位），反而更容易随改版失效。
+  -->
+  <h1>演练站</h1>
+
+  <label for="account">账号</label>
+  <input id="account" aria-label="账号">
+
+  <label for="pw">密码</label>
+  <input id="pw" type="password" aria-label="密码">
+
+  <button id="login" data-testid="login-submit"
+          onclick="document.getElementById('menu').hidden=false">登录</button>
+
+  <!-- 登录前 hidden、登录后可见；带 data-testid=user-menu -->
+  <div id="menu" data-testid="user-menu" hidden>用户菜单</div>
+
+  <div id="amount" data-testid="order-amount">¥99.00</div>
+</body>
+</html>

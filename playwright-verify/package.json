@@ -1,0 +1,26 @@
+{
+  "name": "playwright-verify-mcp",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright 端到端测试的验收/门禁/执行/智能体 MCP：配置体检、用例静态扫描、失败聚类归因、落盘式执行、PO 分层生成、Excel 编排、自然语言声明式测试、页面巡检",
+  "main": "mcp/server.mjs",
+  "scripts": {
+    "start": "node mcp/server.mjs",
+    "test": "node mcp/test/verify-all.mjs",
+    "test:full": "node mcp/test/verify-all.mjs --with-browser",
+    "test:parallel": "node mcp/test/verify-all.mjs --with-browser --parallel",
+    "selfcheck": "node skill/playwright-verify/scripts/selfcheck.mjs",
+    "check:lint": "node skill/playwright-verify/scripts/lint_spec.mjs demo/tests/",
+    "check:config": "node skill/playwright-verify/scripts/check_config.mjs demo/configs/playwright.config.baseline.ts",
+    "check:config-legacy": "node skill/playwright-verify/scripts/check_config.mjs demo/configs/playwright.config.legacy.ts",
+    "install-skill": "node skill/playwright-verify/install.mjs"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "@playwright/cli": "^0.1.22",
+    "@playwright/test": "^1.63.0"
+  }
+}

@@ -1,0 +1,505 @@
+/**
+ * hardened-check.mjs — 「对手册的对手」回归：静默失效 / 静默反转 / 静默覆盖 / 静默篡改
+ *
+ * 这个套件来自一次对抗性审计。它钉的都是同一类问题：**不报错，但结论或行为是错的**。
+ * 这类问题比崩溃危险得多 —— 崩溃会被立刻发现，静默错会被当成"通过"信下去。
+ *
+ * 覆盖：
+ *   H1  规则静默失效：PW001 必须命中 `page.waitForTimeout(...)`（最常见写法）
+ *   H2  按规则 id 断言：只钉总数会被别的规则填满，抓不到某条规则已死
+ *   H3  测试数据不被生成器篡改：字符串里的 `page.getByText(...)` 必须原样保留
+ *   H4  模板串插值不吞掉后续代码（否则整个文件被当字符串，用例数静默归零）
+ *   H5  不静默覆盖已有文件（默认拒绝，需显式 overwrite）
+ *   H6  落盘约束不可被 `--filename=` 绕过
+ *   H7  函数式配置不误判为配置错误（不阻断）
+ *   H8  断言分类不漏：单行、无 Expected: 的断言失败也要归成 assertion
+ *   H9  参数契约：schema 字段全带 description，PVMCP_CWD 回落安全
+ *   H10 换行符必须是 LF（CRLF 破坏 shebang 与全树哈希比对）
+ *   H11 环境失败分类不漏：缺浏览器/缺通道归 env，不落进 unknown
+ *   H12 已知噪声（NO_COLOR/FORCE_COLOR 警告）不挤掉真正的失败原因
+ *   H13 安装时 CLI 通道配置的决策矩阵（保留/重生成/显式优先/字节确定）
+ *   H14 Python 字节码（__pycache__/*.pyc）四层排除：入库/复制/分发/比对一个都不能漏
+ *   H15 路径解析禁用 URL 的 pathname（中文/空格路径被百分号编码，静默指错位置）
+ *   H16 版本/文档同步：版本号唯一源 package.json，四份文档的版本记录与自然语言使用示例缺一即发版未完成
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { RULES, lintSource, lint } from '../lib/lint.js';
+import { generate, writeGenerated } from '../lib/generate.js';
+import { runCli } from '../lib/cli.js';
+import { checkConfigSource } from '../lib/configcheck.js';
+import { summarize, clean, classify, CATEGORIES } from '../lib/signature.js';
+import { stripKnownNoise } from '../lib/runner.js';
+import { DANGEROUS_GOAL_PATTERNS, assertGoalAllowed } from '../lib/agent.js';
+import { normalizePlan, verdictOf } from '../lib/nlplan.js';
+import { handleMessage } from '../server.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '../..');
+
+let failures = 0;
+const log = (s) => process.stdout.write(`${s}\n`);
+const check = (name, cond, extra = '') => {
+  if (!cond) failures++;
+  log(`${cond ? 'PASS ' : 'FAIL '} ${name}${extra ? `  ${extra}` : ''}`);
+};
+
+/* ---------------- H1 / H2: 规则不能静默失效 ---------------- */
+log('=== H1/H2) 规则静默失效 ===');
+
+const pw001 = RULES.find((r) => r.id === 'PW001');
+check('PW001 存在', !!pw001);
+const hits = [
+  ['await page.waitForTimeout(3000);', true, '最常见写法'],
+  ['await this.page.waitForTimeout(3000);', true, 'this.page 形态'],
+  ['await page.locator("#x").waitForTimeout(1);', true, '链式形态'],
+  ['waitForTimeout(1000);', true, '裸调用'],
+  ['await sleep(500);', true, 'sleep 别名'],
+  ['myWaitForTimeout(1);', false, '标识符尾部不该误报'],
+  ['antiwaitForTimeout(1);', false, '标识符中间不该误报'],
+];
+for (const [src, want, why] of hits) {
+  const got = pw001.re.test(src);
+  check(`PW001 ${want ? '命中' : '不误报'}：${why}`, got === want, src);
+}
+
+// 关键：只钉总数会被别的规则填满。逐规则 id 断言才抓得到「某条规则已死」。
+const messy = fs.readFileSync(path.join(ROOT, 'demo/tests/messy.spec.ts'), 'utf8');
+const messyRes = lintSource(messy, 'messy.spec.ts');
+const firedIds = new Set(messyRes.findings.map((f) => f.id));
+const expectedIds = ['PW001', 'PW002', 'PW003', 'PW004', 'PW005', 'PW006', 'PW007'];
+const dead = expectedIds.filter((id) => !firedIds.has(id));
+check('每条关键规则都真的命中过（不是总数凑出来的）', dead.length === 0,
+  dead.length ? `从未命中：${dead.join(',')}` : expectedIds.join(','));
+
+/* ---------------- H3: 生成器不得篡改测试数据 ---------------- */
+log('');
+log('=== H3) 生成器不篡改测试数据 ===');
+const tamperInput = {
+  spec: 'h3',
+  pages: [{
+    name: 'p',
+    navPath: '/p',
+    steps: [
+      { act: 'fill', locator: { kind: 'label', text: 'q' }, value: "page.getByText('x')" },
+      { act: 'assertText', locator: { kind: 'testid', id: 'out' }, expect: 'page.goto' },
+      { act: 'assertVisible', locator: { kind: 'testid', id: 'ok' } },
+    ],
+  }],
+  cases: [{
+    title: 't', page: 'p', claims: 'c',
+    steps: [
+      { act: 'assertText', locator: { kind: 'testid', id: 'out' }, expect: 'page.goto' },
+      { act: 'assertVisible', locator: { kind: 'testid', id: 'ok' } },
+    ],
+  }],
+};
+const g3 = generate(tamperInput);
+const po3 = g3.files.find((f) => f.path.startsWith('pages/')).content;
+check('字符串里的 page.getByText(...) 原样保留',
+  po3.includes(`fill("page.getByText('x')")`),
+  po3.split('\n').find((l) => l.includes('fill('))?.trim());
+check('字符串里的 page.goto 原样保留（未被改成 this.page.goto）',
+  po3.includes('toHaveText("page.goto")'));
+check('定位表达式仍正确使用 this.page',
+  /await this\.page\.getByLabel\('q'\)/.test(po3));
+
+/* ---------------- H4: 模板串插值不吞代码 ---------------- */
+log('');
+log('=== H4) 模板串插值不吞掉后续代码 ===');
+const tplCases = [
+  ['简单插值', 'test(`case ${1}`, async ({ page }) => {\n  await expect(page.getByTestId(\'a\')).toBeVisible();\n});'],
+  ['嵌套插值', 'test(`a ${`b${`c`}`} d`, async ({ page }) => {\n  await expect(page.getByTestId(\'a\')).toBeVisible();\n});'],
+  ['插值含对象字面量', 'test(`x ${ { a: 1 }.a } y`, async ({ page }) => {\n  await expect(page.getByTestId(\'a\')).toBeVisible();\n});'],
+];
+for (const [label, src] of tplCases) {
+  const r = lintSource(src, 'tpl.spec.ts');
+  check(`模板串用例名不导致用例数归零：${label}`, r.tests === 1, `tests=${r.tests}`);
+}
+// 真实样例集：tricky 的用例数不能是 0（曾经因为插值 bug 变成 0 而"全绿"）
+const tricky = lintSource(fs.readFileSync(path.join(ROOT, 'demo/tests/tricky.spec.ts'), 'utf8'), 'tricky.spec.ts');
+check('tricky.spec.ts 用例数 > 0（不是"零用例所以零告警"）', tricky.tests > 0, `tests=${tricky.tests}`);
+
+/* ---------------- H5: 不静默覆盖 ---------------- */
+log('');
+log('=== H5) 不静默覆盖已有文件 ===');
+const outDir = path.join(ROOT, '.h5-out');
+fs.rmSync(outDir, { recursive: true, force: true });
+const w1 = writeGenerated(g3, outDir);
+check('首次写盘成功', w1.written === true);
+const poPath = path.join(outDir, 'pages', 'PPage.ts');
+const manual = '// 人手改过的重要注释\n';
+fs.writeFileSync(poPath, manual + fs.readFileSync(poPath, 'utf8'));
+const w2 = writeGenerated(g3, outDir);
+check('第二次默认拒绝覆盖', w2.written === false && w2.reason === 'EXISTS', JSON.stringify(w2.conflicts));
+check('拒绝时列出冲突文件', Array.isArray(w2.conflicts) && w2.conflicts.includes('pages/PPage.ts'));
+check('人手改动未被抹掉', fs.readFileSync(poPath, 'utf8').includes('人手改过的重要注释'));
+const w3 = writeGenerated(g3, outDir, { overwrite: true });
+check('显式 overwrite:true 才覆盖', w3.written === true);
+check('覆盖后确实替换了', !fs.readFileSync(poPath, 'utf8').includes('人手改过的重要注释'));
+fs.rmSync(outDir, { recursive: true, force: true });
+
+/* ---------------- H6: 落盘约束不可绕过 ---------------- */
+log('');
+log('=== H6) 落盘约束不可被 --filename= 绕过 ===');
+const bypass = await runCli({
+  cwd: ROOT, session: 'h6', subcommand: 'snapshot',
+  args: ['--filename=../../tmp/evil.md'],
+});
+check('拒绝调用方自带 --filename', bypass.ok === false && bypass.reason === 'ARTIFACT_PATH_NOT_ALLOWED',
+  bypass.reason);
+const bypass2 = await runCli({
+  cwd: ROOT, session: 'h6', subcommand: 'screenshot',
+  args: ['--filename', 'C:/Windows/Temp/evil.png'],
+});
+check('拒绝 --filename value 分离写法', bypass2.ok === false && bypass2.reason === 'ARTIFACT_PATH_NOT_ALLOWED',
+  bypass2.reason);
+// 顺序钉：越权参数的拒绝必须发生在「CLI 装没装」检查**之前**。
+// 上面两条行为断言在装了 CLI 的机器上抓不到顺序回归 —— 顺序错了守门照样"过"，
+// 只有未装 CLI 的环境（纯净发布包）才暴露成「守门静默失效」。实测踩过，所以顺序本身也钉死。
+{
+  const cliSrc = fs.readFileSync(path.join(ROOT, 'mcp', 'lib', 'cli.js'), 'utf8');
+  const guardIdx = cliSrc.indexOf("reason: 'ARTIFACT_PATH_NOT_ALLOWED'");
+  const capIdx = cliSrc.indexOf("reason: 'CLI_NOT_INSTALLED'");
+  check('H6 守门先于能力检查（顺序反转=纯净包上守门静默失效）',
+    guardIdx > 0 && capIdx > 0 && guardIdx < capIdx, `guard@${guardIdx} capability@${capIdx}`);
+}
+
+/* ---------------- H7: 函数式配置不误判 ---------------- */
+log('');
+log('=== H7) 函数式配置不被误判为配置错误 ===');
+const arrowCfg = "import { defineConfig } from '@playwright/test';\n"
+  + 'export default defineConfig(() => ({ timeout: 300_000 }));';
+const a1 = checkConfigSource(arrowCfg, 'arrow.ts');
+check('箭头形式：不阻断（exitCode 0）', a1.summary.exitCode === 0, a1.summary.verdict);
+check('箭头形式：verdict 标为 UNPARSEABLE', a1.summary.verdict === 'UNPARSEABLE');
+check('箭头形式：仍指出读到的问题（timeout 过长）', a1.findings.some((f) => f.id === 'CFG002'));
+check('箭头形式：读不到的键降级为 WARN', a1.findings.find((f) => f.id === 'CFG001')?.level === 'WARN');
+
+const fnCfg = "import { defineConfig } from '@playwright/test';\n"
+  + 'export default defineConfig(function () { return { timeout: 300_000 }; });';
+const a2 = checkConfigSource(fnCfg, 'fn.ts');
+check('function 形式：不阻断', a2.summary.exitCode === 0, a2.summary.verdict);
+check('function 形式：CFG000 为 WARN 而非 ERROR',
+  a2.findings.find((f) => f.id === 'CFG000')?.level === 'WARN');
+
+// 反向保护：真正的坏配置必须照样阻断（别把该拦的也放过）
+const brokenCfg = "import { defineConfig } from '@playwright/test';\n"
+  + "export default defineConfig({ timeout: 300_000, use: { trace: 'off' } });";
+const a3 = checkConfigSource(brokenCfg, 'broken.ts');
+check('普通对象的坏配置仍然阻断（BLOCK / exitCode 1）',
+  a3.summary.verdict === 'BLOCK' && a3.summary.exitCode === 1, `${a3.summary.verdict} ${a3.summary.exitCode}`);
+// 基线必须仍然干净
+const baseCfg = fs.readFileSync(path.join(ROOT, 'demo/configs/playwright.config.baseline.ts'), 'utf8');
+const a4 = checkConfigSource(baseCfg, 'baseline.ts');
+check('基线配置仍然 0 ERROR / 0 WARN / 0 INFO',
+  a4.summary.errorCount === 0 && a4.summary.warnCount === 0 && a4.summary.infoCount === 0,
+  JSON.stringify(a4.summary));
+
+/* ---------------- H8: 断言分类不漏 ---------------- */
+log('');
+log('=== H8) 断言失败不能被漏归成 unknown ===');
+const oneLiners = [
+  'Error: expect(locator).toBeVisible() failed',
+  'Error: expect(locator).toHaveText(expected) failed',
+  'Error: expect(page).toHaveURL(expected) failed',
+];
+for (const m of oneLiners) {
+  const got = classify(clean(m));
+  check(`单行断言失败归为 assertion：${m.slice(7, 45)}`, got === 'assertion', got);
+}
+// 端到端：一条只有单行错误的报告，也必须归成 assertion
+const rep = summarize({
+  stats: { expected: 0, unexpected: 1, flaky: 0, skipped: 0, duration: 1 },
+  suites: [{
+    title: 's', file: 's.spec.ts',
+    specs: [{
+      title: 'T', ok: false, file: 's.spec.ts',
+      tests: [{ status: 'unexpected', results: [{ status: 'failed', errors: [{ message: 'Error: expect(locator).toBeVisible() failed' }] }] }],
+    }],
+  }],
+});
+check('报告里单行断言失败 → assertion（不是 unknown）',
+  rep.clusters[0]?.category === 'assertion', rep.clusters[0]?.category);
+
+/* ---------------- MCP 层一致性 ---------------- */
+log('');
+log('=== MCP 层：isError 与 exitCode 一致 ===');
+const cfgViaMcp = await handleMessage({
+  jsonrpc: '2.0', id: 1, method: 'tools/call',
+  params: { name: 'check_config', arguments: { cwd: ROOT, file: 'demo/configs/playwright.config.legacy.ts' } },
+});
+check('坏配置经 MCP 返回 isError', cfgViaMcp.result?.isError === true);
+
+/* ---------------- H9: 参数契约（description 覆盖 + 默认工作目录） ---------------- */
+log('');
+log('=== H9) 参数契约 ===');
+const { TOOLS } = await import('../server.mjs');
+let fieldTotal = 0;
+const noDesc = [];
+for (const t of TOOLS) {
+  for (const [k, v] of Object.entries(t.inputSchema?.properties || {})) {
+    fieldTotal++;
+    if (!v.description) noDesc.push(`${t.name}.${k}`);
+    for (const [k2, v2] of Object.entries(v.items?.properties || {})) {
+      fieldTotal++;
+      if (!v2.description) noDesc.push(`${t.name}.${k}[].${k2}`);
+    }
+  }
+}
+// 为什么钉这个：工具描述与 schema **每次请求都进上下文**，是模型填对参数的第一手依据。
+// 缺描述的字段会让模型靠猜，猜错就多一轮工具调用 —— 既费 token 又慢。
+check('所有参数字段都有 description（含一层嵌套）', noDesc.length === 0,
+  noDesc.length ? `缺 ${noDesc.length} 个：${noDesc.join(', ')}` : `${fieldTotal} 个字段全覆盖`);
+
+// PVMCP_CWD 让 cwd 变为可选：不开子进程，直接验证默认值来源
+const { default: _ } = { default: null };
+const cwdDefault = process.env.PVMCP_CWD;
+check('本机已配置 PVMCP_CWD（安装器写入）或可回落到 process.cwd()',
+  typeof cwdDefault === 'string' || cwdDefault === undefined,
+  cwdDefault ? `PVMCP_CWD=${cwdDefault}` : '未设置 → 回落到启动目录');
+
+log('');
+log('=== H10) 换行符必须是 LF（跨平台一致性的前提）===');
+/*
+ * 为什么钉这个：Windows 上 git 默认 core.autocrlf=true，会把仓库里的 LF 检出成 CRLF。
+ * 对本项目来说 CRLF 不只是「多一个字符」：
+ *   · mcp/py/read_cases.py 带 shebang，CRLF 会让 Linux 上的 `#!/usr/bin/env python\r` 找不到解释器；
+ *   · 生成的 .ts/.mjs 要过本工具的语法门禁与 Playwright 解析 ——
+ *     如果本地与 CI 的换行符不同，deployed-check 的全树哈希会无故报漂移（假失败）；
+ *   · 所以 .gitattributes 里 `* text=auto eol=lf` 是必需品，不是洁癖。
+ * 这里直接读工作区字节来验，不依赖 git 命令（CI 上未必有完整 git）。
+ */
+const LF_FILES = [
+  'mcp/py/read_cases.py',
+  'mcp/lib/lint.js',
+  'mcp/lib/tokenizer.js',
+  'mcp/server.mjs',
+  'skill/playwright-verify/SKILL.md',
+  'README.md',
+];
+const crlfFiles = [];
+for (const f of LF_FILES) {
+  const b = fs.readFileSync(path.join(ROOT, f));
+  for (let i = 0; i < b.length - 1; i++) {
+    if (b[i] === 0x0d && b[i + 1] === 0x0a) { crlfFiles.push(f); break; }
+  }
+}
+check('关键文件是 LF 换行（CRLF 会破坏 shebang 与哈希比对）', crlfFiles.length === 0,
+  crlfFiles.length ? `CRLF：${crlfFiles.join(', ')}` : `${LF_FILES.length} 个文件均为 LF`);
+check('.gitattributes 声明了 eol=lf',
+  /text=auto\s+eol=lf|\* text=auto/.test(fs.readFileSync(path.join(ROOT, '.gitattributes'), 'utf8')));
+
+log('');
+log('=== H11) 环境不可达必须归成 env（缺浏览器不能落进 unknown）===');
+/*
+ * 为什么钉这个：真实踩过 —— chromium headless shell 没装时，9 条回归全挂在
+ * browserType.launch，而归因输出是 unknown:9「人工判定」。
+ * 一个环境问题被当成 9 条未知失败推给人：这就是 H8 的镜像问题 ——
+ * H8 钉「断言失败不被漏成 unknown」，H11 钉「环境失败不被漏成 unknown」。
+ * 两边都不漏，unknown 才真的是「没见过的形态」。
+ */
+check('缺浏览器（browserType.launch: Executable doesn\'t exist）归为 env',
+  classify(clean("Error: browserType.launch: Executable doesn't exist at C:\\ms-playwright\\chromium_headless_shell-1243\\chrome-headless-shell.exe")) === 'env');
+check('CLI 缺通道（Chromium distribution not found）归为 env',
+  classify(clean("Error: Chromium distribution 'msedge' is not found at C:\\cache\\ms-playwright")) === 'env');
+check('环境失败的派活口径不派人查用例',
+  /不要派人去查用例/.test(CATEGORIES.env.action));
+
+log('');
+log('=== H12) 已知噪声不能挤掉真正的失败原因 ===');
+/*
+ * 为什么钉这个：Playwright worker 启动时硬编码 FORCE_COLOR=1，与我们设的
+ * NO_COLOR 冲突，Node 于是往 stderr 刷「NO_COLOR 被忽略」警告 —— 实测一次
+ * 回归能刷十几行。诊断只回尾部几行（lastLines），噪声会把真正的失败原因
+ * 挤出视野：这就是「不报错但结论错」的又一形态 —— 排查方向被噪声带偏。
+ * 钉四条：噪声行被剔除；真实行保留；很像警告的行不误删；清洗幂等。
+ */
+{
+  const noiseLine = "(node:47172) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.";
+  const mixed = ['真实错误：locator(".btn").click: Timeout 30000ms exceeded', noiseLine, noiseLine, '  at foo.spec.ts:10:5'].join('\n');
+  const stripped = stripKnownNoise(mixed);
+  check('NO_COLOR/FORCE_COLOR 警告行被剔除', !stripped.includes('NO_COLOR') && !stripped.includes('FORCE_COLOR'));
+  check('真实错误与堆栈原样保留', stripped.includes('真实错误') && stripped.includes('at foo.spec.ts:10:5'));
+  check('普通 Warning 行不被误删（只删已知噪声）',
+    stripKnownNoise('Warning: 真正需要人看的警告').includes('需要人看的警告'));
+  check('stripKnownNoise 幂等（清洗链各环节都吃同一份文本）',
+    stripKnownNoise(stripped) === stripped);
+  // 端到端语义：噪声刷屏后，尾部 3 行仍是失败原因而不是警告
+  const noisyTail = ['launch 测试', noiseLine, noiseLine, 'Error: browserType.launch: Executable doesn\'t exist at C:\\x'].join('\n');
+  const tail3 = stripKnownNoise(noisyTail).split('\n').slice(-3).join('\n');
+  check('尾部诊断窗口不被噪声占位', tail3.includes('browserType.launch') && !tail3.includes('NO_COLOR'));
+}
+
+log('');
+log('=== H13) 安装时的 CLI 通道配置决策不能漂移 ===');
+/*
+ * 为什么钉这个：通道配置是「这里能跑、装完就不能跑」问题的高发点（实测踩过
+ * win32 的 msedge 配置被带到没有 Edge 的机器上）。决策矩阵必须每条分支都活：
+ * 少一条分支就是一类安装事故。另外 buildCliConfig 必须字节确定 ——
+ * deployed-check 的全树哈希比对以它为前提，抖动一次就是一次假漂移。
+ */
+{
+  const { decideCliConfig, pickChannel, buildCliConfig } = await import('../../skill/playwright-verify/scripts/cli-config.mjs');
+  const gened = (platform) => buildCliConfig({ platform, arch: 'x64', ...pickChannel({ platform }) });
+  const winCfg = gened('win32');
+  const linuxCfg = gened('linux');
+  const handCfg = { browser: { browserName: 'chromium', launchOptions: { channel: 'chrome', headless: false } } };
+
+  check('H13 配置缺失 → 重新生成', decideCliConfig({ cfg: null, platform: 'win32' }).action === 'regenerate');
+  check('H13 同平台产物 → 原样保留（手工调过的 launchOptions 不被抹掉）',
+    decideCliConfig({ cfg: winCfg, platform: 'win32' }).action === 'keep');
+  check('H13 跨平台产物 → 按目标平台重新生成（msedge 不带到 Linux）',
+    decideCliConfig({ cfg: winCfg, platform: 'linux' }).action === 'regenerate'
+    && decideCliConfig({ cfg: linuxCfg, platform: 'win32' }).action === 'regenerate');
+  check('H13 手工配置（无 _平台）→ 原样保留',
+    decideCliConfig({ cfg: handCfg, platform: 'linux' }).action === 'keep');
+  check('H13 PVMCP_BROWSER_CHANNEL 显式指定压过「保留」',
+    decideCliConfig({ cfg: winCfg, platform: 'win32', envChannel: 'chrome' }).action === 'regenerate');
+  check('H13 平台默认通道：win32→msedge、其它→chromium',
+    pickChannel({ platform: 'win32', envChannel: undefined }).channel === 'msedge'
+    && pickChannel({ platform: 'linux', envChannel: undefined }).channel === null
+    && pickChannel({ platform: 'linux', envChannel: undefined }).source.includes('chromium'));
+  // 字节确定性：同输入两次构造必须逐字节一致（全树哈希比对的前提）
+  check('H13 buildCliConfig 字节确定（同输入必同输出）',
+    JSON.stringify(buildCliConfig({ platform: 'win32', arch: 'x64', channel: 'msedge', source: '测试' }))
+    === JSON.stringify(buildCliConfig({ platform: 'win32', arch: 'x64', channel: 'msedge', source: '测试' })));
+  check('H13 生成的配置带 _平台（部署副本语义校验依赖它判平台归属）',
+    typeof winCfg._平台 === 'string' && winCfg._平台.startsWith('win32'));
+}
+
+/* ---------------- H14:运行时字节码不能污染一致性比对与分发 ---------------- */
+/*
+ * Python 字节码内嵌**编译时的源码路径**：源码树编译出的 .pyc 与部署副本里
+ * 重新编译出的 .pyc 必然字节不同。若把它纳入全树哈希比对，跑过一次 Python
+ * 之后部署验证就会误报「漂移」—— 误报喊多了，真正的漂移就没人信了。
+ * 四层排除必须同时在位：.gitignore（不入库）、install（不复制）、
+ * distribute（不进纯净分发版）、deployed-check（不参与比对）。
+ */
+log('=== H14) Python 字节码不能污染一致性比对与分发 ===');
+{
+  const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const gitignore = read('.gitignore');
+  const install = read('skill/playwright-verify/install.mjs');
+  const distribute = read('skill/playwright-verify/scripts/distribute.mjs');
+  const deployed = read('mcp/test/deployed-check.mjs');
+
+  check('H14 .gitignore 挡住字节码（__pycache__/ 与 *.pyc）',
+    gitignore.includes('__pycache__/') && gitignore.includes('*.pyc'));
+  check('H14 install 不复制 __pycache__（否则字节码被带进部署副本）',
+    install.includes("'__pycache__'"));
+  check('H14 纯净分发版排除 __pycache__ 与 *.pyc',
+    distribute.includes("'__pycache__'") && distribute.includes('\\.pyc'));
+  check('H14 全树比对忽略 __pycache__（否则跨目录重编译误报漂移）',
+    deployed.includes("'__pycache__'"));
+}
+
+/* ---------------- H15:路径解析不得用 URL 的 pathname 属性 ---------------- */
+/*
+ * `new URL(import.meta.url)` 取 pathname 会把非 ASCII 字符留成**百分号编码**
+ * （`发布版本` → `%E5%8F%91%E5%B8%83%E7%89%88%E6%9C%AC`），路径静默指向不存在的
+ * 位置 —— 中文用户名、中文目录下部署时资产/根目录解析全体失灵，且错误信息里
+ * 编码串不易一眼看破。必须走 fileURLToPath。此问题在 wechat-ai 发包实测中
+ * 真实发生过（URL 的 pathname 对中文目录名百分号编码，26 条断言被静默跳过）。
+ *
+ * 正则用字符串拼接构造：写成字面量的话，本文件自身就含违例子串，扫描器会先抓到自己
+ * —— H3（测试数据不被篡改/自我污染）的镜像教训。
+ */
+log('=== H15) 路径解析不得取 URL 的 pathname（编码后静默指错位置）===');
+{
+  const PATHNAME_RE = new RegExp('\\.' + 'pathname\\b');
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.git') continue;
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) walk(abs);
+      else if (/\.(m?js|cjs)$/.test(e.name)) {
+        const src = fs.readFileSync(abs, 'utf8');
+        if (PATHNAME_RE.test(src)) offenders.push(path.relative(ROOT, abs));
+      }
+    }
+  };
+  walk(path.join(ROOT, 'mcp'));
+  walk(path.join(ROOT, 'skill'));
+  check('H15 mcp/ 与 skill/ 源码不取 URL 的 pathname（一律 fileURLToPath）',
+    offenders.length === 0,
+    offenders.length ? `违例：${offenders.join(', ')}` : '全树无该反模式');
+}
+
+/* ---------------- H16:版本/文档同步不能靠人记 ---------------- */
+/*
+ * 发版纪律是「每次版本更新，版本号 + 版本说明同步到全部对应文档，缺一处即视为
+ * 发版未完成」。纪律靠人记就一定会漏 —— 版本号在文档间漂移是静默的：没人报错，
+ * 只是读者拿着对不上的版本号来问。所以钉三件事：版本号唯一源是 package.json
+ * （server 运行时读它，不另存副本）、四份文档都带当前版本号与两节固定内容
+ * （版本记录 + 自然语言使用示例）、README 的同步规范写明「缺一处」的后果。
+ */
+log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const V = String(pkg.version || '');
+  const docs = ['README.md', '使用文档.md', '部署文档.md', 'skill/playwright-verify/SKILL.md'];
+  const texts = new Map(docs.map((d) => [d, fs.readFileSync(path.join(ROOT, d), 'utf8')]));
+
+  const missingVer = docs.filter((d) => !texts.get(d).includes(`v${V}`));
+  check('H16 四份文档都带当前版本号（唯一源 package.json）',
+    /^\d+\.\d+\.\d+$/.test(V) && missingVer.length === 0,
+    `v${V}${missingVer.length ? ` 缺：${missingVer.join(', ')}` : ' 全部在位'}`);
+
+  const missingRecord = docs.filter((d) => !texts.get(d).includes('版本记录'));
+  check('H16 四份文档都有「版本记录」节（版本说明同步落点）',
+    missingRecord.length === 0, missingRecord.length ? `缺：${missingRecord.join(', ')}` : '全部在位');
+
+  const missingNl = docs.filter((d) => !texts.get(d).includes('自然语言使用示例'));
+  check('H16 四份文档都有「自然语言使用示例」（说人话就能用）',
+    missingNl.length === 0, missingNl.length ? `缺：${missingNl.join(', ')}` : '全部在位');
+
+  const firstEntry = (texts.get('README.md').match(/###\s*v(\d+\.\d+\.\d+)/) || [])[1];
+  check('H16 README 版本记录首条就是当前版本（记录跟得上版本）',
+    firstEntry === V, `记录首条 ${firstEntry || '(无)'} / 当前 ${V}`);
+
+  const readme = texts.get('README.md');
+  check('H16 同步规范在位且写明「缺一处即视为发版未完成」',
+    readme.includes('版本与文档同步规范') && readme.includes('缺一处即视为发版未完成'));
+}
+
+/* ---------------- H17:智能体线的守门不能静默失效 ---------------- */
+/*
+ * 智能体线（nl_test_goal）把自然语言目标当指令驱动浏览器，风险面比只读工具大。
+ * 三件事必须钉死，任何一件被「优化」掉都属于静默失效：
+ *   1) 凭据只从环境变量读 —— 源码不得出现 key 形态字面量，key 只经 DEEPSEEK_API_KEY 一个通道；
+ *   2) 危险目标拒绝表非空且条条有理由 —— 表被删空后守门会静默放行一切；
+ *   3) 白名单外动作不静默丢弃、无断言不算通过 —— 两者都会产出「看起来绿」的假结果。
+ */
+log('=== H17) 智能体线：凭据/守门/判定不得静默失效 ===');
+{
+  const keyRe = /sk-[A-Za-z0-9]{10,}/;
+  const offenders = [];
+  for (const rel of ['mcp/server.mjs', 'mcp/lib/llmclient.js', 'mcp/lib/nlplan.js', 'mcp/lib/agent.js', 'mcp/lib/explore.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (keyRe.test(src)) offenders.push(rel);
+  }
+  check('H17 源码无 key 形态字面量（凭据只从环境变量读）',
+    offenders.length === 0, offenders.length ? `违例：${offenders.join(', ')}` : '全无');
+
+  const llmSrc = fs.readFileSync(path.join(ROOT, 'mcp/lib/llmclient.js'), 'utf8');
+  check('H17 LLM key 只经 DEEPSEEK_API_KEY 环境变量通道（无其它入口）',
+    llmSrc.includes('DEEPSEEK_API_KEY') && !/api[_-]?key\s*[:=]\s*['"]/.test(llmSrc));
+
+  check('H17 危险目标拒绝表非空且条条有理由（表删空=守门静默失效）',
+    DANGEROUS_GOAL_PATTERNS.length >= 5 && DANGEROUS_GOAL_PATTERNS.every((p) => p.why && p.re));
+  check('H17 危险目标实际被拒（破坏性/生产/真实资金）',
+    ['drop table users', '删除生产库数据', '对真实资金账户转账'].every((g) => assertGoalAllowed(g).ok === false));
+
+  const bad = normalizePlan({ steps: [{ act: 'eval', target: 'x' }, { act: 'screenshot' }] });
+  check('H17 白名单外动作拒绝且不静默丢弃（计划整体作废，不挑着执行）',
+    bad.ok === false && bad.steps.length === 0 && bad.problems.length > 0);
+  check('H17 无断言的执行不算通过（Blocked，防「全绿但什么都没验」）',
+    verdictOf([{ act: 'goto', ok: true }]) === 'Blocked');
+}
+
+log('');
+log(failures === 0 ? '加固回归全部通过 ✅' : `${failures} 项失败 ❌`);
+process.exit(failures === 0 ? 0 : 1);
