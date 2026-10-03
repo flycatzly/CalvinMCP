@@ -1,0 +1,24 @@
+{
+  "schema": "wechat-ai/inbox@1",
+  "id": "demo-entry-0001",
+  "created_ts": 1782785520000,
+  "source": "manual",
+  "kind": "chat",
+  "title": "客户群-澄明科技",
+  "chat": "客户群-澄明科技",
+  "scene": "customer",
+  "target": "obsidian",
+  "body": "[2026-06-30 09:10] 王工: 我们想在 9 月做一场内部 AI 培训，想先了解你们的课程大纲和报价\n[2026-06-30 09:40] 我: 好的，我整理一版大纲和报价，本周内发你\n[2026-06-30 10:20] 李经理: 另外能不能先安排一次线上试讲，听众大概 30 人\n",
+  "messages": [
+    { "sender": "王工", "ts": 1782785400000, "content": "我们想在 9 月做一场内部 AI 培训，想先了解你们的课程大纲和报价", "is_owner": false },
+    { "sender": "我", "ts": 1782787200000, "content": "好的，我整理一版大纲和报价，本周内发你", "is_owner": true },
+    { "sender": "李经理", "ts": 1782789600000, "content": "另外能不能先安排一次线上试讲，听众大概 30 人", "is_owner": false }
+  ],
+  "files": [],
+  "links": [],
+  "ts_min": 1782785400000,
+  "ts_max": 1782789600000,
+  "hash": "demo-entry-0001-hash",
+  "meta": { "note": "这是手工构造的演示条目，不含任何真实聊天" },
+  "status": "new"
+}

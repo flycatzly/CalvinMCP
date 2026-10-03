@@ -1,0 +1,15 @@
+{
+  "name": "wechat-ai-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "微信个人情报库 + 微信流（本地只读）MCP 服务器：零运行时依赖，仅用 node: 内置模块",
+  "bin": { "wechat-ai-mcp": "server.mjs" },
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node selftest.mjs",
+    "tools": "node server.mjs --list-tools"
+  },
+  "dependencies": {}
+}
