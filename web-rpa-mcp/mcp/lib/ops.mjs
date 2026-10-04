@@ -34,13 +34,30 @@ export function lockInfo(flowId) {
 
 export function acquireLock(flowId, meta = {}) {
   ensureDirs();
-  fs.mkdirSync(path.dirname(lockFile(flowId)), { recursive: true });
-  const cur = lockInfo(flowId);
-  if (cur.held) return { ok: false, heldBy: cur };
-  if (cur.stale) L.warn('清理过期锁后重试', { flowId, pid: cur.pid, ageMs: cur.ageMs });
-  writeJson(lockFile(flowId), Object.assign({ flowId, pid: process.pid, at: nowIso() }, meta));
-  heldLocks.add(flowId);
-  return { ok: true };
+  const f = lockFile(flowId);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  // 原子创建（'wx'：文件已存在则报 EEXIST）：定时任务与手工运行同一毫秒撞上来时，
+  // "先检查再覆盖写"存在竞态窗口，两个进程都可能认为自己拿到了锁；独占创建只有一个赢家。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const cur = lockInfo(flowId);
+    if (cur.held) return { ok: false, heldBy: cur };
+    if (cur.stale) {
+      L.warn('清理过期锁后重试', { flowId, pid: cur.pid, ageMs: cur.ageMs });
+      try { fs.unlinkSync(f); } catch { /* 已被别人清掉，直接尝试创建 */ }
+    }
+    const rec = Object.assign({ flowId, pid: process.pid, at: nowIso() }, meta);
+    try {
+      const fd = fs.openSync(f, 'wx');
+      fs.writeFileSync(fd, JSON.stringify(rec, null, 2), 'utf8');
+      fs.closeSync(fd);
+      heldLocks.add(flowId);
+      return { ok: true };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // 撞上别人刚建好的锁：回到循环头重新判断它是否有效（无效则清掉重建，最多再试一轮）
+    }
+  }
+  return { ok: false, heldBy: lockInfo(flowId) };
 }
 
 export function releaseLock(flowId) {

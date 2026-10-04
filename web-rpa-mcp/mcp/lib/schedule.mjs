@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DIRS, MCP_DIR, ROOT, ensureDirs, readConfig, readJson, writeJson, logger } from './core.mjs';
+import { DIRS, MCP_DIR, ROOT, ensureDirs, readConfig, readJson, writeJson, logger, formatDate } from './core.mjs';
 
 const execFileAsync = promisify(execFile);
 const L = logger('schedule');

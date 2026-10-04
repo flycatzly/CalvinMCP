@@ -13,9 +13,14 @@ export function pageScriptSource() {
   return _src;
 }
 
-/** 注入录制/定位辅助脚本（对新文档生效） */
+/** 已注入辅助脚本的 context：addInitScript 会在 context 生命周期里累积，重复调用等于每个新文档多跑一份 */
+const HELPERED = new WeakSet();
+
+/** 注入录制/定位辅助脚本（对新文档生效；同一 context 只注入一次） */
 export async function installHelpers(context) {
+  if (HELPERED.has(context)) return;
   await context.addInitScript({ content: pageScriptSource() });
+  HELPERED.add(context);
 }
 
 /** 打开/关闭录制开关（对已有页面立即生效） */

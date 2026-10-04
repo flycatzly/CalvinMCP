@@ -9,7 +9,7 @@ import {
 } from './ops.mjs';
 import { locate, probe, installHelpers, buildLocator, frameSelectorsToCss } from './locators.mjs';
 import { resolveParams, resolveDeep } from './vars.mjs';
-import { saveRun, stepLabel } from './store.mjs';
+import { saveRun, stepLabel, backupFlow } from './store.mjs';
 import { lintFlow } from './lint.mjs';
 import { sendNotify, composeRunMessage, shouldNotify } from './notify.mjs';
 
@@ -819,7 +819,7 @@ export async function runFlow(flow, opts = {}) {
     report.finalUrl = page.url();
     report.finalTitle = await page.title().catch(() => null);
   } catch (e) {
-    report.status = report.status === 'fail' ? 'fail' : 'fail';
+    report.status = 'fail';
     if (!report.error) report.error = String(e && e.message ? e.message : e);
     const ev = opts.evidenceOn || cfg.run.evidenceOn;
     if (cfg.run.saveEvidence && ev !== 'never' && ctx.page && !ctx.page.isClosed()) {
@@ -852,6 +852,7 @@ export async function runFlow(flow, opts = {}) {
             locators: s.locators || (cur.steps[i] || {}).locators,
           }));
           cur.selfHealedAt = nowIso();
+          try { backupFlow(flow.id); } catch { /* 备份失败不阻断回写 */ }
           saveFlow(cur);
           report.flowPatched = true;
         }

@@ -412,14 +412,21 @@ export async function launchContext({ headed = false, viewport, slowMo, download
     throw err;
   }
 
-  const context = await browser.newContext({
-    viewport: vp && vp.width ? { width: vp.width, height: vp.height } : undefined,
-    locale: cfg.browser.locale,
-    timezoneId: cfg.browser.timezoneId,
-    acceptDownloads: true,
-    userAgent: cfg.browser.userAgent || undefined,
-    ...extraContext,
-  });
+  let context;
+  try {
+    context = await browser.newContext({
+      viewport: vp && vp.width ? { width: vp.width, height: vp.height } : undefined,
+      locale: cfg.browser.locale,
+      timezoneId: cfg.browser.timezoneId,
+      acceptDownloads: true,
+      userAgent: cfg.browser.userAgent || undefined,
+      ...extraContext,
+    });
+  } catch (e) {
+    // 上下文建不起来时浏览器已启动：必须关掉，否则每次失败都泄漏一个浏览器进程
+    try { await browser.close(); } catch { /* ignore */ }
+    throw e;
+  }
   const handle = { browser, context, plan, downloads: [], persistent: false };
   if (downloadsDir) attachDownloads(handle, downloadsDir);
   OPEN.add(handle);
