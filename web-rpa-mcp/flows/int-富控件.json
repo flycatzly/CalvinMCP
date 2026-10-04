@@ -1,0 +1,569 @@
+{
+  "id": "int-富控件",
+  "name": "int-富控件",
+  "version": 1,
+  "createdAt": "2026-10-04T01:12:18.096Z",
+  "updatedAt": "2026-10-04T01:12:18.099Z",
+  "startUrl": "http://127.0.0.1:61539/form",
+  "params": [],
+  "steps": [
+    {
+      "op": "goto",
+      "url": "http://127.0.0.1:61539/form",
+      "seq": 1
+    },
+    {
+      "op": "fill",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "orderNo"
+        },
+        {
+          "strategy": "name",
+          "value": "orderNo"
+        },
+        {
+          "strategy": "role",
+          "value": "textbox",
+          "name": "订单号",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "textbox",
+          "name": "订单号",
+          "exact": false
+        },
+        {
+          "strategy": "label",
+          "value": "订单号",
+          "exact": true
+        },
+        {
+          "strategy": "placeholder",
+          "value": "请输入订单号"
+        },
+        {
+          "strategy": "css",
+          "value": "#orderNo"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"orderNo\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "input",
+        "role": "textbox",
+        "name": "订单号",
+        "text": "",
+        "attrs": {
+          "id": "orderNo",
+          "name": "orderNo",
+          "placeholder": "请输入订单号"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "form",
+          "div.row",
+          "input#orderNo"
+        ],
+        "prevText": "订单号",
+        "nextText": ""
+      },
+      "tag": "input",
+      "value": "SO-999",
+      "seq": 2
+    },
+    {
+      "op": "select",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "reason"
+        },
+        {
+          "strategy": "name",
+          "value": "reason"
+        },
+        {
+          "strategy": "role",
+          "value": "combobox",
+          "name": "原因",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "combobox",
+          "name": "原因",
+          "exact": false
+        },
+        {
+          "strategy": "label",
+          "value": "原因",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#reason"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"reason\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "select",
+        "role": "combobox",
+        "name": "原因",
+        "text": "请选择 退款 换货 维修",
+        "attrs": {
+          "id": "reason",
+          "name": "reason"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "form",
+          "div.row",
+          "select#reason"
+        ],
+        "prevText": "原因",
+        "nextText": ""
+      },
+      "tag": "select",
+      "text": "请选择 退款 换货 维修",
+      "value": "refund",
+      "label": "退款",
+      "seq": 3
+    },
+    {
+      "op": "check",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "agree"
+        },
+        {
+          "strategy": "name",
+          "value": "agree"
+        },
+        {
+          "strategy": "role",
+          "value": "checkbox",
+          "name": "我已核对",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "checkbox",
+          "name": "我已核对",
+          "exact": false
+        },
+        {
+          "strategy": "label",
+          "value": "我已核对",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#agree"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"agree\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "input",
+        "role": "checkbox",
+        "name": "我已核对",
+        "text": "",
+        "attrs": {
+          "id": "agree",
+          "name": "agree",
+          "type": "checkbox"
+        },
+        "classes": [],
+        "path": [
+          "body",
+          "form",
+          "div.row",
+          "label",
+          "input#agree"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "input",
+      "checked": true,
+      "seq": 4
+    },
+    {
+      "op": "fill",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "note"
+        },
+        {
+          "strategy": "name",
+          "value": "note"
+        },
+        {
+          "strategy": "role",
+          "value": "textbox",
+          "name": "备注",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "textbox",
+          "name": "备注",
+          "exact": false
+        },
+        {
+          "strategy": "label",
+          "value": "备注",
+          "exact": true
+        },
+        {
+          "strategy": "text",
+          "value": "备注",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#note"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"note\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "textarea",
+        "role": "textbox",
+        "name": "备注",
+        "text": "",
+        "attrs": {
+          "id": "note",
+          "name": "note"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "form",
+          "div.row",
+          "textarea#note"
+        ],
+        "prevText": "备注",
+        "nextText": ""
+      },
+      "tag": "textarea",
+      "value": "请尽快处理",
+      "seq": 5
+    },
+    {
+      "op": "setInputFiles",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "attach"
+        },
+        {
+          "strategy": "name",
+          "value": "attach"
+        },
+        {
+          "strategy": "label",
+          "value": "附件",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#attach"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"attach\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "input",
+        "role": null,
+        "name": "附件",
+        "text": "",
+        "attrs": {
+          "id": "attach",
+          "name": "attach",
+          "type": "file"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "form",
+          "div.row",
+          "input#attach"
+        ],
+        "prevText": "附件",
+        "nextText": "未选择文件"
+      },
+      "tag": "input",
+      "fileNames": [
+        "附件-测试.txt"
+      ],
+      "warning": "浏览器安全限制无法获取文件绝对路径，请在步骤里补全 path",
+      "seq": 6,
+      "path": "C:\\Users\\CalvinZly\\AppData\\Local\\Temp\\webrpa-int-Jqb6Lr\\附件-测试.txt"
+    },
+    {
+      "op": "hover",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "hoverMenu"
+        },
+        {
+          "strategy": "text",
+          "value": "更多操作",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#hoverMenu"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"hoverMenu\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "div",
+        "role": null,
+        "name": "更多操作",
+        "text": "更多操作",
+        "attrs": {
+          "id": "hoverMenu"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "div#hoverMenu"
+        ],
+        "prevText": "",
+        "nextText": "导出明细"
+      },
+      "tag": "div",
+      "text": "更多操作",
+      "seq": 7
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "hoverAction"
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "导出明细",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "导出明细",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "导出明细",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#hoverAction"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"hoverAction\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "button",
+        "role": "button",
+        "name": "导出明细",
+        "text": "导出明细",
+        "attrs": {
+          "id": "hoverAction",
+          "type": "button"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "div#hoverPanel",
+          "button#hoverAction"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "button",
+      "text": "导出明细",
+      "time": 1791076335153,
+      "seq": 8
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "deepBtn"
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "页面底部按钮",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "页面底部按钮",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "页面底部按钮",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#deepBtn"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"deepBtn\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "button",
+        "role": "button",
+        "name": "页面底部按钮",
+        "text": "页面底部按钮",
+        "attrs": {
+          "id": "deepBtn",
+          "type": "button"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "button#deepBtn"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "button",
+      "text": "页面底部按钮",
+      "time": 1791076335586,
+      "seq": 9
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "formSubmit"
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "提交工单",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "提交工单",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "提交工单",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "form > button"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//body[1]/form[1]/button[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "button",
+        "role": "button",
+        "name": "提交工单",
+        "text": "提交工单",
+        "attrs": {
+          "type": "submit"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "form",
+          "button"
+        ],
+        "prevText": "附件已选择: 附件-测试.txt",
+        "nextText": ""
+      },
+      "tag": "button",
+      "text": "提交工单",
+      "time": 1791076336021,
+      "seq": 10,
+      "waitForNav": "load"
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "textPresent",
+      "text": "工单提交成功",
+      "message": "必须提交成功"
+    }
+  ],
+  "recording": {
+    "sessionId": "rec-f4e09a1f",
+    "startedAt": "2026-10-04T01:12:12.535Z",
+    "finishedAt": "2026-10-04T01:12:18.096Z",
+    "notes": [
+      "录到上传文件步骤：附件-测试.txt，需手动补 path"
+    ],
+    "downloads": [],
+    "finalUrl": "http://127.0.0.1:61539/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
+    "browserShape": {
+      "rowCounts": {
+        "table tbody tr": 0,
+        ".el-table__row": 0,
+        ".ant-table-row": 0,
+        "[role=\"row\"]": 0,
+        "ul li.list-item": 0,
+        ".vxe-body--row": 0
+      },
+      "emptyHit": null,
+      "url": "http://127.0.0.1:61539/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
+      "title": "工单结果"
+    }
+  }
+}

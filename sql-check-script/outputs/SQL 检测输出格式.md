@@ -1,5 +1,5 @@
 # SQL 检测输出格式（证据版 · 模式 A）
-> 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 
 > 模式 B（数据分析）输出见 `outputs/分析报告模板.md`。
 

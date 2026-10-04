@@ -232,7 +232,7 @@ export async function runCli(o) {
   const ok = res.code === 0 && !res.timedOut;
   const summary = ok
     ? summarizeCliOutput(subcommand, parsedJson, res.stdout, res.stderr, artifacts)
-    : `执行失败（退出码 ${res.code}${res.timedOut ? '，已超时' : ''}）：${lastLines(res.stderr || res.stdout, 3)}`;
+    : `执行失败（退出码 ${res.code}${res.timedOut ? '，已超时' : ''}）：${extractRootCause(res.stderr, res.stdout)}`;
 
   return {
     ok,
@@ -270,6 +270,33 @@ function lastLines(text, n) {
   // 再取尾部 —— 否则噪声会把真正的失败原因挤出只看尾部几行的诊断视野。
   const lines = stripKnownNoise(text).split(/\r?\n/).filter((l) => l.trim());
   return lines.slice(-n).join('\n');
+}
+
+/**
+ * 从 CLI 失败输出里提取**根因行**（不是噪声行）。
+ *
+ * 为什么不能只取尾部几行：daemon 失败时 playwright-cli 把真实原因写在
+ * `[PlaywrightError: Chromium distribution 'chrome' is not found ...]`（stderr 中段），
+ * 后面跟着几十行 Node 堆栈，尾部只剩 `daemonPid: 18264` —— 按尾部取摘要等于
+ * 把根因让位给堆栈，排障的人拿到摘要还是得去翻日志文件（H20 钉住这个行为）。
+ * 优先级：PlaywrightError（产品层根因）> 首个 `Error:` 行 > 尾部 3 行（原行为兜底）。
+ */
+export function extractRootCause(stderr, stdout) {
+  const text = `${stderr || ''}\n${stdout || ''}`;
+  const pw = /\[?PlaywrightError:[ \t]*([^\]\r\n]+)/.exec(text);
+  const generic = /^[ \t]*Error:[ \t]*([^\r\n]+)/m.exec(text);
+  const picked = (pw && pw[1]) || (generic && generic[1]) || null;
+  if (!picked) return lastLines(stderr || stdout, 3);
+  let hint = '';
+  // 已知模式：CLI 没有通道配置（.playwright/cli.config.json）时回退自己的默认通道，
+  // 机器上没装该浏览器就是这个错。直接给出修法，省一次「看不懂摘要去翻日志」。
+  const browser = /Chromium distribution '([^']+)' is not found/.exec(picked);
+  if (browser) {
+    hint = ` —— 浏览器通道「${browser[1]}」未安装。修法：`
+      + `node skill/playwright-verify/scripts/setup-cli-config.mjs 按本机生成通道配置`
+      + `（Windows 默认 msedge），或 npx playwright install ${browser[1]}`;
+  }
+  return `${picked.trim()}${hint}`;
 }
 
 /** 从 CLI 输出里捡出它自己落盘的文件路径（截图/快照等）。 */

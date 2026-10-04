@@ -259,6 +259,20 @@ playwright-verify-mcp/
 
 ## 版本记录
 
+### v1.2.1（2026-10-04）
+
+- **CLI 失败摘要诊断质量**（加固 **H20**）：daemon 起不来时（如机器无 Chrome），真实根因
+  `Chromium distribution 'chrome' is not found` 写在 stderr 中段、后面跟几十行堆栈，旧摘要按
+  「尾部 3 行」取值只剩 `daemonPid` —— 门禁报了失败却没报原因，派活口径失真。现在
+  `extractRootCause` 优先提取 PlaywrightError 根因行，命中已知浏览器缺失模式时直接附修法
+  （`setup-cli-config.mjs` 按本机生成通道 / `npx playwright install <channel>` 二选一）
+- **源码树 CLI 通道配置自愈**：`.playwright/cli.config.json` 是装机基础设施（distribute 一律排除、
+  install.mjs 只给部署目录生成）—— 源码树没人负责，clone 后第一次 `--with-browser` 会 5 套连锁
+  以 daemonPid 失败（CLI 回退默认通道找 chrome）。现在 `verify-all --with-browser`（CLI 就位时）
+  前置按同一决策源自愈（`cli-config.mjs` 矩阵，手工配置不覆盖）；`selfcheck` 新增
+  「CLI 浏览器通道配置」点名（缺失/跨平台时给出 setup 命令，可选级不拦截）
+- 全量 12 套件共 **454 断言** + 真实浏览器矩阵（2 通过 / 6 失败 / 1 偶发 → 4 签名）；加固 H1–H20
+
 ### v1.2.0（2026-10-03）
 
 - **纯净发布包口径收紧**：无 `node_modules`、无任何 `.` 前缀文件/目录（剔除开发机残留），

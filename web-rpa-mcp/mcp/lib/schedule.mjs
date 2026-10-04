@@ -90,9 +90,29 @@ function buildScheduleArgs(spec) {
   return ['/SC', 'DAILY', '/ST', at];
 }
 
+/** 注册前纯校验：返回错误消息（中文、可操作）或 null。once 任务时刻已过时 schtasks 只会报系统错误，这里提前拦下 */
+export function validateSpec(spec, now = new Date()) {
+  const kind = String((spec && spec.frequency) || 'daily').toLowerCase();
+  if (kind !== 'once') return null;
+  const dateStr = String(spec.date || formatDate(now, 'YYYY/MM/DD')).trim();
+  const atStr = String(spec.at || '09:00').trim();
+  const dm = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(dateStr);   // schtasks /SD 只认 YYYY/MM/DD
+  const tm = /^(\d{1,2}):(\d{1,2})$/.exec(atStr);
+  if (!dm) return 'once 任务的 date 格式应为 YYYY/MM/DD（收到 "' + dateStr + '"）';
+  if (!tm) return 'once 任务的 at 格式应为 HH:mm（收到 "' + atStr + '"）';
+  const when = new Date(Number(dm[1]), Number(dm[2]) - 1, Number(dm[3]), Number(tm[1]), Number(tm[2]));
+  if (Number.isNaN(when.getTime())) return 'once 任务的日期/时刻无法解析：' + dateStr + ' ' + atStr;
+  if (when.getTime() <= now.getTime()) {
+    return 'once 任务的时刻（' + dateStr + ' ' + atStr + '）已经过去，请指定将来的日期或时刻（不传 date 默认用今天）';
+  }
+  return null;
+}
+
 /** 注册（或覆盖）一个定时任务 */
 export async function addSchedule(flowId, spec = {}) {
   ensureDirs();
+  const invalid = validateSpec(spec);
+  if (invalid) return { ok: false, task: taskName(flowId), error: invalid, stderr: invalid, schedule: spec };
   const wrapper = writeWrapper(flowId, spec);
   const name = taskName(flowId);
   const del = await runSchtasks(['/Delete', '/TN', name, '/F']);

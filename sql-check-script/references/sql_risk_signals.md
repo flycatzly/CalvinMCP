@@ -1,5 +1,5 @@
 # SQL 高危信号（风险识别 Step 1 必读）
-> 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 
 AI 拿到 SQL 后逐条对照此「风险字典」。**默认等级供初判，最终等级以实测证据为准**（见 `风险等级定义.md`）。
 

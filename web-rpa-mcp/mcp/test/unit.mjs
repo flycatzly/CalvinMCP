@@ -288,6 +288,23 @@ await ta('resolveParams 参数互相引用', async () => {
   assert.equal(r.values.tag, 'T-20260930');
 });
 
+console.log('\n[schedule]');
+const { validateSpec } = await import('../lib/schedule.mjs');
+t('validateSpec daily 不校验时刻', () => assert.equal(validateSpec({ frequency: 'daily', at: '00:00' }, now), null));
+t('validateSpec once 未来时刻通过', () => assert.equal(validateSpec({ frequency: 'once', date: '2026/10/01', at: '09:00' }, now), null));
+t('validateSpec once 时刻已过被拦下', () => {
+  const msg = validateSpec({ frequency: 'once', date: '2026/09/30', at: '09:00' }, now);
+  assert.ok(msg && msg.indexOf('已经过去') >= 0, '应当报"已经过去"，实际: ' + msg);
+});
+t('validateSpec once 不传 date 时今天的过去时刻被拦下', () => {
+  const msg = validateSpec({ frequency: 'once', at: '00:01' }, now);
+  assert.ok(msg && msg.indexOf('已经过去') >= 0, '默认取今天时已过的时刻应被拦下: ' + msg);
+});
+t('validateSpec once 非法 date/at 格式被拦下', () => {
+  assert.ok(String(validateSpec({ frequency: 'once', date: '2026-10-01', at: '09:00' }, now)).indexOf('date 格式') >= 0, '连字符日期应提示改用 YYYY/MM/DD');
+  assert.ok(String(validateSpec({ frequency: 'once', date: '2026/10/02', at: '9点' }, now)).indexOf('at 格式') >= 0, '非法时刻应被拦下');
+});
+
 console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) { console.log('\n失败项:\n' + failures.join('\n')); }
 process.exit(fail ? 1 : 0);

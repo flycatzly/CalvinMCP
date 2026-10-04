@@ -731,6 +731,26 @@ async function main() {
     assert.equal(ok2.status, 'pass', '释放锁后应当能跑: ' + ok2.error);
   });
 
+  await A('并发锁：死进程留下的锁文件会被清理并允许重新加锁（原子创建路径）', async () => {
+    const fsx = await import('node:fs');
+    const pathx = await import('node:path');
+    const { DIRS } = await import('../lib/core.mjs');
+    const f = pathx.join(DIRS.work, 'locks', 't-lock-stale.lock');
+    fsx.mkdirSync(pathx.dirname(f), { recursive: true });
+    // 模拟被强杀进程留下的锁：pid 已不存在 -> 判定为过期，acquireLock 应当能清掉并拿到
+    fsx.writeFileSync(f, JSON.stringify({ flowId: 't-lock-stale', pid: 9999999, at: new Date(Date.now() - 3600_000).toISOString(), trigger: 'dead' }), 'utf8');
+    const stale = lockInfo('t-lock-stale');
+    assert.equal(stale.stale, true, '应当被判定为过期锁: ' + JSON.stringify(stale));
+    const got = acquireLock('t-lock-stale', { trigger: 'test' });
+    assert.ok(got.ok, '过期锁应当能被重新获得: ' + JSON.stringify(got));
+    try {
+      const again = acquireLock('t-lock-stale', { trigger: 'test2' });
+      assert.equal(again.ok, false, '持锁期间第二次加锁应当失败');
+      assert.ok(again.heldBy && again.heldBy.pid === process.pid, '持锁者应当是当前进程');
+    } finally { releaseLock('t-lock-stale'); }
+    assert.equal(lockInfo('t-lock-stale').held, false, '释放后不应当再有锁');
+  });
+
   await A('弹窗：expectDialog=接受 时 confirm 走「确定」分支', async () => {
     const f = F('t-dlg-accept', [
       gt(DEMO + '/dialog'),

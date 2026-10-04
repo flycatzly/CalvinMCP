@@ -1,0 +1,106 @@
+{
+  "id": "int-iframe",
+  "name": "int-iframe",
+  "version": 1,
+  "createdAt": "2026-10-04T01:12:22.379Z",
+  "updatedAt": "2026-10-04T01:12:22.380Z",
+  "startUrl": "http://127.0.0.1:61539/frame",
+  "params": [],
+  "steps": [
+    {
+      "op": "goto",
+      "url": "http://127.0.0.1:61539/frame",
+      "seq": 1
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "innerBtn"
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "内层按钮",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "button",
+          "name": "内层按钮",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "内层按钮",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#innerBtn"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//*[@id=\"innerBtn\"]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "button",
+        "role": "button",
+        "name": "内层按钮",
+        "text": "内层按钮",
+        "attrs": {
+          "id": "innerBtn",
+          "type": "button"
+        },
+        "classes": [],
+        "path": [
+          "html",
+          "body",
+          "button#innerBtn"
+        ],
+        "prevText": "内层页面",
+        "nextText": "内层未点击"
+      },
+      "tag": "button",
+      "text": "内层按钮",
+      "frame": [
+        {
+          "strategy": "css",
+          "value": "#innerFrame"
+        }
+      ],
+      "time": 1791076339871,
+      "seq": 2
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "textPresent",
+      "text": "内层已点击",
+      "message": "内层按钮必须生效"
+    }
+  ],
+  "recording": {
+    "sessionId": "rec-6dddc849",
+    "startedAt": "2026-10-04T01:12:19.693Z",
+    "finishedAt": "2026-10-04T01:12:22.379Z",
+    "notes": [],
+    "downloads": [],
+    "finalUrl": "http://127.0.0.1:61539/frame",
+    "browserShape": {
+      "rowCounts": {
+        "table tbody tr": 0,
+        ".el-table__row": 0,
+        ".ant-table-row": 0,
+        "[role=\"row\"]": 0,
+        "ul li.list-item": 0,
+        ".vxe-body--row": 0
+      },
+      "emptyHit": null,
+      "url": "http://127.0.0.1:61539/frame",
+      "title": "带 iframe 的页面"
+    }
+  }
+}

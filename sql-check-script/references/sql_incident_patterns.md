@@ -1,5 +1,5 @@
 # SQL 事故模式（高频场景参考）
-> 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 
 把常见线上问题抽象成可复用的检测脚本模板。
 

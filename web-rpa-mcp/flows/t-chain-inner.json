@@ -1,0 +1,30 @@
+{
+  "id": "t-chain-inner",
+  "name": "t-chain-inner",
+  "version": 1,
+  "startUrl": "http://127.0.0.1:61539/chain/source",
+  "params": [],
+  "steps": [
+    {
+      "op": "goto",
+      "url": "http://127.0.0.1:61539/chain/source"
+    },
+    {
+      "op": "extract",
+      "locators": [
+        {
+          "strategy": "testid",
+          "value": "srcToken"
+        }
+      ],
+      "as": "token"
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "textPresent",
+      "text": "取数页"
+    }
+  ],
+  "updatedAt": "2026-10-04T01:12:44.257Z"
+}

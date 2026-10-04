@@ -1,5 +1,5 @@
 # calvin-db-mcp 工具映射（取证手册）
-> 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 
 calvin-db-mcp v1.6 提供 **16 个工具**：12 个只读分析工具（本 Skill 全部可用）、3 个写类工具（`execute` / `create_table` / `import_data` 一律禁用）、1 个导出工具（`export_data` 仅导出只读查询结果到文件，按需）。
 

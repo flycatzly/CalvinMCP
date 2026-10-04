@@ -1,5 +1,5 @@
 # SQL 八步分析工作流（证据版）
-> 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 
 每条 SQL 按此执行，**禁止跳步**。证据来自 calvin-db-mcp；取不到证据就标注「待补充」，禁止猜根因。
 

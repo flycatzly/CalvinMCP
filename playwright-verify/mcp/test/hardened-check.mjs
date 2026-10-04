@@ -32,7 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { RULES, lintSource, lint } from '../lib/lint.js';
 import { generate, writeGenerated } from '../lib/generate.js';
-import { runCli } from '../lib/cli.js';
+import { runCli, extractRootCause } from '../lib/cli.js';
 import { checkConfigSource } from '../lib/configcheck.js';
 import { summarize, clean, classify, CATEGORIES } from '../lib/signature.js';
 import { stripKnownNoise } from '../lib/runner.js';
@@ -605,6 +605,44 @@ log('=== H19) 发版门禁：副本验收 + 终态哈希终查不得静默失效
   const depDoc = fs.readFileSync(path.join(ROOT, '部署说明.详细版.md'), 'utf8');
   check('H19 发版文档写明门禁（§15 发布流程 + 发版门禁字样，发版者看得到）',
     depDoc.includes('发版门禁') && depDoc.includes('## 15. 发布流程'));
+}
+
+/* ---------------- H20: CLI 失败根因不得被堆栈噪声淹没 ---------------- */
+/*
+ * 实际踩过的坑：playwright-cli daemon 起不来时（如机器没有 Chrome），真实根因
+ * `Chromium distribution 'chrome' is not found` 写在 stderr 中段，后面跟着几十行
+ * Node 堆栈，尾部只剩 `daemonPid: 3316` —— 失败摘要按「尾部 3 行」取值时，
+ * 排障的人拿到的是 daemonPid，等于把根因让位给噪声：门禁报了失败却没报原因，
+ * 派活口径直接失真（「该谁修」答不出来）。修复后摘要必须优先提取
+ * PlaywrightError 根因行；命中已知浏览器缺失模式时附上修法。
+ */
+log('=== H20) CLI 失败摘要：根因行优先，daemonPid 噪声让位 ===');
+{
+  // 样本取自真实故障输出（Windows 无 Chrome、无通道配置时的 daemon 崩溃）
+  const realNoise = [
+    'Error: Daemon pid=18264: Daemon process exited with code 1',
+    "[PlaywrightError: Chromium distribution 'chrome' is not found at C:\\Users\\x\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+    'Run "npx playwright install chrome"] {',
+    '  log: []',
+    '}',
+    '    at ChildProcess.<anonymous> (node:internal/child_process)',
+    '  daemonPid: 18264',
+  ].join('\n');
+  const s1 = extractRootCause(realNoise, '');
+  check('H20 PlaywrightError 根因优先于堆栈噪声（不被 daemonPid 淹没）',
+    s1.includes("Chromium distribution 'chrome' is not found") && !s1.includes('daemonPid'),
+    s1);
+  check('H20 已知浏览器缺失模式附修法（setup-cli-config / playwright install 二选一）',
+    s1.includes('setup-cli-config') && s1.includes('npx playwright install chrome'));
+
+  const s2 = extractRootCause('Error: Daemon pid=1: Daemon process exited with code 7\n    at x (y)\n    daemonPid: 1', '');
+  check('H20 无 PlaywrightError 时提首个 Error 行（仍是根因方向，不是尾部噪声）',
+    s2.startsWith('Daemon pid=1: Daemon process exited with code 7') && !s2.includes('at x'),
+    s2);
+
+  const s3 = extractRootCause('line-a\nline-b\nline-c', '');
+  check('H20 无任何 Error 行时回退尾部行（原兜底行为不变）',
+    s3.split('\n').length === 3 && s3.endsWith('line-c'), s3);
 }
 
 log('');

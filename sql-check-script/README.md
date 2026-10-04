@@ -2,7 +2,7 @@
 
 SQL 全链路质量检测 + 只读数据分析 Skill（结合本地 MCP `calvin-db-mcp`）。
 
-> 版本 v1.4.2 · 仅只读 · 依赖 `calvin-db-mcp`（v1.6.2，同级目录部署）· 更新记录见下文「更新记录」
+> 版本 v1.4.3 · 仅只读 · 依赖 `calvin-db-mcp`（v1.6.2，同级目录部署）· 更新记录见下文「更新记录」
 
 ## 安装
 
@@ -31,7 +31,7 @@ SQL 全链路质量检测 + 只读数据分析 Skill（结合本地 MCP `calvin-
 | MCP 已注册 | 工具列表出现 `list_sources` 等 16 个 `db` 工具 |
 | MCP 已初始化 | 调 `list_sources` 返回源列表（非 `init_required`） |
 | 依赖自检 | `node mcp\selftest.mjs` → `0 failed`（用例数随版本/源连通性增长，勿以 passed 数为验收线） |
-| 全链路 E2E | `node tests\fullchain_test.mjs` → `55 passed, 0 failed`（46 核心 + 9 live-MySQL 可选段，后者需 `FULLCHAIN_MYSQL=1`；PG 段需 `FULLCHAIN_PG=1`，无 PG 源时干净 SKIP） |
+| 全链路 E2E | `node tests\fullchain_test.mjs` → `56 passed, 0 failed`（47 核心 + 9 live-MySQL 可选段，后者需 `FULLCHAIN_MYSQL=1`；PG 段需 `FULLCHAIN_PG=1`，无 PG 源时干净 SKIP） |
 | 一键验收 | `node tests\run_all.mjs` → 末行 `RUN_ALL selftest=…/0 e2e=…/0 … => OK`（selftest + E2E 合并裁决；也是安装后快速回归入口） |
 | 部署即验证 | `calvin-db-mcp` 的 `node install.mjs` 步骤 5 自动跑核心 E2E（找到 `DBMCP_E2E` 或同级 `sql-check-script` 时；缺 demo fixture 时 E2E 自供给 `../demo.db`，两者皆缺则干净 SKIP） |
 
@@ -94,7 +94,7 @@ sql-check-script/
 ├── 部署说明.md                         # 部署速查：3 步部署 + 验收判定 + 速查排障
 ├── 部署说明.详细版.md                   # 部署详解：环境/纯净边界/步骤/验收口径/护栏/排障/升级卸载
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E 测试（55 用例：传输/发现/取证/双模式/红线 + MySQL live + PG 可选段）
+│   ├── fullchain_test.mjs             # 全链路 E2E 测试（56 用例：传输/发现/取证/双模式/红线 + MySQL live + PG 可选段）
 │   └── run_all.mjs                    # 一键验收：selftest + E2E 合并裁决（RUN_ALL 机器可读汇总行）
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链
@@ -136,6 +136,8 @@ sql-check-script/
 4. **发版自检**：`node tests\run_all.mjs` 全绿（0 failed）后版本才可发布/重打发布包。
 
 ## 更新记录
+
+- **v1.4.3**：E2E 稳健性与现场卫生——计数断言**去魔法数字**：`count_rows` 精确计数改为「与独立 SQL COUNT 交叉一致」（测工具契约而非 fixture 快照）、「未被写坏」守卫改为「与开跑基线一致」（demo.db 是共享演示资产，`sqlite-add.mjs`/MCP 演示都会合法写它，行数漂移不再误报红；已实测 4 行状态下 47/0 全绿）；新增 **demo fixture 健康断言**（books 为空时 FAIL 文案直接给出恢复指引，不再连环误报）；E2E 临时配置**残留自愈**（进程崩溃/被杀时 finally 不执行，开跑清扫 os.tmpdir() 中 >1h 的 `fullchain-fixture-*.json`，开发机实测已积累残留 2 例且其一含旧版开发机路径）；核心用例 46 → 47，全量口径 55 → 56，相关文档（部署说明/详细版/验收清单/SKILL/README）已同步
 
 - **v1.4.2**：文档纪律与使用示例——新增「版本与文档同步规范」（版本标记行全量对齐 18 处文档、版本说明统一落点 README 更新记录、依赖版本引用同步、发版自检）；`SKILL.md`/`README.md` 扩写**自然语言使用示例**（模式 A/B 各 4 例 + 护栏拒绝示例 + 追问细化示例）；calvin-db-mcp 同步 v1.6.2（同口径文档纪律 + 使用示例，另含 distinct_values 并列频数稳定次序修复与 mysql-validate 全工具面钉测）；**发布口径**：纯净分发包零 npm 依赖——无 `node_modules`、无 `.` 前缀文件/目录、无开发机路径残留（`fullchain_test.mjs` 默认 server 目录改为同级解析），解压/拷贝即可部署（MCP 侧依赖由 `npm ci` 命令生成）；新增随包《部署说明.md》《部署说明.详细版.md》
 

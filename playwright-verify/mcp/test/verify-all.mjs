@@ -70,6 +70,27 @@ if (mode === '3' && (!HAS_TEST || !HAS_CLI)) {
   process.exit(1);
 }
 
+// 浏览器套件前置：源码树通道配置自愈（幂等）。
+// 为什么在这里做：.playwright/cli.config.json 是装机基础设施，distribute 一律排除、
+// install.mjs 只给部署目录生成 —— 源码树没人负责，clone 后第一次 --with-browser 时
+// CLI 回退自己的默认通道（Windows 上找 chrome），5 套连锁以「daemonPid」失败，
+// 真实根因要翻日志才知道。决策函数与 setup-cli-config.mjs / install.mjs 共用同一份
+// （cli-config.mjs，含「手工配置不覆盖」矩阵），不在这里另写一份猜测。
+// mode 2（零依赖副本）不会进来：HAS_CLI=false，副本树也不会被写脏。
+if (withBrowser && HAS_CLI) {
+  const { pickChannel, buildCliConfig, decideCliConfig } = await import('../skill/playwright-verify/scripts/cli-config.mjs');
+  const cfgFile = path.join(ROOT, '.playwright', 'cli.config.json');
+  let cfg = null;
+  try { cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch { /* 缺失/坏文件按重生成处理 */ }
+  const decision = decideCliConfig({ cfg, platform: process.platform });
+  if (decision.action === 'regenerate') {
+    const { channel, source } = pickChannel({ platform: process.platform });
+    fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
+    fs.writeFileSync(cfgFile, `${JSON.stringify(buildCliConfig({ platform: process.platform, arch: process.arch, channel, source }), null, 2)}\n`, 'utf8');
+    console.log(`浏览器套件前置：已生成 ${cfgFile}（${decision.detail}；通道 ${channel || 'chromium'}，${source}）`);
+  }
+}
+
 const SUITES = [
   { name: '扫描器（三份样例集）', file: 'mcp/test/lint-check.mjs', note: 'clean 不冤枉 / messy 全中 / tricky 不误报' },
   { name: '归因（缺陷 4 回归）', file: 'mcp/test/signature-check.mjs', note: 'ANSI 清洗幂等、断言不被误归成超时、6 条压成 4 个签名' },
@@ -77,7 +98,7 @@ const SUITES = [
   { name: 'MCP 协议与工具面', file: 'mcp/test/protocol-check.mjs', note: '握手、版本协商、13 个工具、错误语义、真实 stdio' },
   { name: '规则表一致性', file: 'mcp/test/rules-check.mjs', note: '规则 id 唯一、文档与实际规则表不漂移' },
   // 加固套件来自一次对抗性审计：专钉「不报错但结论错」的静默失效
-  { name: '加固（静默失效/反转/覆盖/篡改）', file: 'mcp/test/hardened-check.mjs', note: 'H1–H19：规则静默失效、数据篡改、模板串吞代码、静默覆盖、落盘绕过、配置误判、环境失败不漏成 unknown、智能体线守门、分发纯净、发版门禁' },
+  { name: '加固（静默失效/反转/覆盖/篡改）', file: 'mcp/test/hardened-check.mjs', note: 'H1–H20：规则静默失效、数据篡改、模板串吞代码、静默覆盖、落盘绕过、配置误判、环境失败不漏成 unknown、智能体线守门、分发纯净、发版门禁、CLI 失败根因不被噪声淹没' },
   { name: 'CLI 真实交互与落盘', file: 'mcp/test/cli-e2e.mjs', note: 'Ref 交互、fill/click 生效、产物落盘、PNG 魔数、白名单', browser: true, needs: ['cli'] },
   { name: 'Excel 编排端到端', file: 'mcp/test/orchestrate-e2e.mjs', note: '读表 → 映射 → 生成门禁 → 落盘 → 真跑通过', browser: true },
   { name: '参数规范化与产物命名', file: 'mcp/test/args-check.mjs', note: '布尔不静默反转、非法值报错、并发产物不互相覆盖', browser: true },
@@ -279,7 +300,7 @@ console.log(failed.length
 // 期望断言总数 = 核心段 + . 前缀两条钉（H10/H14 钉 .gitattributes/.gitignore，纯净包里诚实 SKIP 不计数）
 // + 部署副本段（装了才跑，未安装诚实 SKIP 不计数）。合法断言变更时同步更新 CORE 与 §15.3 判据行 ——
 // 对不上就失败，防止断言悄悄变少（静默失效）。
-const CORE = { 1: 323, 2: 374, 3: 422 };
+const CORE = { 1: 327, 2: 378, 3: 426 };
 let modeFailed = false;
 if (mode) {
   // 只计通过套件的断言：失败套件跑出的半截数字没有判据意义（check[0] 已经拦红）

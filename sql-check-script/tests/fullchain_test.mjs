@@ -20,6 +20,10 @@
  *   FULLCHAIN_PG=1     第 8 段 PostgreSQL 真实源（FULLCHAIN_PG_SRC 直接指定 source id）
  * fixture 自供给：目标配置缺 demo 源（全新部署机）时自动用 ../demo.db 生成临时 DBMCP_CONFIG，
  *   不依赖开发机配置；demo.db 也缺失时整体诚实 SKIP（exit 3 + 明示原因）：不误报失败，也不冒充全绿。
+ * fixture 残留自愈：进程崩溃/被杀时 finally 清理不会执行，os.tmpdir() 会攒下 fullchain-fixture-*.json
+ *   残留（实测攒过带开发机旧路径的旧配置）——开跑时顺手清扫 1 小时前的同前缀残留。
+ * 计数断言口径：demo.db 是共享演示资产（sqlite-add.mjs / MCP 演示都会合法写它），行数会变 ——
+ *   计数断言一律「与独立 SQL COUNT 交叉一致 / 与开跑基线一致」，不锚定魔法数字。
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -40,7 +44,22 @@ const ok = (name, cond, detail = "") => {
 // 计数并明示原因，不计 passed（那叫假绿）也不计 failed（那叫假红）。
 const skip = (name, reason) => { skippedHonest++; console.log(`SKIP ${name}（${reason}）`); };
 let fixtureCfgPath = null;
+let fixtureDbPath = null;
 {
+  // 残留自愈：清理 >1h 的同前缀陈旧 fixture（进程崩溃/被杀时 finally 不会执行）。
+  // 用 mtime 而非「非本次 pid」判定，避免误删并行运行中的其它 E2E 刚生成的 fixture。
+  try {
+    for (const f of fs.readdirSync(os.tmpdir())) {
+      if (!/^fullchain-fixture-\d+\.(json|db)$/.test(f)) continue;
+      const p = path.join(os.tmpdir(), f);
+      try {
+        if (Date.now() - fs.statSync(p).mtimeMs > 3600_000) {
+          fs.unlinkSync(p);
+          console.log(`FIXTURE 已清扫陈旧残留：${f}`);
+        }
+      } catch { /* 竞态：别的进程刚好删了/在用，忽略 */ }
+    }
+  } catch { /* tmpdir 不可读时跳过清扫，不影响主流程 */ }
   let hasDemo = false;
   try {
     const cfg = JSON.parse(fs.readFileSync(process.env.DBMCP_CONFIG || path.join(SERVER_DIR, "dbmcp.config.json"), "utf8"));
@@ -49,20 +68,25 @@ let fixtureCfgPath = null;
   if (!hasDemo) {
     const demoDb = path.join(SERVER_DIR, "..", "demo.db");
     if (fs.existsSync(demoDb)) {
+      // fixture 隔离：demo.db 是共享演示资产（sqlite-add.mjs / MCP 演示都会合法写它）——
+      // 复制专用副本再连，双向不干扰：演示中途写库不会让本套件看到行数漂移，
+      // 本套件的服务端连接（可能以可写模式打开 sqlite 文件）也不会给共享库留下 journal/checkpoint 痕迹。
+      fixtureDbPath = path.join(os.tmpdir(), `fullchain-fixture-${process.pid}.db`);
+      fs.copyFileSync(demoDb, fixtureDbPath);
       fixtureCfgPath = path.join(os.tmpdir(), `fullchain-fixture-${process.pid}.json`);
       fs.writeFileSync(fixtureCfgPath, JSON.stringify({
         sources: {
           [DEMO_SOURCE]: {
             type: "sqlite",
-            url: "sqlite://" + demoDb.replace(/\\/g, "/"),
+            url: "sqlite://" + fixtureDbPath.replace(/\\/g, "/"),
             allowWrites: false,
             allowCreateTable: false,
-            description: "fullchain E2E 自供给 fixture（只读）",
+            description: "fullchain E2E 自供给 fixture（只读，demo.db 专用副本）",
           },
         },
       }, null, 2));
       spawnEnv.DBMCP_CONFIG = fixtureCfgPath;
-      console.log(`FIXTURE 临时配置已生成（${DEMO_SOURCE} → ${demoDb}），本次运行不依赖既有 dbmcp.config.json`);
+      console.log(`FIXTURE 临时配置已生成（${DEMO_SOURCE} → ${fixtureDbPath}，demo.db 专用副本），本次运行不依赖既有 dbmcp.config.json`);
     } else {
       skip("全链路 E2E（整体）", `缺 demo fixture：${demoDb} 不存在且配置无 ${DEMO_SOURCE} 源`);
       console.log("\n=== 全链路 E2E：0 passed, 0 failed, 1 诚实SKIP ===");
@@ -172,8 +196,15 @@ try {
   ok("read: query 带过滤/排序/分页命中真实值", Array.isArray(rows.rows) && rows.row_count >= 1, JSON.stringify(rows).slice(0, 160));
 
   // 契约备注：count_rows 返回 { total } 且为字符串型 bigint（防精度丢失）；query 返回 row_count（数字）
+  // 计数不锚定魔法数字（demo.db 行数会因演示/自测合法变动）：与独立 SQL COUNT 交叉一致 + 开跑基线。
+  const cntViaSql = unwrap(await call("query", { source: DEMO_SOURCE, sql: "SELECT COUNT(*) AS c FROM books" }));
+  const baselineCount = Number(cntViaSql.rows?.[0]?.c);
+  ok("read: demo fixture 健康（books 非空）", baselineCount >= 1, `SQL COUNT=${baselineCount}（demo.db 被清空/损坏时，从发布包同级 calvin-db-mcp/demo.db 恢复）`);
+
   const cnt = unwrap(await call("count_rows", { source: DEMO_SOURCE, table: "books" }));
-  ok("read: count_rows 精确计数（total 字段）", Number(cnt.total) === 3, JSON.stringify(cnt).slice(0, 120));
+  ok("read: count_rows 精确计数（与 SQL COUNT 交叉一致）",
+    Number.isFinite(baselineCount) && Number(cnt.total) === baselineCount,
+    `count_rows=${cnt.total} / SQL COUNT=${cntViaSql.rows?.[0]?.c}`);
   ok("read: count_rows total 为字符串型 bigint（防精度丢失）", typeof cnt.total === "string", `typeof=${typeof cnt.total}`);
 
   const cntWhere = unwrap(await call("count_rows", { source: DEMO_SOURCE, table: "books", where: `status = '${realStatus}'` }));
@@ -342,9 +373,9 @@ try {
     console.log("SKIP live-pg（设 FULLCHAIN_PG=1 启用 PostgreSQL 真实源只读 E2E）");
   }
 
-  // ---------- 写后不破坏：库仍是 3 行 ----------
+  // ---------- 写后不破坏：行数与开跑基线一致（测「未被写坏」，不是「等于某个数」） ----------
   const after = unwrap(await call("count_rows", { source: DEMO_SOURCE, table: "books" }));
-  ok("guard: 全部红线用例跑完后 books 仍为 3 行（未被写坏）", Number(after.total) === 3, JSON.stringify(after));
+  ok("guard: 全部红线用例跑完后 books 行数与开跑基线一致（未被写坏）", Number(after.total) === baselineCount, `开跑=${baselineCount} / 跑完=${after.total}`);
 } catch (e) {
   // 只有「缺模块起不来」算诚实 SKIP（环境没装依赖 ≠ 产品失败）；
   // 其余任何崩溃照旧 FATAL——别让 SKIP 口径变成遮丑布。

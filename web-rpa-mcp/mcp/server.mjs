@@ -30,7 +30,7 @@ import {
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';
@@ -516,7 +516,7 @@ tool('schedule_add',
     const r = await addSchedule(flowId, spec);
     return r.ok
       ? ok(r, '✅ 已注册定时任务 ' + r.task + '（' + JSON.stringify(spec) + '）')
-      : fail('注册定时任务失败：' + r.stderr, r);
+      : fail('注册定时任务失败：' + (r.error || r.stderr), r);
   });
 
 tool('schedule_list', '列出已登记的定时任务及其在系统中的实际状态（下次运行时间、上次结果）。',
@@ -708,6 +708,11 @@ tool('doctor',
     }
     const plan = detectBrowserPlan(cfg);
     out.browser = { kind: plan.kind, detail: plan.detail };
+    if (plan.brokenList && plan.brokenList.length) {
+      out.browser.knownBroken = plan.knownBroken;
+      out.browser.brokenList = plan.brokenList;
+      out.hints.push('以下浏览器此前启动失败、已被缓存跳过（' + plan.brokenList.join('、') + '）：修好后重跑 doctor 会自动清除缓存；急用可手工删除 .work/browser-broken.json');
+    }
     if (plan.kind === 'none' || plan.kind === 'chromium-missing') {
       out.problems.push('没有可用浏览器');
       out.hints.push('npx playwright install chromium，或在 web-rpa.config.json 设置 browser.channel="msedge"');

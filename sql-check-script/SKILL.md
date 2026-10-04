@@ -5,7 +5,7 @@ description: 当需要对项目 SQL 做质量检测或对测试库做只读数�
 
 # SQL 检测与分析 Skill（全链路质量检测 + 只读数据分析）
 
-> 版本 v1.4.2 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.2) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
+> 版本 v1.4.3 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.2) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
 
 ## 角色设定
 
@@ -150,7 +150,7 @@ sql-check-script/
 ├── SKILL.md
 ├── README.md                          # 安装 / 验证 / 用法
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（55 用例 + PG 可选段）
+│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（56 用例 + PG 可选段）
 │   └── run_all.mjs                    # 一键验收：selftest + E2E 合并裁决
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链

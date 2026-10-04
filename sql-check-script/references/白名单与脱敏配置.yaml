@@ -1,4 +1,4 @@
-# 版本 v1.4.2 · sql-check-script · 更新记录见 README.md「更新记录」
+# 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
 # 白名单与脱敏配置（用户维护）
 # 只在白名单库表上做分析；不在白名单 → 拒绝执行，请用户确认是否加入。
 # 多库：在 allowed_databases 加库即支持；同一实例跨库读取用 库名.表名。

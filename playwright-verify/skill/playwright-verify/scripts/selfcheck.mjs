@@ -43,6 +43,20 @@ if (libDir) {
     add('Playwright 运行器', !!pw, pw ? pw.how : '未安装（run_verify 不可用，其余工具不受影响）', true);
     const cli = resolveCliRunner(cwd);
     add('playwright-cli', !!cli, cli ? cli.how : '未安装（cli_* 工具不可用）', true);
+    // CLI 在但通道配置缺失/跨平台时，cli_* 会以「Daemon process exited（daemonPid）」失败，
+    // 真实原因（如 Chromium distribution 'chrome' is not found）埋在堆栈里 —— 在这里提前点名，
+    // 免得装完依赖的人以为产品坏了。可选级：装了目标浏览器的机器上缺配置也能跑。
+    if (cli) {
+      const cfgFile = path.join(cwd, '.playwright', 'cli.config.json');
+      let cfg = null;
+      try { cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch { /* 缺失/坏文件按未配置处理 */ }
+      const platOk = cfg && typeof cfg._平台 === 'string' && cfg._平台.startsWith(process.platform);
+      add('CLI 浏览器通道配置', !!platOk,
+        platOk ? `${cfgFile}（${cfg._平台}）`
+          : `缺失或不匹配（${cfg ? `声明 ${cfg._平台 || '未知'}，当前 ${process.platform}` : `无 ${cfgFile}`}）`
+            + ' —— CLI 会回退默认通道。修法：node skill/playwright-verify/scripts/setup-cli-config.mjs',
+        true);
+    }
   } catch (e) { add('运行器探测', false, e.message); }
 
   try {
