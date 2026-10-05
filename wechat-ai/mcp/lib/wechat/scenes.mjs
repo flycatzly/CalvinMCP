@@ -4,7 +4,7 @@
 import { DEFAULT_SCENES, loadConfig, matchScene, saveConfig } from "../config.mjs";
 import { normalizePayload } from "../inbox.mjs";
 import { pj, store, tx } from "../store.mjs";
-import { fmtLocal, shortId, truncate, uniq } from "../util.mjs";
+import { fmtLocal, minMax, shortId, truncate, uniq } from "../util.mjs";
 
 /** 场景字段白名单：upsertScene 只接受这些字段，避免写入脏数据 */
 const SCENE_FIELDS = ["id", "name", "match", "priority", "task", "targets", "enabled", "summary", "output", "skills", "note"];
@@ -209,8 +209,9 @@ export function normalizeDeliveryPayload(input = {}) {
     links: Array.isArray(m.links) ? m.links : [],
   }));
   const tsList = messages.map((m) => m.ts).filter((t) => Number.isFinite(t));
-  const sinceMs = Number.isFinite(raw.ts_min) ? raw.ts_min : (tsList.length ? Math.min(...tsList) : null);
-  const untilMs = Number.isFinite(raw.ts_max) ? raw.ts_max : (tsList.length ? Math.max(...tsList) : null);
+  const tsRange = minMax(tsList);
+  const sinceMs = Number.isFinite(raw.ts_min) ? raw.ts_min : tsRange.min;
+  const untilMs = Number.isFinite(raw.ts_max) ? raw.ts_max : tsRange.max;
   const files = (base?.files ?? raw.files ?? []).map(fileEntry).filter(Boolean);
   const links = uniq([
     ...(base?.links ?? []),

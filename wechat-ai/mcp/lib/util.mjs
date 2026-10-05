@@ -132,6 +132,22 @@ export function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/**
+ * 数组最小/最大值（循环求值）。
+ * 不能用 Math.min(...arr)：spread 把整个数组当函数参数，大会话（数十万条消息）
+ * 会抛 Maximum call stack size exceeded。
+ */
+export function minMax(arr) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of arr) {
+    const n = Number(v);
+    if (n < lo) lo = n;
+    if (n > hi) hi = n;
+  }
+  return arr && arr.length ? { min: lo, max: hi } : { min: null, max: null };
+}
+
 export function truncate(s, n, suffix = "…") {
   const t = String(s ?? "");
   return t.length <= n ? t : t.slice(0, Math.max(0, n - suffix.length)) + suffix;

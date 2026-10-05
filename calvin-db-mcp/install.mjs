@@ -4,6 +4,11 @@
  * 用法:
  *   node install.mjs                      # 自动装依赖 + 自检（未初始化时给出导入指引，跳过注册）
  *   node install.mjs <DBeaver导出的.dbp>   # 自动装依赖 + 导入连接配置 + 自动注册到本地客户端
+ *   .dbp 参数三种写法（v1.6.25，同 import-dbeaver.mjs 同语义）：
+ *     完整路径      node install.mjs "C:\Users\<you>\Documents\保险-20260929.dbp"
+ *     同级目录裸名  node install.mjs "保险-20260929.dbp"   （cwd 找不到时回退安装器同级目录）
+ *     通配符        node install.mjs "*.dbp"               （cmd 引号内不展开，由安装器解析；
+ *                                                           多个匹配时拒绝并列候选，不静默挑一个）
  *   可选: --allow-writes         导入的配置允许 execute 写操作（安全红线仍然生效）
  *         --allow-create-table   导入的配置允许 create_table 建表（默认关闭，安全红线仍然生效）
  *         --force                配置已存在时仍用 .dbp 覆盖重导（与 import-dbeaver.mjs 同语义；
@@ -19,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolveDbpArg } from "./mcp/dbeaver-parse.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MCP = path.join(here, "mcp");
@@ -79,53 +85,86 @@ if (fs.existsSync(path.join(MCP, "node_modules", "mysql2")) && fs.existsSync(pat
 
 step(3, "连接配置初始化（必须先于注册）");
 const cfgPath = process.env.DBMCP_CONFIG || path.join(MCP, "dbmcp.config.json");
-const dbp = process.argv.slice(2).find((a) => !a.startsWith("--"));
+// v1.6.25: .dbp 参数简写——同级目录裸文件名 / 通配符 "*.dbp"（cmd 引号内通配符不展开，由
+// resolveDbpArg 解析）。解析为绝对路径后再交 import-dbeaver.mjs（其 cwd=mcp，裸相对路径
+// 会被解析到错误目录）；零匹配/多匹配明确拒绝并列候选，不静默挑一个。
+const positional = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+if (positional.length > 1) {
+  console.error("  ✗ 只接受一个 .dbp 参数，收到 " + positional.length + " 个：" + positional.join("、"));
+  console.error('    通配符请加引号（如 node install.mjs "*.dbp"），避免 shell 预展开成多个参数。');
+  process.exit(1);
+}
+const dbpRaw = positional[0] || null;
+let dbp = null, dbpErr = null;
+if (dbpRaw) {
+  const r = resolveDbpArg(dbpRaw, {
+    cwd: process.cwd(),
+    scriptDir: here,
+    listDir: (d) => { try { return fs.readdirSync(d); } catch { return []; } },
+    isFile: (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } },
+  });
+  if (r.ok) dbp = r.file;
+  else dbpErr = r.message;
+}
+const initGuidance = () => {
+  console.log("  ⚠ 尚未初始化：未发现 dbmcp.config.json（默认不预置任何凭据）。");
+  console.log("    请把 DBeaver 导出项目文件(.dbp) 作为参数重新运行本安装器，例如：");
+  console.log('    node install.mjs "*.dbp"                （.dbp 在当前目录/安装器同级目录时的简写）');
+  console.log('    node install.mjs "保险-20260929.dbp"     （同级目录直接写文件名）');
+  console.log('    node install.mjs "C:\\Users\\<you>\\Documents\\保险-20260929.dbp"');
+  console.log("    或直接执行: node mcp\\import-dbeaver.mjs <.dbp路径或同级目录简写>");
+};
 let configReady = fs.existsSync(cfgPath);
 if (configReady) {
   let c;
   try { c = JSON.parse(fs.readFileSync(cfgPath, "utf8")); }
   catch { console.error("  ✗ 配置文件损坏（" + cfgPath + "）：请备份后删除该文件，用 .dbp 重新导入"); process.exit(1); }
   console.log("  ✓ 已初始化：" + Object.keys(c.sources || {}).length + " 个源（url 加密存储，无明文）");
-  if (dbp && process.argv.includes("--force") && DRY_RUN) {
-    console.log("  ⊹ dry-run：跳过覆盖导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\" --force");
-  } else if (dbp && process.argv.includes("--force")) {
-    // v1.6.1 幂等对齐：--force 与 import-dbeaver.mjs 同语义——显式覆盖才重导（默认忽略 .dbp 防误覆盖）
-    console.log("  … --force 覆盖导入: " + dbp);
-    const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp, "--force"];
+  if (dbpRaw && process.argv.includes("--force") && DRY_RUN) {
+    if (dbp) console.log("  ⊹ dry-run：跳过覆盖导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\" --force");
+    else { console.error("  ✗ .dbp 参数解析失败：" + dbpErr); ok = false; }
+  } else if (dbpRaw && process.argv.includes("--force")) {
+    if (!dbp) { console.error("  ✗ .dbp 参数解析失败：" + dbpErr); ok = false; }
+    else {
+      // v1.6.1 幂等对齐：--force 与 import-dbeaver.mjs 同语义——显式覆盖才重导（默认忽略 .dbp 防误覆盖）
+      console.log("  … --force 覆盖导入: " + dbp);
+      const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp, "--force"];
+      if (process.argv.includes("--allow-writes")) impArgs.push("--allow-writes");
+      if (process.argv.includes("--allow-create-table")) impArgs.push("--allow-create-table");
+      const r = spawnSync(nodeBin, impArgs, { cwd: MCP, stdio: "inherit" });
+      if (r.status !== 0) { console.error("  ✗ 覆盖导入失败（见上）。"); ok = false; }
+      else {
+        try {
+          c = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+          console.log("  ✓ 覆盖导入完成：" + Object.keys(c.sources || {}).length + " 个源");
+        } catch { console.error("  ✗ 覆盖导入后配置文件不可解析，请检查 " + cfgPath); ok = false; }
+      }
+    }
+  } else if (dbpRaw) {
+    console.log("  ⊹ 检测到传入的 .dbp 参数，但配置已存在——已忽略（如需覆盖重导请加 --force，或执行 node mcp\\import-dbeaver.mjs \"" + (dbp || dbpRaw) + "\" --force）");
+  }
+} else if (dbpRaw && DRY_RUN) {
+  if (dbp) console.log("  ⊹ dry-run：跳过配置导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\"");
+  else { console.error("  ✗ .dbp 参数解析失败：" + dbpErr); initGuidance(); ok = false; }
+} else if (dbpRaw) {
+  if (!dbp) { console.error("  ✗ .dbp 参数解析失败：" + dbpErr); initGuidance(); ok = false; }
+  else {
+    console.log("  … 从 DBeaver 项目导入: " + dbp);
+    const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp];
     if (process.argv.includes("--allow-writes")) impArgs.push("--allow-writes");
     if (process.argv.includes("--allow-create-table")) impArgs.push("--allow-create-table");
     const r = spawnSync(nodeBin, impArgs, { cwd: MCP, stdio: "inherit" });
-    if (r.status !== 0) { console.error("  ✗ 覆盖导入失败（见上）。"); ok = false; }
+    if (r.status !== 0) { console.error("  ✗ 导入失败（见上）。"); ok = false; }
     else {
-      try {
-        c = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-        console.log("  ✓ 覆盖导入完成：" + Object.keys(c.sources || {}).length + " 个源");
-      } catch { console.error("  ✗ 覆盖导入后配置文件不可解析，请检查 " + cfgPath); ok = false; }
+      configReady = true;
+      let c;
+      try { c = JSON.parse(fs.readFileSync(cfgPath, "utf8")); }
+      catch { console.error("  ✗ 导入后配置文件不可解析，请检查 " + cfgPath); ok = false; c = { sources: {} }; }
+      console.log("  ✓ 导入完成：" + Object.keys(c.sources || {}).length + " 个源（url 已加密为 enc 字段）");
     }
-  } else if (dbp) {
-    console.log("  ⊹ 检测到传入的 .dbp 参数，但配置已存在——已忽略（如需覆盖重导请加 --force，或执行 node mcp\\import-dbeaver.mjs \"" + dbp + "\" --force）");
-  }
-} else if (dbp && DRY_RUN) {
-  console.log("  ⊹ dry-run：跳过配置导入（不落盘）——真实装机将执行: node mcp\\import-dbeaver.mjs \"" + dbp + "\"");
-} else if (dbp) {
-  console.log("  … 从 DBeaver 项目导入: " + dbp);
-  const impArgs = [path.join(MCP, "import-dbeaver.mjs"), dbp];
-  if (process.argv.includes("--allow-writes")) impArgs.push("--allow-writes");
-  if (process.argv.includes("--allow-create-table")) impArgs.push("--allow-create-table");
-  const r = spawnSync(nodeBin, impArgs, { cwd: MCP, stdio: "inherit" });
-  if (r.status !== 0) { console.error("  ✗ 导入失败（见上）。"); ok = false; }
-  else {
-    configReady = true;
-    let c;
-    try { c = JSON.parse(fs.readFileSync(cfgPath, "utf8")); }
-    catch { console.error("  ✗ 导入后配置文件不可解析，请检查 " + cfgPath); ok = false; c = { sources: {} }; }
-    console.log("  ✓ 导入完成：" + Object.keys(c.sources || {}).length + " 个源（url 已加密为 enc 字段）");
   }
 } else {
-  console.log("  ⚠ 尚未初始化：未发现 dbmcp.config.json（默认不预置任何凭据）。");
-  console.log("    请把 DBeaver 导出项目文件(.dbp) 路径作为参数重新运行本安装器，例如：");
-  console.log('    node install.mjs "C:\\Users\\<you>\\Documents\\保险-20260929.dbp"');
-  console.log("    或直接执行: node mcp\\import-dbeaver.mjs <.dbp路径>");
+  initGuidance();
 }
 
 step(4, "功能自检（selftest）");
@@ -155,14 +194,14 @@ if (configReady) {
 step(5, "全链路 E2E 验收（部署即验证）");
 let e2ePass = "-", e2eFail = "-", e2eSkip = "-";
 {
-  // E2E 位于技能仓库（sql-check-script/tests/fullchain_test.mjs），未随包分发时跳过属正常；
-  // 可用 DBMCP_E2E=<fullchain_test.mjs 路径> 显式指定。部署验收只跑确定性核心段：
-  // 剥离 FULLCHAIN_* live 门控，避免部署机恰好带这些变量但真实源不可达时误判安装失败。
-  const e2ePath = process.env.DBMCP_E2E || path.resolve(here, "..", "sql-check-script", "tests", "fullchain_test.mjs");
+  // E2E 解析链（v1.6.4 起随包常驻）：DBMCP_E2E 显式指定 > 技能仓库 sql-check-script/tests/fullchain_test.mjs > 随包 mcp/e2e-validate.mjs。
+  // 部署验收只跑确定性核心段：剥离 FULLCHAIN_* live 门控，避免部署机恰好带这些变量但真实源不可达时误判安装失败。
+  const e2ePath = process.env.DBMCP_E2E
+    || [path.resolve(here, "..", "sql-check-script", "tests", "fullchain_test.mjs"), path.join(MCP, "e2e-validate.mjs")].find((p) => fs.existsSync(p));
   if (!configReady) {
     console.log("  ⊹ 跳过（未初始化）；初始化后重跑本安装器会执行全链路 E2E");
-  } else if (!fs.existsSync(e2ePath)) {
-    console.log("  ⊹ 跳过：未找到全链路 E2E（技能仓库未随包分发属正常）。可设 DBMCP_E2E=<fullchain_test.mjs 路径>启用部署验收。");
+  } else if (!e2ePath) {
+    console.log("  ⊹ 跳过：未找到全链路 E2E（不应出现——e2e-validate.mjs 已随包）。可设 DBMCP_E2E=<路径>启用部署验收。");
   } else {
     const env = { ...process.env };
     delete env.FULLCHAIN_MYSQL;

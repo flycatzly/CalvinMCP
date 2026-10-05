@@ -52,7 +52,7 @@ const EXCLUDE_DIRS = new Set([
   'node_modules', '.git',
   '.playwright-artifacts', '.playwright-cli',
   'test-results', 'dist',
-  'generated', 'generated-e2e', 'generated-orchestrated', 'generated-booltest',
+  'generated', 'generated-e2e', 'generated-orchestrated', 'generated-booltest', 'generated-argscheck',
   'scratch',
   '__pycache__',   // Python 字节码：运行时再生成，且内嵌编译时路径
 ]);

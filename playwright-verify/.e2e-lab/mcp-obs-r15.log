@@ -1,0 +1,5 @@
+[2026-10-04T17:48:09.256Z] starting playwright-verify v1.8.7 cwd=D:\work\MCP\playwright-verify
+[2026-10-04T17:48:09.259Z] initialize client=pv-r15@1.0 requested=2025-11-25 → 2025-11-25
+[2026-10-04T17:48:13.873Z] tools/call name=nl_test_goal ms=4613 outcome=ok code=-
+[2026-10-04T17:48:18.429Z] tools/call name=nl_test_goal ms=4552 outcome=ok code=-
+[2026-10-04T17:48:22.939Z] tools/call name=nl_test_goal ms=4510 outcome=ok code=-

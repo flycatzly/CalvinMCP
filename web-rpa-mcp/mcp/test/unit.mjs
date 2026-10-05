@@ -5,7 +5,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import assert from 'node:assert/strict';
 
-import { formatDate, addDays, slugify, maskSecret } from '../lib/core.mjs';
+import { formatDate, addDays, slugify, maskSecret, redactByKey, redactPath, maskingEnabled, redactKeyList, log, readConfig, writeConfig, DIRS } from '../lib/core.mjs';
 import { readTable, resolveColumn, readXlsx } from '../lib/table.mjs';
 import { resolveTemplate, resolveBuiltin, resolveToken, autodetectVariables, fromTable, resolveParams } from '../lib/vars.mjs';
 
@@ -115,6 +115,63 @@ t('slugify 非法字符', () => assert.equal(slugify('a<b>c:d'), 'a-b-c-d'));
 t('slugify 空白回退', () => assert.equal(slugify('   ', 'flow'), 'flow'));
 t('maskSecret 短串', () => assert.equal(maskSecret('abc'), '***'));
 t('maskSecret 长串', () => assert.match(maskSecret('abcdefghijklmn'), /^abc\*+lmn$/));
+
+console.log('\n[redaction 键名脱敏]');
+t('redactByKey 命中键名整体脱敏（不分大小写）', () => {
+  const out = redactByKey({ Password: 'P@ss-1', user: 'u1' }, new Set(['password']));
+  assert.equal(out.Password, '***');
+  assert.equal(out.user, 'u1');
+});
+t('redactByKey 嵌套数组递归且不改入参', () => {
+  const input = { list: [{ token: 'T-1' }, { ok: 1 }], n: 5 };
+  const out = redactByKey(input, new Set(['token']));
+  assert.equal(out.list[0].token, '***');
+  assert.equal(out.list[1].ok, 1);
+  assert.equal(out.n, 5);
+  assert.equal(input.list[0].token, 'T-1', 'redactByKey 不应改动入参');
+});
+t('redactByKey 关闭或空名单时原样返回', () => {
+  const v = { password: 'x' };
+  assert.equal(redactByKey(v, new Set(['password']), false), v);
+  assert.equal(redactByKey(v, new Set()), v);
+});
+t('maskingEnabled 默认开、maskSecrets=false 关；redactKeyList 自定义名单整体替换', () => {
+  assert.equal(maskingEnabled({}), true);
+  assert.equal(maskingEnabled({ security: { maskSecrets: true } }), true);
+  assert.equal(maskingEnabled({ security: { maskSecrets: false } }), false);
+  assert.ok(redactKeyList({}).has('password'), '默认名单应含 password');
+  const custom = redactKeyList({ security: { redactKeys: ['订单号'] } });
+  assert.ok(custom.has('订单号'));
+  assert.ok(!custom.has('password'), '自定义名单应整体替换默认');
+});
+t('log() 额外字段命中 redactKeys 脱敏后落盘', () => {
+  const before = readConfig().security;
+  writeConfig({ security: { maskSecrets: true, redactKeys: ['password'] } });
+  try {
+    log('unit-redact', 'info', '脱敏探针', { password: 'FAKE-LOG-PW-42', user: 'u-ok-42' });
+    const raw = fs.readFileSync(path.join(DIRS.logs, formatDate(new Date()) + '.log'), 'utf8');
+    assert.ok(raw.indexOf('FAKE-LOG-PW-42') < 0, '日志泄露了 password 明文');
+    assert.ok(raw.indexOf('u-ok-42') >= 0, '普通字段不应被脱敏');
+  } finally {
+    writeConfig({ security: before });
+  }
+});
+
+console.log('\n[redaction 路径脱敏]');
+t('redactPath 包内路径保留 mcp/ 相对段且行列号不动', () => {
+  const out = redactPath('    at requireFlow (file:///D:/work/MCP/web-rpa-mcp/mcp/lib/store.mjs:69:17)');
+  assert.equal(out, '    at requireFlow (lib/store.mjs:69:17)');
+});
+t('redactPath 包外/含空格路径只留文件名，行列号不动', () => {
+  assert.equal(redactPath('读取 C:\\Users\\alice\\data\\orders.xlsx 失败'), '读取 orders.xlsx 失败');
+  assert.equal(redactPath('at f (C:\\Program Files\\App\\run.js:1:2)'), 'at f (run.js:1:2)');
+  assert.equal(redactPath('at g (/home/alice/x.log:5:1)'), 'at g (x.log:5:1)');
+});
+t('redactPath 无路径文本与 URL 里的伪路径原样返回', () => {
+  assert.equal(redactPath('流程不存在: x（用 flow_list 查看可用流程）'), '流程不存在: x（用 flow_list 查看可用流程）');
+  assert.equal(redactPath('见 https://example.com/home/user/x'), '见 https://example.com/home/user/x');
+  assert.equal(redactPath(undefined), '');
+});
 
 console.log('\n[table]');
 const csv = path.join(tmp, 'orders.csv');
@@ -303,6 +360,177 @@ t('validateSpec once 不传 date 时今天的过去时刻被拦下', () => {
 t('validateSpec once 非法 date/at 格式被拦下', () => {
   assert.ok(String(validateSpec({ frequency: 'once', date: '2026-10-01', at: '09:00' }, now)).indexOf('date 格式') >= 0, '连字符日期应提示改用 YYYY/MM/DD');
   assert.ok(String(validateSpec({ frequency: 'once', date: '2026/10/02', at: '9点' }, now)).indexOf('at 格式') >= 0, '非法时刻应被拦下');
+});
+
+console.log('\n[ops 定时预期]');
+const { scheduleIntervalHours } = await import('../lib/ops.mjs');
+t('scheduleIntervalHours minute 按 everyMinutes', () => assert.equal(scheduleIntervalHours({ frequency: 'minute', everyMinutes: 10 }), 10 / 60));
+t('scheduleIntervalHours minute 默认 30 分钟', () => assert.equal(scheduleIntervalHours({ frequency: 'minute' }), 0.5));
+t('scheduleIntervalHours hourly 按 everyHours', () => assert.equal(scheduleIntervalHours({ frequency: 'hourly', everyHours: 2 }), 2));
+t('scheduleIntervalHours daily/weekly/monthly', () => {
+  assert.equal(scheduleIntervalHours({ frequency: 'daily' }), 24);
+  assert.equal(scheduleIntervalHours({ frequency: 'weekly' }), 168);
+  assert.equal(scheduleIntervalHours({ frequency: 'monthly' }), 720);
+});
+t('scheduleIntervalHours once/logon 无固定间隔返回 null', () => {
+  assert.equal(scheduleIntervalHours({ frequency: 'once', date: '2026/12/31', at: '10:00' }), null);
+  assert.equal(scheduleIntervalHours({ frequency: 'logon' }), null);
+});
+
+console.log('\n[run 预算解析 resolveRunBudget]');
+const { resolveRunBudget } = await import('../lib/core.mjs');
+t('显式参数优先于配置', () => {
+  assert.deepEqual(resolveRunBudget(5000, { maxDurationMs: 60000 }, 'manual'), { maxDurationMs: 5000, cappedBy: null });
+});
+t('未传显式则用配置 run.maxDurationMs', () => {
+  assert.deepEqual(resolveRunBudget(undefined, { maxDurationMs: 60000 }, 'manual'), { maxDurationMs: 60000, cappedBy: null });
+});
+t('manual 触发不吃无人值守默认上限', () => {
+  assert.deepEqual(resolveRunBudget(undefined, { maxDurationMs: 0, unattendedMaxDurationMs: 7200000 }, 'manual'), { maxDurationMs: 0, cappedBy: null });
+});
+t('schedule 且未配总超时时启用无人值守默认上限', () => {
+  assert.deepEqual(resolveRunBudget(undefined, { maxDurationMs: 0, unattendedMaxDurationMs: 7200000 }, 'schedule'),
+    { maxDurationMs: 7200000, cappedBy: 'unattendedMaxDurationMs' });
+});
+t('显式 maxDurationMs=0 是逃生舱（schedule 也不封顶）', () => {
+  assert.deepEqual(resolveRunBudget(0, { maxDurationMs: 0, unattendedMaxDurationMs: 7200000 }, 'schedule'), { maxDurationMs: 0, cappedBy: null });
+});
+t('unattendedMaxDurationMs=0 关闭无人值守默认上限', () => {
+  assert.deepEqual(resolveRunBudget(undefined, { maxDurationMs: 0, unattendedMaxDurationMs: 0 }, 'schedule'), { maxDurationMs: 0, cappedBy: null });
+});
+t('chain 子流程触发方式不吃无人值守上限（只随父预算）', () => {
+  assert.deepEqual(resolveRunBudget(undefined, { maxDurationMs: 0, unattendedMaxDurationMs: 7200000 }, 'chain:parent'), { maxDurationMs: 0, cappedBy: null });
+  assert.deepEqual(resolveRunBudget(3000, { maxDurationMs: 0, unattendedMaxDurationMs: 7200000 }, 'chain:parent'), { maxDurationMs: 3000, cappedBy: null });
+});
+
+console.log('\n[工具入参校验 validateArgs]');
+const { validateArgs } = await import('../lib/core.mjs');
+const S_RUN = { type: 'object', properties: { flowId: { type: 'string' }, headed: { type: 'boolean' }, maxDurationMs: { type: 'integer', minimum: 0 }, videoOn: { type: 'string', enum: ['failure', 'always'] } }, required: ['flowId'] };
+t('合法参数通过且未声明键保留', () => {
+  const r = validateArgs({ flowId: 'x', 未来新键: 1 }, S_RUN);
+  assert.equal(r.ok, true);
+  assert.equal(r.value.flowId, 'x');
+  assert.equal(r.value['未来新键'], 1);
+});
+t('字符串数字/布尔保守转换（LLM 客户端常发字符串）', () => {
+  const r = validateArgs({ flowId: 'x', maxDurationMs: '5000', headed: 'false' }, S_RUN);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.value.maxDurationMs, 5000);
+  assert.equal(r.value.headed, false);
+});
+t('转不动的字符串报错并点名参数', () => {
+  const r = validateArgs({ flowId: 'x', maxDurationMs: 'abc' }, S_RUN);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'maxDurationMs');
+  assert.ok(/整数/.test(r.error.message), r.error.message);
+});
+t('minimum 拒绝负数（负的总超时限不再被静默当"不限"）', () => {
+  const r = validateArgs({ flowId: 'x', maxDurationMs: -1 }, S_RUN);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'maxDurationMs');
+  assert.ok(/≥ 0/.test(r.error.message), r.error.message);
+});
+t('enum 拒绝拼错的取值', () => {
+  const r = validateArgs({ flowId: 'x', videoOn: 'sometimes' }, S_RUN);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'videoOn');
+});
+t('required 缺失点名参数', () => {
+  const r = validateArgs({ maxDurationMs: 1 }, S_RUN);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'flowId');
+  assert.ok(/缺少必填/.test(r.error.message), r.error.message);
+});
+t('数组元素逐个校验（items[1].flow）', () => {
+  const S = { type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: { flow: { type: 'string' } }, required: ['flow'] } } }, required: ['items'] };
+  const r = validateArgs({ items: [{ flow: 'a' }, {}] }, S);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'items[1].flow');
+});
+t('object 类型拒绝数组、整数拒绝小数', () => {
+  const S = { type: 'object', properties: { params: { type: 'object' }, n: { type: 'integer' } } };
+  assert.equal(validateArgs({ params: [] }, S).ok, false);
+  assert.equal(validateArgs({ n: 1.5 }, S).ok, false);
+  assert.equal(validateArgs({ n: 2 }, S).ok, true);
+});
+t('未声明类型的片段不设限', () => {
+  const S = { type: 'object', properties: { 任意: {} } };
+  const r = validateArgs({ 任意: [1, 'x', null] }, S);
+  assert.equal(r.ok, true, JSON.stringify(r));
+});
+
+console.log('\n[路径穿越防护 assertSafeId / pattern]');
+const { assertSafeId, SAFE_ID_PATTERN } = await import('../lib/core.mjs');
+const { flowPath, runsFlowRoot, runDir } = await import('../lib/store.mjs');
+t('assertSafeId 放行常规 id / 中文 / 内部点号', () => {
+  assert.equal(assertSafeId('ok-id_1'), 'ok-id_1');
+  assert.equal(assertSafeId('中文流程'), '中文流程');
+  assert.equal(assertSafeId('a.b'), 'a.b');
+});
+t('assertSafeId 拒绝路径穿越与非法字符', () => {
+  for (const bad of ['../x', '..\\x', 'a/b', 'a\\b', 'a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b', '..', 'x..y', '..x']) {
+    assert.throws(() => assertSafeId(bad), /不合法/, '应拒绝: ' + bad);
+  }
+});
+t('assertSafeId 拒绝点号开头/收尾/空/超长', () => {
+  for (const bad of ['', '.hidden', 'a.', 'a ', 'x'.repeat(129)]) {
+    assert.throws(() => assertSafeId(bad), /不合法/, '应拒绝: ' + JSON.stringify(bad));
+  }
+});
+t('assertSafeId 拒绝控制符', () => {
+  const nul = String.fromCharCode(0), us = String.fromCharCode(31);
+  assert.throws(() => assertSafeId('a' + nul + 'b'), /不合法/);
+  assert.throws(() => assertSafeId('a' + us + 'b'), /不合法/);
+});
+t('flowPath 拒绝穿越 id（曾可读 flows/ 之外任意 .json）', () => {
+  assert.throws(() => flowPath('../web-rpa.config'), /不合法/);
+  assert.throws(() => flowPath('..\\web-rpa.config'), /不合法/);
+  const p = flowPath('ok-id');
+  assert.ok(p.endsWith(path.join('flows', 'ok-id.json')), p);
+});
+t('runsFlowRoot/runDir 拒绝穿越 flowId/stamp', () => {
+  assert.throws(() => runsFlowRoot('../x'), /不合法/);
+  assert.throws(() => runsFlowRoot(''), /不合法/);
+  assert.throws(() => runDir('ok', '../x'), /不合法/);
+  assert.throws(() => runDir('ok', 'a.'), /不合法/);
+  const d = runDir('ok', '20261004-120000-000');
+  assert.ok(d.endsWith(path.join('runs', 'ok', '20261004-120000-000')), d);
+});
+t('validateArgs pattern 拦截非法 id 并点名参数', () => {
+  const S = { type: 'object', properties: { flowId: { type: 'string', pattern: SAFE_ID_PATTERN } }, required: ['flowId'] };
+  const r = validateArgs({ flowId: '../web-rpa.config' }, S);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'flowId');
+  assert.equal(validateArgs({ flowId: 'ok-id' }, S).ok, true);
+  assert.equal(validateArgs({ flowId: '中文流程' }, S).ok, true, JSON.stringify(validateArgs({ flowId: '中文流程' }, S)));
+});
+t('validateArgs pattern 同样覆盖数组元素路径', () => {
+  const S = { type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: { flow: { type: 'string', pattern: SAFE_ID_PATTERN } }, required: ['flow'] } } }, required: ['items'] };
+  const r = validateArgs({ items: [{ flow: 'a' }, { flow: '..\\x' }] }, S);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'items[1].flow');
+});
+t('SAFE_ID_PATTERN 编译为合法正则且与 assertSafeId 同向', () => {
+  const re = new RegExp(SAFE_ID_PATTERN);
+  assert.equal(re.test('ok-id'), true);
+  assert.equal(re.test('中文流程'), true);
+  assert.equal(re.test('a:b'), false);
+  assert.equal(re.test('a/b'), false);
+  assert.equal(re.test('a\\b'), false);
+  assert.equal(re.test(''), false);
+  assert.equal(re.test('x'.repeat(129)), false);
+});
+
+await ta('schedule.taskPrefix 配置驱动系统任务名前缀（恢复默认不残留）', async () => {
+  const { taskName } = await import('../lib/schedule.mjs');
+  const before = readConfig().schedule;
+  writeConfig({ schedule: { taskPrefix: 'XPA' } });
+  try {
+    assert.equal(taskName('f1'), 'XPA\\f1');
+  } finally {
+    writeConfig({ schedule: before });
+  }
+  assert.equal(taskName('f1'), 'WebRPA\\f1', 'taskPrefix 未恢复默认');
 });
 
 console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');

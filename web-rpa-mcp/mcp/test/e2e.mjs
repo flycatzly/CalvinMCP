@@ -9,7 +9,7 @@ import { startRecording, stopRecording, activeSession } from '../lib/recorder.mj
 import { runFlow } from '../lib/player.mjs';
 import { loadFlow, saveFlow, deleteFlow, stepLabel } from '../lib/store.mjs';
 import { lintFlow } from '../lib/lint.mjs';
-import { formatDate, DIRS } from '../lib/core.mjs';
+import { formatDate, DIRS, readConfig, writeConfig } from '../lib/core.mjs';
 import { closeAll, getPlaywright } from '../lib/browser.mjs';
 
 const created = [];
@@ -160,6 +160,42 @@ async function main() {
     const after = loadFlow(healFlow.id);
     const s = after.steps.find((x) => x.op === 'click' && (x.locators || []).some((l) => l.value === '导出'));
     assert.ok(s, '回写后应出现基于文本"导出"的定位符；当前=' + JSON.stringify(after.steps.filter((x) => x.op === 'click').map((x) => (x.locators || []).map((l) => l.strategy + ':' + l.value))));
+  });
+
+  /* run.healMinScore 与 flow_run.learn 的语义锁 */
+  const mkHealFlow = (id, name) => {
+    const f = JSON.parse(JSON.stringify(loadFlow(stop.flowId)));
+    f.id = id; f.name = name;
+    const s = f.steps.find((x) => x.op === 'click' && x.expectDownload);
+    s.locators = [{ strategy: 'css', value: '#this-button-no-longer-exists-9f3a' }];   // 同样打断，保留 fingerprint
+    delete f.selfHealedAt;
+    saveFlow(f);
+    created.push(f.id);
+    return f;
+  };
+
+  const healFlow2 = mkHealFlow(stop.flowId + '-heal-threshold', 'e2e-自愈阈值验证');
+  const prevHeal = readConfig().run.healMinScore;
+  writeConfig({ run: { healMinScore: 2 } });   // 阈值高于置信度上限 1 -> 自愈永不达标
+  try {
+    const rep2 = await runFlow(loadFlow(healFlow2.id), { params: {}, headed: false, trigger: 'e2e-heal-threshold' });
+    console.log('  状态=' + rep2.status + '  自愈记录=' + JSON.stringify(rep2.healed) + '  错误=' + (rep2.error || '无'));
+    check('healMinScore 阈值不可达时不自愈（直接判失败，不硬凑）', () => {
+      assert.equal(rep2.status, 'fail', '阈值 2 不该还能自愈成功');
+      assert.equal((rep2.healed || []).length, 0, '不该产生自愈记录: ' + JSON.stringify(rep2.healed));
+    });
+  } finally {
+    writeConfig({ run: { healMinScore: prevHeal } });
+  }
+
+  const healFlow3 = mkHealFlow(stop.flowId + '-heal-nolearn', 'e2e-自愈不回写验证');
+  const beforeSteps3 = JSON.stringify(loadFlow(healFlow3.id).steps);
+  const rep3 = await runFlow(loadFlow(healFlow3.id), { params: {}, headed: false, trigger: 'e2e-heal-nolearn', learn: false });
+  console.log('  状态=' + rep3.status + '  自愈记录=' + JSON.stringify(rep3.healed));
+  check('learn=false 时自愈照常生效但不回写流程文件', () => {
+    assert.equal(rep3.status, 'pass', '自愈后应成功: ' + rep3.error);
+    assert.ok((rep3.healed || []).length > 0, '应有自愈记录');
+    assert.equal(JSON.stringify(loadFlow(healFlow3.id).steps), beforeSteps3, 'learn=false 不该回写流程文件');
   });
 
   /* ---------- 6. 空结果守卫 ---------- */

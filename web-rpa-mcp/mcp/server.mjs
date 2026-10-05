@@ -5,7 +5,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import {
   DIRS, ROOT, MCP_DIR, ensureDirs, readConfig, writeConfig, ok, fail,
-  logger, maskSecret, nowIso, readJson,
+  logger, maskSecret, redactPath, nowIso, readJson, DEFAULT_CONFIG, validateArgs, SAFE_ID_PATTERN,
 } from './lib/core.mjs';
 import {
   listFlows, loadFlow, saveFlow, deleteFlow, requireFlow, listRuns, loadRun,
@@ -21,16 +21,16 @@ import {
   addSchedule, listSchedules, removeSchedule, runScheduleNow, queryTask, isWindows,
 } from './lib/schedule.mjs';
 import { statusReport, pruneRuns, pruneAllRuns, pruneLogs, lockInfo, releaseLock } from './lib/ops.mjs';
-import { sendNotify, composeRunMessage, shouldNotify } from './lib/notify.mjs';
+import { sendNotify, composeRunMessage, shouldNotify, outboxInfo } from './lib/notify.mjs';
 import { setSecret, listSecrets, deleteSecret } from './lib/secrets.mjs';
 import {
-  getPlaywright, detectBrowserPlan, closeAll, openCount,
+  getPlaywright, detectBrowserPlan, detectFfmpeg, closeAll, openCount,
   launchContext, closeContext, profileInfo, resetProfile,
 } from './lib/browser.mjs';
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.3.1';
+const VERSION = '1.5.10';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';
@@ -45,7 +45,7 @@ function tool(name, description, inputSchema, handler) {
   TOOLS.push({ name, description, inputSchema: inputSchema || { type: 'object', properties: {} }, handler });
 }
 
-const S_FLOW = { type: 'string', description: '流程 id' };
+const S_FLOW = { type: 'string', description: '流程 id（1–128 字符，不得含路径分隔符等特殊符号）', pattern: SAFE_ID_PATTERN };
 const S_IDX = { type: 'integer', description: '步骤序号（从 1 开始）' };
 
 /** 改动/删除流程前先快照磁盘上的当前定义：flow_restore 才能在改坏后一键回滚（每个流程最多留 10 份） */
@@ -358,6 +358,9 @@ tool('flow_run',
       allowLintErrors: { type: 'boolean', description: '忽略静态检查的阻断项强制运行' },
       learn: { type: 'boolean', description: '是否把自愈成功的定位符回写进流程文件，默认 true' },
       evidenceOn: { type: 'string', enum: ['always', 'failure', 'never'] },
+      maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）' },
+      saveVideo: { type: 'boolean', description: '本次是否全程录像留证；不传用配置 run.saveVideo（流程含敏感输入时自动跳过，防录像泄露密码画面）' },
+      videoOn: { type: 'string', enum: ['failure', 'always'], description: '成功时是否保留录像（failure=删成功录像省空间）' },
       trigger: { type: 'string' },
     },
     required: ['flowId'],
@@ -382,6 +385,10 @@ tool('flow_run',
       extracted: report.extracted,
       downloads: report.downloads,
       screenshots: report.screenshots,
+      videos: report.videos,
+      videoNote: report.videoNote || null,
+      timedOut: !!report.timedOut,
+      maxDurationMs: report.maxDurationMs,
       reportPath: report.reportPath,
       notifications: report.notifications,
     }, head);
@@ -405,7 +412,7 @@ tool('run_history', '查看某个流程的历史执行记录（状态、耗时�
   });
 
 tool('run_report', '读取某次执行的完整报告（默认 latest）。',
-  { type: 'object', properties: { flowId: S_FLOW, stamp: { type: 'string', description: '执行时间戳，默认 latest' } }, required: ['flowId'] },
+  { type: 'object', properties: { flowId: S_FLOW, stamp: { type: 'string', description: '执行时间戳，默认 latest', pattern: SAFE_ID_PATTERN } }, required: ['flowId'] },
   async (a) => {
     const r = loadRun(a.flowId, a.stamp || 'latest');
     if (!r) return fail('没有找到 ' + a.flowId + ' 的执行报告');
@@ -413,7 +420,9 @@ tool('run_report', '读取某次执行的完整报告（默认 latest）。',
   });
 
 tool('status_report',
-  '无人值守总览：所有流程的最后状态、连续失败次数、是否中断/正在执行、自愈趋势、定时配置，以及需要关注的问题清单。' +
+  '无人值守总览：所有流程的总运行次数（totalRuns=真实总数，含进行中/中断，不受摘要窗口封顶）、最后状态、' +
+  '连续失败次数（consecutiveFailures 只数已定论的失败 fail/blocked，进行中 running/崩溃 interrupted 不计）、' +
+  '是否中断/正在执行/等待人工、自愈趋势、定时配置，以及需要关注的问题清单。' +
   '每天早上（或定时任务跑完后）先看这一个就够。',
   { type: 'object', properties: { onlyProblems: { type: 'boolean', description: '只返回有问题的流程' } } },
   async (a) => {
@@ -425,13 +434,16 @@ tool('status_report',
   });
 
 tool('runs_prune',
-  '按留存策略清理历史运行记录（默认每流程保留最近 50 次且 30 天内）。**默认只预演不删除**，确认后再传 dryRun:false。',
+  '按留存策略清理历史运行记录（默认每流程保留最近 50 次且 30 天内；录像默认每流程只留最近 20 段）。' +
+  '规则：只传 keepCount 或 keepDays 之一时按该单一维度清理（另一维度不限）；两者都传=超出保留次数且超过天龄才删；' +
+  '都不传=按配置 run.keepRunsPerFlow / run.keepRunDays 双约束。**默认只预演不删除**，确认后再传 dryRun:false。',
   {
     type: 'object',
     properties: {
-      flowId: { type: 'string', description: '只清理某个流程；不传=全部' },
-      keepCount: { type: 'integer', description: '每流程保留最近多少次' },
-      keepDays: { type: 'integer', description: '保留多少天' },
+      flowId: { type: 'string', description: '只清理某个流程；不传=全部', pattern: SAFE_ID_PATTERN },
+      keepCount: { type: 'integer', minimum: 0, description: '每流程保留最近多少次；0=不按次数清理（注意：0 不是"全删"）。只传它时按次数单维度清理' },
+      keepDays: { type: 'integer', minimum: 0, description: '保留多少天；0=不按天龄清理（注意：0 不是"全删"）。只传它时按天龄单维度清理' },
+      keepVideos: { type: 'integer', minimum: 0, description: '每流程保留最近多少段录像（默认 run.keepVideosPerFlow=20，0=不限）' },
       dryRun: { type: 'boolean', description: '默认 true，只列出将被删除的内容' },
       logs: { type: 'boolean', description: '同时清理过期日志文件' },
     },
@@ -439,16 +451,17 @@ tool('runs_prune',
   async (a) => {
     const dryRun = a.dryRun !== false;
     const out = { dryRun };
-    const opt = { keepCount: a.keepCount, keepDays: a.keepDays, dryRun };
+    const opt = { keepCount: a.keepCount, keepDays: a.keepDays, keepVideos: a.keepVideos, dryRun };
     out.runs = a.flowId ? [pruneRuns(a.flowId, opt)] : pruneAllRuns(opt);
     if (a.logs) out.logs = pruneLogs({ keepDays: a.keepDays, dryRun });
     const removed = out.runs.reduce((s, r) => s + (r.removed ? r.removed.length : 0), 0) + (out.logs ? out.logs.removed.length : 0);
-    return ok(out, (dryRun ? '预演：将清理 ' : '已清理 ') + removed + ' 项历史文件');
+    const videos = out.runs.reduce((s, r) => s + (r.videosRemoved || 0), 0);
+    return ok(out, (dryRun ? '预演：将清理 ' : '已清理 ') + removed + ' 项历史文件' + (videos ? '，另 ' + (dryRun ? '将清理 ' : '清理 ') + videos + ' 段录像' : ''));
   });
 
 tool('lock_status',
   '查看某个流程（或全部）的执行锁：谁在跑、从什么时候开始、是否已成为过期锁。排查"明明没在跑却提示正在执行"时用。',
-  { type: 'object', properties: { flowId: { type: 'string' } } },
+  { type: 'object', properties: { flowId: { type: 'string', description: '流程 id', pattern: SAFE_ID_PATTERN } } },
   async (a) => {
     if (a.flowId) {
       const info = lockInfo(a.flowId);
@@ -474,10 +487,23 @@ tool('chain_run',
   {
     type: 'object',
     properties: {
-      items: { type: 'array', description: '按顺序执行的步骤：[{flow:"id", params:{...}, continueOnError:false}]', items: { type: 'object' } },
+      items: {
+        type: 'array',
+        description: '按顺序执行的步骤：[{flow:"id", params:{...}, continueOnError:false}]',
+        items: {
+          type: 'object',
+          properties: {
+            flow: { type: 'string', description: '流程 id' },
+            params: { type: 'object', description: '该流程的变量取值' },
+            continueOnError: { type: 'boolean', description: '该流程失败后是否继续后面的流程，默认 false' },
+          },
+          required: ['flow'],
+        },
+      },
       headed: { type: 'boolean' },
       allowLintErrors: { type: 'boolean' },
       notify: { type: 'boolean', description: '是否发送告警，默认 false' },
+      maxDurationMs: { type: 'integer', minimum: 0, description: '整条串联的总时限（毫秒），到期后剩余流程不再执行；不传=不限（子流程各自按 run.maxDurationMs 生效）' },
     },
     required: ['items'],
   },
@@ -485,6 +511,7 @@ tool('chain_run',
     const r = await runChain(a.items, {
       headed: a.headed, allowLintErrors: a.allowLintErrors,
       notify: a.notify, trigger: 'chain', learn: true,
+      maxDurationMs: a.maxDurationMs,
     });
     return r.status === 'pass'
       ? ok(r, '✅ 串联全部成功：' + r.summary)
@@ -647,7 +674,9 @@ tool('profile_info',
   async () => {
     const info = profileInfo();
     return ok(info, info.enabled
-      ? 'profile 已开启：' + info.dir + '（' + Math.round(info.bytes / 1024) + ' KB，' + info.files + ' 个文件）'
+      ? (info.exists
+        ? 'profile 已开启：' + info.dir + '（' + Math.round(info.bytes / 1024) + ' KB，' + info.files + ' 个文件）'
+        : 'profile 已开启，但登录态目录还没有内容：先用 profile_login 人工登录一次（当前 ' + info.dir + ' 为空）')
       : 'profile 未开启：需要登录的系统请先调用 profile_login');
   });
 
@@ -694,7 +723,13 @@ tool('doctor',
       recording: recordingStatus().recording,
       openBrowsers: openCount(),
       schedule: { supported: isWindows(), tasks: 0 },
-      notify: { enabled: !!cfg.notify.enabled, type: cfg.notify.type, webhook: cfg.notify.webhook ? maskSecret(cfg.notify.webhook, 12) : '' },
+      notify: { enabled: !!cfg.notify.enabled, type: cfg.notify.type, webhook: cfg.notify.webhook ? maskSecret(cfg.notify.webhook, 12) : '', outbox: 0 },
+      video: detectFfmpeg(),
+      run: {
+        maxDurationMs: Number(cfg.run.maxDurationMs) || 0,
+        unattendedMaxDurationMs: Number(cfg.run.unattendedMaxDurationMs) || 0,
+        saveVideo: !!cfg.run.saveVideo,
+      },
       problems: [],
       hints: [],
     };
@@ -719,6 +754,18 @@ tool('doctor',
     }
     if (isWindows()) {
       try { out.schedule.tasks = (await listSchedules()).length; } catch { /* ignore */ }
+    }
+    const ob = outboxInfo();
+    out.notify.outbox = ob.count;
+    out.notify.outboxOldestAgeHours = ob.oldestAgeHours;
+    if (ob.count > 0) {
+      out.hints.push('发件箱有 ' + ob.count + ' 条积压告警（最旧 ' + (ob.oldestAgeHours === null ? '?' : ob.oldestAgeHours) + ' 小时）：下次任何告警发送成功前会自动按顺序补发（.work/notify-outbox.json）');
+    }
+    if (!out.video.ffmpeg && cfg.run.saveVideo) {
+      out.hints.push('run.saveVideo 已开启但没找到 Playwright 自带的 ffmpeg：录像会自动降级为不录像（可执行 npx playwright install ffmpeg 补装）');
+    }
+    if (!Number(cfg.run.maxDurationMs) && !Number(cfg.run.unattendedMaxDurationMs)) {
+      out.hints.push('run.maxDurationMs 与 run.unattendedMaxDurationMs 都是 0：没有任何总超时保护，卡死的运行会一直挂着（建议至少配一个；定时运行默认有 ' + Math.round((DEFAULT_CONFIG.run.unattendedMaxDurationMs || 0) / 60000) + ' 分钟上限）');
     }
     if (!fs.existsSync(DIRS.configFile)) out.hints.push('还没有 web-rpa.config.json，当前使用内置默认值（需要时用 config_set 生成）');
     return ok(out, out.problems.length ? '自检发现 ' + out.problems.length + ' 个问题' : '环境自检通过，可以开始录制/回放');
@@ -774,13 +821,23 @@ async function handle(msg) {
         const args = (params && params.arguments) || {};
         const t = TOOLS.find((x) => x.name === name);
         if (!t) { replyError(id, -32602, '未知工具: ' + name); return; }
+        // 入口统一按 inputSchema 验收：错参数在这里挡下（INVALID_ARGUMENT 点名参数），
+        // 不让 handler 用宽松真值判断把错误参数悄悄变成相反语义（如 headed:'false' 当 true）
+        const v = validateArgs(args, t.inputSchema);
+        if (!v.ok) {
+          L.warn('工具参数不合法', { tool: name, param: v.error.param, got: v.error.got });
+          reply(id, fail('参数不合法：' + v.error.message,
+            { code: 'INVALID_ARGUMENT', tool: name, param: v.error.param, expected: v.error.expected, got: v.error.got }));
+          return;
+        }
         try {
-          const res = await t.handler(args);
+          const res = await t.handler(v.value);
           reply(id, res);
         } catch (e) {
-          const message = String(e && e.message ? e.message : e);
+          // 回给外部客户端的内容必须脱敏：message/stack 里的安装绝对路径压成相对段/文件名（形状不变）
+          const message = redactPath(String(e && e.message ? e.message : e));
           L.error('工具执行失败', { tool: name, message });
-          reply(id, fail(message, { tool: name, stack: e && e.stack ? String(e.stack).split('\n').slice(0, 4) : undefined }));
+          reply(id, fail(message, { tool: name, code: 'TOOL_ERROR', stack: e && e.stack ? String(e.stack).split('\n').slice(0, 4).map(redactPath) : undefined }));
         }
         return;
       }
@@ -789,7 +846,7 @@ async function handle(msg) {
         return;
     }
   } catch (e) {
-    if (!isNotification) replyError(id, -32603, '内部错误: ' + String(e && e.message ? e.message : e));
+    if (!isNotification) replyError(id, -32603, '内部错误: ' + redactPath(String(e && e.message ? e.message : e)));
   }
 }
 

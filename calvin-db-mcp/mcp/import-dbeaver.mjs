@@ -6,6 +6,8 @@
  *
  * 用法:
  *   node import-dbeaver.mjs <DBeaver导出的.dbp文件> [--force] [--allow-writes] [--allow-create-table]
+ *   .dbp 参数三种写法（v1.6.25，与 install.mjs 同语义）：
+ *     完整路径 / 同级目录裸文件名（cwd 找不到时回退脚本目录）/ 通配符 "*.dbp"（多个匹配拒绝并列候选）
  *   --force               目标配置已存在时强制覆盖（默认拒绝，防止误覆盖现有连接）
  *   --allow-writes        生成的配置允许 execute 写操作（默认关闭，安全红线仍然生效）
  *   --allow-create-table  生成的配置允许 create_table 建表（v1.0.1 起默认关闭，与 allowWrites 口径一致）
@@ -21,25 +23,40 @@ import { decryptDbeaverFile } from "./crypt.mjs";
 // v1.5.0: 写入 enc 按是否有 DBMCP_MASTER_KEY 分派（encryptForConfig）——有主密钥写 enc2
 //（AES-256-GCM 主密钥绑定），没有则写旧格式（AES-128-CBC 落盘混淆，向后兼容）。
 import { encryptForConfig } from "./crypt2.mjs";
-import { parseJdbcUrl, envFromFolder, sanitizeId, psSingleQuote, buildSourceUrl } from "./dbeaver-parse.mjs";
+import { parseJdbcUrl, envFromFolder, sanitizeId, psSingleQuote, buildSourceUrl, resolveDbpArg } from "./dbeaver-parse.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT = process.env.DBMCP_CONFIG || path.join(__dirname, "dbmcp.config.json");
 const argv = process.argv.slice(2);
-const dbpPath = argv.find((a) => !a.startsWith("--"));
+const positional = argv.filter((a) => !a.startsWith("--"));
 const force = argv.includes("--force");
 const allowWritesFlag = argv.includes("--allow-writes");
 const allowCreateTableFlag = argv.includes("--allow-create-table");
 
-if (!dbpPath) {
+// v1.6.25: .dbp 简写解析（与 install.mjs 同语义）——同级目录裸文件名 / 通配符 "*.dbp"；
+// 零匹配/多匹配拒绝并列候选（不静默挑一个）。解析为绝对路径后走后续解包流程。
+if (positional.length > 1) {
+  console.error("[import] 只接受一个 .dbp 参数，收到 " + positional.length + " 个：" + positional.join("、"));
+  console.error("[import] 通配符请加引号（如 node import-dbeaver.mjs \"*.dbp\"），避免 shell 预展开成多个参数。");
+  process.exit(1);
+}
+const dbpRaw = positional[0];
+if (!dbpRaw) {
   console.error("用法: node import-dbeaver.mjs <DBeaver导出的.dbp文件> [--force] [--allow-writes] [--allow-create-table]");
   console.error("说明: .dbp 为 DBeaver「文件 → 导出 → 项目」生成的项目包，内含全部连接与凭据。");
   process.exit(1);
 }
-if (!fs.existsSync(dbpPath)) {
-  console.error("[import] 文件不存在: " + dbpPath);
+const dbpRes = resolveDbpArg(dbpRaw, {
+  cwd: process.cwd(),
+  scriptDir: __dirname,
+  listDir: (d) => { try { return fs.readdirSync(d); } catch { return []; } },
+  isFile: (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } },
+});
+if (!dbpRes.ok) {
+  console.error("[import] " + dbpRes.message);
   process.exit(1);
 }
+const dbpPath = dbpRes.file;
 if (fs.existsSync(OUT) && !force) {
   console.error("[import] 目标已存在: " + OUT);
   console.error("[import] 如需覆盖请加 --force（现有连接将被替换，建议先备份）");

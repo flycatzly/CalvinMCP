@@ -9,7 +9,9 @@
  *   4) 注册到已检测到的 MCP 客户端（Claude Code / Claude Desktop / Cursor），改前自动备份
  *
  * 用法：
- *   node install.mjs                     # 全套
+ *   node install.mjs                     # 全套（镜像式：托管子树/Skill 目录/bundle 先清后拷，
+ *                                        #  源码删过的文件不留旧账；不动 node_modules 与用户杂散文件）
+ *   node install.mjs --force             # 整目录重置：node_modules/.playwright/bundle/杂散文件一并重来
  *   node install.mjs --no-register       # 只装 Skill 与 bundle，不动客户端配置
  *   node install.mjs --skills-only       # 只装 Skill
  *   node install.mjs --print-config      # 只打印各客户端的配置片段，不写任何文件
@@ -55,6 +57,13 @@ const record = (name, status, msg = '') => {
   console.log(`  ${icon} ${name}${msg ? `：${msg}` : ''}`);
 };
 
+/** 删目录或软链（软链只 unlink 不追进去 —— 防止误删链接目标的内容）。 */
+const rmDeep = (p) => {
+  if (!fs.existsSync(p)) return;
+  if (fs.lstatSync(p).isSymbolicLink()) fs.unlinkSync(p);
+  else fs.rmSync(p, { recursive: true, force: true });
+};
+
 /* ---------------- 1) 环境自检 ---------------- */
 step(1, '环境自检');
 const nodeMajor = Number(process.versions.node.split('.')[0]);
@@ -96,11 +105,13 @@ if (OPT.printConfig) {
   // 这正是脚本的 verify-lib.mjs 会向上找到 mcp/lib 的那种布局，
   // 也让 PVMCP_HOME=INSTALL_ROOT 能成立。
   try {
-    // 只删我们自己管理的两个子树，避免误删别人的东西
-    for (const sub of ['mcp', 'skill', 'demo']) {
-      const p = path.join(INSTALL_ROOT, sub);
-      if (fs.existsSync(p) && OPT.force) fs.rmSync(p, { recursive: true, force: true });
-    }
+    // 镜像式复制（v1.8.14）：托管子树先整删再拷 —— 源码里删掉的文件不在部署副本留旧账。
+    // 为什么默认就清：合并式复制对「源码已删的文件」零处理（实测残留机制成立），而
+    // deployed-check 的「多余陈旧文件」会一直红到有人手动删或 --force 为止 —— 会自愈的
+    // 门禁才配叫门禁。INSTALL_ROOT 整目录归本安装器管理（名字是我们的），子树里没有别人的东西。
+    for (const sub of ['mcp', 'skill', 'demo']) rmDeep(path.join(INSTALL_ROOT, sub));
+    // --force 升级为整目录重置：node_modules / .playwright 配置 / dsh-bundle / 用户杂散文件一并重来。
+    if (OPT.force) rmDeep(INSTALL_ROOT);
     copyRec(path.join(PROJECT_ROOT, 'mcp'), path.join(INSTALL_ROOT, 'mcp'));
     copyRec(path.join(PROJECT_ROOT, 'skill'), path.join(INSTALL_ROOT, 'skill'));
     if (fs.existsSync(path.join(PROJECT_ROOT, 'demo'))) {
@@ -111,7 +122,7 @@ if (OPT.printConfig) {
     //   产物目录不该被误提交，换行符也不该被 Git 改写（CRLF 会破坏 shebang）。
     // CI 工作流也要：它是「怎么用这套门禁」的可执行示范，属于交付物的一部分。
     for (const f of ['package.json', 'package-lock.json', '.gitignore', '.gitattributes',
-      'README.md', '使用文档.md', '部署说明.md', '部署说明.详细版.md']) {
+      'README.md', '部署说明.md', '部署说明.详细版.md']) {
       const s = path.join(PROJECT_ROOT, f);
       if (fs.existsSync(s)) fs.copyFileSync(s, path.join(INSTALL_ROOT, f));
     }
@@ -194,6 +205,9 @@ if (OPT.printConfig) {
 
   // 让 agent 能按 ~/.agents/skills/<name>/SKILL.md 发现 Skill
   try {
+    // 现役 Skill 目录同样镜像式（先清后拷）：deployed-check 只比对 INSTALL_ROOT，
+    // 这里的残留不在任何门内 —— 不删就永远留着，还会被 agent 当现行文档读到。
+    rmDeep(SKILL_LINK);
     copyRec(path.join(PROJECT_ROOT, 'skill', 'playwright-verify'), SKILL_LINK);
     record('安装 Skill', 'ok', SKILL_LINK);
   } catch (e) {
@@ -242,6 +256,9 @@ if (OPT.printConfig || OPT.skillsOnly) {
   record('生成 bundle', 'skip', OPT.printConfig ? '--print-config 模式' : '--skills-only 模式');
 } else {
   try {
+    // bundle 也先清再写：固定两文件名今天不堆积，但文件名一旦改过，旧 bundle 文件
+    // 就会混在目录里被误装进 DSH —— 与子树同一个道理，镜像式不留旧账。
+    rmDeep(bundleDir);
     fs.mkdirSync(bundleDir, { recursive: true });
     fs.writeFileSync(patchFile, patchContent, 'utf8');
     fs.writeFileSync(manifestFile, manifestContent, 'utf8');
@@ -334,5 +351,5 @@ console.log(failed.length
 console.log('\n下一步：');
 console.log('  1) 重启 MCP 客户端 / 重新加载 DSH 配置');
 console.log('  2) 跑自检：node skill/playwright-verify/scripts/selfcheck.mjs');
-console.log('  3) 在客户端确认出现 13 个 mcp__playwright_verify__* 工具');
+console.log('  3) 在客户端确认出现 14 个 mcp__playwright_verify__* 工具');
 process.exit(failed.length ? 1 : 0);

@@ -41,14 +41,16 @@ export function md5hex(s) {
 }
 
 function isPlainSqlite(file) {
+  let fd = null;
   try {
-    const fd = fs.openSync(file, "r");
+    fd = fs.openSync(file, "r");
     const buf = Buffer.alloc(16);
     fs.readSync(fd, buf, 0, 16, 0);
-    fs.closeSync(fd);
     return buf.equals(SQLITE_MAGIC);
   } catch {
     return false;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
   }
 }
 

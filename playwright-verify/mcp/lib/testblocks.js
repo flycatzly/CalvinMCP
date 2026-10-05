@@ -294,8 +294,12 @@ export function findTestBlocks(src, mask) {
     if (bodyStart < 0) continue;   // 没有回调体 → 不是用例/容器块
 
     let kind;
+    // kind 只看**第一段**修饰符：test.describe.only / test.describe.serial 的 modifier
+    // 是 'describe.only' / 'describe.serial'，整串进 CONTAINER_MODS 永远不中 ——
+    // 会被判成「用例」，空的 describe 容器于是误报 PW007（对抗样例 PW002-链式 钉住这个洞）。
+    const firstMod = modifier.split('.')[0];
     if (head === 'describe') kind = 'container';
-    else if (CONTAINER_MODS.has(modifier)) kind = 'container';
+    else if (CONTAINER_MODS.has(firstMod)) kind = 'container';
     else kind = 'test';
 
     blocks.push({

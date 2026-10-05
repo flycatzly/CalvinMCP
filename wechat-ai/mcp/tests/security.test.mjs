@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { sanitizeFragment, safeHref, protectDocument, escapeHtml, mdToHtmlLite } from "file:///D:/Users/DeepSeekWeb/wechat-ai/mcp/lib/report/security.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { sanitizeFragment, safeHref, protectDocument, escapeHtml, mdToHtmlLite } from "../lib/report/security.mjs";
+import { renderBrief, renderContactDaily, renderReply } from "../lib/report/md.mjs";
 
 let passed = 0;
 const t = (name, fn) => { try { fn(); passed += 1; } catch (error) { console.log("FAIL " + name + " :: " + error.message); process.exitCode = 1; } };
@@ -111,4 +115,37 @@ t("mdToHtmlLite 覆盖", () => {
   assert.ok(!html.includes("<script"));
   assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), html);
 });
+
+// ---- 报告落盘脱敏（privacy.redactOutputs，默认开）----
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wai-sec-"));
+  process.env.WECHAT_AI_HOME = home; // 隔离配置：不读真实 ~/.wechat-ai/config.json
+  const outDir = path.join(home, "out");
+  const PHONE = "13812345678";
+  const CARD = "6222021234567890123";
+
+  t("brief.md 落盘打码手机号", () => {
+    renderBrief({ promises: [{ chat: "会话A", ts: 0, content: "我的手机号" + PHONE + " 请回电", state: "待兑现" }] }, { outDir });
+    const text = fs.readFileSync(path.join(outDir, "brief.md"), "utf8");
+    assert.ok(text.includes("<手机号>"), "应打码：" + text.slice(0, 200));
+    assert.ok(!text.includes(PHONE), "不应含原始手机号");
+  });
+
+  t("JSON 报告字符串值打码、数字字段保留", () => {
+    const r = renderContactDaily([{ chat: "张三", role: "客户", last_content: "卡号" + CARD, messages: 3, recent: [{ ts: 1700000000000, sender: "张三", content: "手机号" + PHONE }] }], { outDir, since: "s", until: "u" });
+    const digest = fs.readFileSync(r.digest, "utf8");
+    assert.ok(!digest.includes(PHONE) && !digest.includes(CARD), "digest 不应含原始 PII");
+    const json = JSON.parse(fs.readFileSync(r.json, "utf8"));
+    assert.equal(json.contacts[0].messages, 3, "数字字段保留");
+    assert.equal(json.contacts[0].recent[0].ts, 1700000000000, "13 位时间戳不应被误判为手机号");
+    assert.ok(!JSON.stringify(json).includes(PHONE), "JSON 字符串值应打码");
+    assert.ok(!JSON.stringify(json).includes(CARD), "JSON 卡号应打码");
+  });
+
+  t("回复草稿不打码（人要照发的正文）", () => {
+    renderReply({ chat: "张三", recommended: "好的，我的手机号是" + PHONE }, { outDir });
+    const text = fs.readFileSync(path.join(outDir, "reply.md"), "utf8");
+    assert.ok(text.includes(PHONE), "草稿应保留原文");
+  });
+}
 console.log("=== " + passed + " passed ===");

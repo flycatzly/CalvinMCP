@@ -5,7 +5,7 @@ description: 当需要对项目 SQL 做质量检测或对测试库做只读数�
 
 # SQL 检测与分析 Skill（全链路质量检测 + 只读数据分析）
 
-> 版本 v1.4.3 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.2) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
+> 版本 v1.4.28 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.22) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
 
 ## 角色设定
 
@@ -104,7 +104,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 
 ## 前置条件
 
-依赖本地 MCP `calvin-db-mcp`（v1.6.2，同级目录部署；安装见《部署说明.md》）：
+依赖本地 MCP `calvin-db-mcp`（v1.6.22，同级目录部署；安装见《部署说明.md》）：
 
 - **安装与验证步骤见 `README.md`**（复制技能 → `node install.mjs` 导入 `.dbp` → 重启客户端）
 - 依赖已装、自检通过（本机当前：依赖 ✓，`node mcp\selftest.mjs` 0 failed ✓；用例数随版本增长，勿以 passed 数为验收线）
@@ -112,7 +112,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 - **数据库账号须最小权限**：只读场景用 SELECT-only 账号，且只授权测试库/影子库（MCP 层防护不是最终权限边界）
 - 未就绪时退化为静态分析，结论一律标「待验证」
 
-## MCP 工具速查（calvin-db-mcp v1.6.2 共 16 个）
+## MCP 工具速查（calvin-db-mcp v1.6.22 共 16 个）
 
 | 工具 | 模式 | 用途 |
 |------|------|------|
@@ -150,8 +150,9 @@ sql-check-script/
 ├── SKILL.md
 ├── README.md                          # 安装 / 验证 / 用法
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（56 用例 + PG 可选段）
-│   └── run_all.mjs                    # 一键验收：selftest + E2E 合并裁决
+│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（105 用例，live 段自动门控）
+│   ├── config_lint_test.mjs           # 护栏配置门禁：references/ 两配置（解析/结构/白名单红线/跨文件一致性）
+│   └── run_all.mjs                    # 一键验收：selftest + sqlite-validate + mysql-validate(门控) + docsync + config-lint + E2E 合并裁决
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链
 │   ├── sql_check_workflow.md           # 模式 A：八步证据版质量检测
@@ -191,4 +192,4 @@ sql-check-script/
 | 风险等级随手写 | 按 `references/风险等级定义.md` 判定，禁止自定义 |
 | 大结果集一次拉全 | 预计 > 5000 先 COUNT 再抽样 |
 
-⚠️ **特别注意**：MCP 未就绪 / 表不存在 / 权限拒绝时，输出「待补充信息」清单、结论标「待验证」，禁止猜根因、禁止猜数据；具体处置见 `references/故障处理.md`。
+⚠️ **特别注意**：MCP 未就绪 / 表不存在 / 权限拒绝时，输出「待补充信息」清单、结论标「待验证」，禁止猜根因、禁止猜数据；具体处置见 `references/故障处理.md`；工具报错带全码 `[E_CODE:retry]` 时按错误码反查其「五、错误类矩阵实测表」（触发条件/实测文案/重试语义/排障方向）。

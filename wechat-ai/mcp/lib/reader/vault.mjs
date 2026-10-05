@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureHome, paths } from "../paths.mjs";
-import { readJson, sha1, writeJson } from "../util.mjs";
+import { minMax, readJson, sha1, writeJson } from "../util.mjs";
 import { parseAny, parseJsonChat } from "../parse.mjs";
 import { envelope, fail, inferKind, matchKeywords, paginate, sortByTime, toReaderMessage } from "./common.mjs";
 
@@ -135,12 +135,13 @@ export function loadVault({ dirs, force = false } = {}) {
   writeJson(cacheFile(), next);
   const list = [...sessions.values()].map((s) => {
     const ts = s.messages.map((m) => m.ts).filter(Boolean);
+    const { min, max } = minMax(ts);
     return {
       ...s,
       files: [...s.files],
       msg_count: s.messages.length,
-      first_ts: ts.length ? Math.min(...ts) : null,
-      last_ts: ts.length ? Math.max(...ts) : null,
+      first_ts: min,
+      last_ts: max,
     };
   }).sort((a, b) => (b.last_ts ?? 0) - (a.last_ts ?? 0));
   return { sessions: list, files: files.length, parsedCount, cacheHits, roots };
@@ -238,5 +239,18 @@ export function createVaultReader({ dirs, force = false } = {}) {
       });
     },
     sql: async ({ query, limit = 100 } = {}) => envelope({ tool: "vault-reader", command: "sql", ok: false, data: { rows: [], error: "vault reader 不支持 sql" } }),
+    stats: async () => {
+      const v = get();
+      const perChat = v.sessions.map((s) => ({ chat: s.name, talker: s.name, messages: s.msg_count }));
+      return envelope({
+        tool: "vault-reader", command: "stats",
+        data: {
+          reader: "vault", sessions: v.sessions.length, contacts: 0,
+          total_messages: v.sessions.reduce((a, s) => a + s.msg_count, 0),
+          source_files: v.files, parsed: v.parsedCount, cache_hits: v.cacheHits,
+          top_chats: perChat.sort((a, b) => b.messages - a.messages).slice(0, 20),
+        },
+      });
+    },
   };
 }

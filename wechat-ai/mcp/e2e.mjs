@@ -96,12 +96,18 @@ await step("vault 扫描入库", "wai_vault_scan", { dirs: [path.join(SAMPLES, "
   if (typeof s.inserted !== "number") throw new Error("缺 inserted");
   return s.inserted + " 条 / " + s.sessions + " 会话";
 });
+// 前置写好文件再扫描：旧流程「先扫后建文件」只因缺路径静默 0 文件才误过，
+// 现在 wai_scan 对不存在的目标必须报错（见下方 expectError 步骤）。
+fs.writeFileSync(path.join(HOME, "sample.txt"), "[2026-06-30 12:00] 甲: 项目初稿周四前给\n[2026-06-30 13:00] 乙: 收到\n", "utf8");
 await step("扫描导出文件", "wai_scan", { target: path.join(HOME, "sample.txt") }, (s) => {
-  const f = path.join(HOME, "sample.txt");
-  if (!fs.existsSync(f)) fs.writeFileSync(f, "[2026-06-30 12:00] 甲: 项目初稿周四前给\n[2026-06-30 13:00] 乙: 收到\n", "utf8");
-  return "准备文件完成";
+  if (!(s.inserted >= 1)) throw new Error("首次扫描应入库 >=1 条，实际 " + s.inserted);
+  return "入库 " + s.inserted + " 条";
 });
-await step("再次扫描（幂等）", "wai_scan", { target: path.join(HOME, "sample.txt") }, (s) => (s.inserted === 0 ? "重复扫描 0 新增" : s.inserted + " 新增（首次）"));
+await step("再次扫描（幂等）", "wai_scan", { target: path.join(HOME, "sample.txt") }, (s) => {
+  if (s.inserted !== 0) throw new Error("重扫应 0 新增（幂等），实际 " + s.inserted);
+  return "重复扫描 0 新增";
+});
+await step("扫描不存在路径应报错", "wai_scan", { target: path.join(HOME, "不存在的目录") }, null, { expectError: true });
 
 // ---- 3. 检索 ----
 await step("实时关键词检索", "wai_chat_search", { query: "报价", limit: 50 }, (s) => s.count + " 条命中");
@@ -123,6 +129,49 @@ await step("复联雷达", "wai_reactivation", { days: 365, inactiveDays: 21 }, 
 await step("跨群链接聚合", "wai_db_links", { days: 30, minChats: 1 }, (s) => ((s.links?.length ?? s.count ?? 0) + " 个链接"));
 await step("商单雷达", "wai_deal_radar", { hours: 72 }, (s) => "已生成雷达视图");
 await step("回复草稿", "wai_reply_draft", { name: "NovaAI", limit: 60 }, (s) => { if (typeof s.needed !== "boolean") throw new Error("缺 needed"); return s.needed ? "需要回复，" + (s.draft ?? "").length + " 字草稿" : "无需回复：" + (s.reason ?? ""); });
+
+// ---- 4b. 聊天记录分析（提示词全集 A-I：报告/社交/情绪/任务/财务/记忆/内容/团队/风控） ----
+await step("A 期间报告", "wai_period_report", { days: 365, top: 10 }, (s) => {
+  if (typeof s.total_messages !== "number") throw new Error("缺 total_messages");
+  return s.total_messages + " 条消息，洞察 " + (s.insights?.length ?? 0) + " 条";
+});
+await step("B 社交关系", "wai_social_graph", { days: 365, top: 5 }, (s) => {
+  if (!s.overview) throw new Error("缺 overview");
+  return "私聊 " + s.overview.peers + " / 群 " + s.overview.groups + "，桥梁 " + (s.bridge_members?.length ?? 0);
+});
+await step("C 情绪趋势", "wai_sentiment_trend", { days: 365 }, (s) => {
+  if (typeof s.positive_ratio !== "number") throw new Error("缺 positive_ratio");
+  return "积极 " + s.positive_ratio + " / 消极 " + s.negative_ratio + "（非医疗诊断）";
+});
+await step("D 任务抽取", "wai_task_extract", { days: 365 }, (s) => {
+  if (!s.tasks) throw new Error("缺 tasks");
+  return (s.tasks?.length ?? 0) + " 项任务，状态 " + JSON.stringify(s.stats?.by_status ?? {});
+});
+await step("E 财务记录", "wai_finance", { days: 365 }, (s) => {
+  if (!s.totals) throw new Error("缺 totals");
+  return s.totals.entries + " 笔流水（金额区间脱敏=" + (s.totals.show_amounts ? "否" : "是") + "）";
+});
+await step("F 记忆知识库", "wai_memory", { days: 365, query: "合作" }, (s) => {
+  if (!s.cards) throw new Error("缺 cards");
+  return (s.cards?.length ?? 0) + " 张卡片 / 问答命中 " + (s.answer?.found ?? 0);
+});
+await step("G 内容分析", "wai_content_analysis", { days: 365, query: "报价" }, (s) => {
+  if (!s.topics) throw new Error("缺 topics");
+  return "话题 " + s.topics.length + " 类 / QA 证据 " + (s.qa?.evidence?.length ?? 0);
+});
+await step("H 团队复盘", "wai_team_review", { days: 365 }, (s) => {
+  if (!s.activity) throw new Error("缺 activity");
+  return "决策 " + (s.decisions?.length ?? 0) + " / 任务 " + (s.assignments?.length ?? 0) + " / 风险 " + (s.risks?.length ?? 0);
+});
+await step("I 风控线索", "wai_risk_scan", { days: 365 }, (s) => {
+  if (!s.stats) throw new Error("缺 stats");
+  return s.stats.total + " 条线索（全部 needs_review）";
+});
+await step("分析报告落盘（期间报告）", "wai_period_report", { days: 365, out: path.join(HOME, "ana-period") }, (s) => {
+  if (!s.files?.report || !fs.existsSync(s.files.report)) throw new Error("Markdown 报告未落盘");
+  if (!s.files.json || !fs.existsSync(s.files.json)) throw new Error("JSON 未落盘");
+  return path.basename(s.files.report);
+});
 
 // ---- 5. 商机管线 ----
 await step("商机同步（预览）", "wai_opportunity_sync", { hours: 720, dryRun: true }, (s) => "候选 " + s.candidates + "，新建 " + s.created + " / 更新 " + s.updated);
@@ -243,7 +292,20 @@ await step("创建批次", "wai_batch_create", { items: [{ title: "客户群第�
 const batchId = (await call("wai_batch_status", {})).sc?.batches?.[0]?.id ?? null;
 if (batchId) {
   await step("批次状态", "wai_batch_status", { id: batchId }, (s) => JSON.stringify(s.counts ?? s.status ?? {}));
+  await step("投递批次（未暂存应 0 投递）", "wai_batch_deliver", { id: batchId, dryRun: true }, (s) => {
+    if (s.delivered !== 0) throw new Error("未暂存不应投递，delivered=" + s.delivered);
+    return /wai_batch_stage/.test(String(s.detail ?? "")) ? "正确提示先 stage" : "缺 stage 提示";
+  });
+  await step("暂存批次（全部条目→ready）", "wai_batch_stage", { id: batchId }, (s) => {
+    if (s.staged !== 2 || s.ready !== 2) throw new Error("暂存计数不符：" + JSON.stringify(s.counts ?? s));
+    return "staged=" + s.staged + " ready=" + s.ready;
+  });
+  await step("批次状态（就绪）", "wai_batch_status", { id: batchId }, (s) => (s.counts?.ready === 2 ? "ready=2" : JSON.stringify(s.counts ?? {})));
   await step("投递批次（预览）", "wai_batch_deliver", { id: batchId, dryRun: true }, (s) => (s.dryRun ? "dryRun 正常" : "未按预览执行"));
+  await step("投递批次（正式）", "wai_batch_deliver", { id: batchId, dryRun: false }, (s) => {
+    if (s.delivered !== 2) throw new Error("delivered=" + s.delivered + " " + JSON.stringify(s.results ?? []));
+    return "delivered=2";
+  });
 }
 
 // ---- 9. 只读 Reader 统一入口 ----

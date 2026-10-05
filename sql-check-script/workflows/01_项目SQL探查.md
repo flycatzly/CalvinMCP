@@ -1,5 +1,5 @@
 # 项目 SQL 探查（全链路起点）
-> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.28 · sql-check-script · 更新记录见 README.md「更新记录」
 
 目标：把项目里「散落」的 SQL 全部找出来，并标注每条 SQL 的**调用链与涉及表**，作为后续全链路分析的输入。
 

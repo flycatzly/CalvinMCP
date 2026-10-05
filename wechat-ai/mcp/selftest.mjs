@@ -309,9 +309,61 @@ check("signals.analyze 主流程", () => {
 });
 check("signals 金额抽取", () => ok(signals.extractAmounts("预算 3000-5000 RMB 和 $100").length >= 1));
 check("signals 截止日期", () => ok(signals.extractDueDates("周四前需要初稿").length >= 1));
+check("signals 截止日期便宜预筛不漏报", () => {
+  // 预筛是「有结果」的必要条件：含日期字/数字的都必须照常解析，无日期字的应为空
+  ok(signals.extractDueDates("礼拜三同步").length >= 1);
+  ok(signals.extractDueDates("后天给你").length >= 1);
+  ok(signals.extractDueDates("尽快发你").length >= 1);
+  ok(signals.extractDueDates("月底前出片").length >= 1);
+  ok(signals.extractDueDates("2026-03-05 交稿").length >= 1);
+  ok(signals.extractDueDates("哈哈哈哈哈哈").length === 0);
+  ok(signals.extractDueDates("先对齐一下范围").length === 0);
+  ok(signals.extractDueDates("3.5万报价").length === 0);      // 价格陷阱不能当 3月5日
+  ok(signals.extractDueDates("版本 3.5 发布说明").length === 0);
+  return true;
+});
+check("signals 承诺 due 按消息日记忆化不串日", () => {
+  // 两条同文本承诺分处不同周：due 各按自己消息的本地日历日计算（周四），不能被记忆化串成同一天
+  const t1 = new Date(2026, 2, 2, 10).getTime();
+  const t2 = new Date(2026, 2, 11, 10).getTime();
+  const a = signals.analyze({
+    messages: [
+      { session_name: "群A", sender: "我", is_owner: 1, ts: t1, content: "周四前给你初稿" },
+      { session_name: "群B", sender: "我", is_owner: 1, ts: t2, content: "周四前给你初稿" },
+    ],
+    sinceMs: t1 - 86400000, untilMs: t2 + 86400000, now: new Date(t2),
+  });
+  const ps = a.promises.filter((p) => p.due_text === "周四");
+  ok(ps.length === 2, "应有 2 条同文本承诺，实际 " + a.promises.length);
+  ok(ps[0].due !== ps[1].due, "同文本不同日的 due 不能被记忆化串成同一时间戳");
+  ok(ps.every((p) => new Date(p.due).getDay() === 4), "两条 due 都应落在周四");
+  return true;
+});
 check("signals 提问判定", () => ok(signals.isQuestion("有结论了吗？")));
 check("signals 承诺判定", () => ok(signals.isPromise("我今天晚些把报价整理给你")));
 check("signals 低价值群", () => ok(signals.isLowValueChat({ name: "周末爬山群", text: "今天天气不错，有人去爬山吗" })));
+check("signals hasAny 与 hitCount 存在性等价", () => {
+  for (const t of ["有项目方找 KOL 做投放，预算 3000", "今天天气不错", "", "排一下期"]) {
+    if (signals.hasAny(t, signals.BRAND_DEAL_TERMS) !== (signals.hitCount(t, signals.BRAND_DEAL_TERMS) > 0)) return false;
+  }
+  return true;
+});
+check("signals 低价值群 opportunityHits 复用与原实现等价", () => {
+  const oppo = (t) => signals.hitCount(t, signals.BRAND_DEAL_TERMS) + signals.hitCount(t, signals.TRAINING_TERMS)
+    + signals.hitCount(t, signals.PROJECT_TERMS) + signals.hitCount(t, signals.RESOURCE_TERMS);
+  const cases = [
+    { name: "周末爬山群", text: "今天天气不错，有人去爬山吗" },
+    { name: "业务群", text: "有项目方找 KOL 做投放，预算 3000" },
+    { name: "项目对接群", text: "今天天气不错" },
+    { name: "项目对接群", text: "有项目方找 KOL 做投放" },
+    { name: "普通群", text: "先对齐一下范围" },
+    { name: "闲聊群", text: "今天天气不错，有人去爬山吗" },
+  ];
+  for (const c of cases) {
+    if (signals.isLowValueChat({ ...c, opportunityHits: oppo(c.text) }) !== signals.isLowValueChat(c)) return false;
+  }
+  return true;
+});
 check("signals 复联分档", () => {
   const now = Date.now();
   const msgs = [{ session_name: "老客户", sender: "刘总", ts: now - 60 * 86400000, content: "下次有合适项目再联系", is_owner: false, links: [] }];

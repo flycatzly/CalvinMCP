@@ -123,6 +123,40 @@ function findBundledChromium() {
   return null;
 }
 
+/**
+ * 探测 Playwright 自带的 ffmpeg（录像转码依赖）。
+ * 没有它 recordVideo 不会报错但产出不了 .webm——doctor 提前说出来，别等出事找不到录像。
+ * @returns {{ffmpeg: boolean, path: string|null}}
+ */
+export function detectFfmpeg() {
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright'),
+    path.join(os.homedir(), '.cache', 'ms-playwright'),
+    path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright'),
+  ].filter(Boolean);
+  for (const r of roots) {
+    let dirs = [];
+    try { dirs = fs.readdirSync(r); } catch { continue; }
+    for (const d of dirs) {
+      if (!/^ffmpeg/i.test(d)) continue;
+      for (const name of ['ffmpeg-win64.exe', 'ffmpeg-win-x64.exe', 'ffmpeg-win32.exe', 'ffmpeg-linux', 'ffmpeg-mac']) {
+        const exe = path.join(r, d, name);
+        if (fs.existsSync(exe)) return { ffmpeg: true, path: exe };
+      }
+      // 兜底：不同 Playwright 版本的可执行文件命名有差异，认目录里任意 ffmpeg* 文件
+      let files = [];
+      try { files = fs.readdirSync(path.join(r, d)); } catch { continue; }
+      for (const f of files) {
+        if (!/^ffmpeg.*(\.exe)?$/i.test(f)) continue;
+        const exe = path.join(r, d, f);
+        try { if (fs.statSync(exe).isFile()) return { ffmpeg: true, path: exe }; } catch { /* ignore */ }
+      }
+    }
+  }
+  return { ffmpeg: false, path: null };
+}
+
 export function planKey(plan) { return plan.kind + '|' + String(plan.detail || ''); }
 
 /**
@@ -268,7 +302,9 @@ export function profileInfo(cfg = readConfig()) {
     lastUrl: marker.lastUrl || null,
     lock: lockInfo(PROFILE_LOCK),
     hint: enabled
-      ? '已开启：所有执行共用这个用户目录，人工登录一次即可长期复用'
+      ? (exists
+        ? '已开启：所有执行共用这个用户目录，人工登录一次即可长期复用'
+        : '已开启，但登录态目录还没有内容（先用 profile_login 人工登录一次才会保存登录态）')
       : '未开启：每次执行都是全新会话（需要登录的系统请用 profile_login 开启）',
   };
   if (exists) Object.assign(out, dirStats(dir));
@@ -330,6 +366,14 @@ export async function launchContext({ headed = false, viewport, slowMo, download
   const vp = viewport || cfg.browser.viewport;
   const usePersistent = persistent === undefined ? !!(cfg.browser && cfg.browser.persistProfile) : !!persistent;
 
+  // 录像（recordVideo）只在普通上下文支持；持久化 launchPersistentContext 不支持，需剥掉并说明
+  let videoNote = '';
+  const extra = { ...extraContext };
+  if (usePersistent && extra.recordVideo) {
+    delete extra.recordVideo;
+    videoNote = '持久化 profile（launchPersistentContext）不支持录像，本次已跳过视频证据';
+  }
+
   /* 持久化 profile 路径：人工登录一次，之后无人值守直接复用登录态 */
   if (usePersistent) {
     const dir = profilePath(cfg);
@@ -356,9 +400,9 @@ export async function launchContext({ headed = false, viewport, slowMo, download
           acceptDownloads: true,
           userAgent: cfg.browser.userAgent || undefined,
           ...cand.launchOptions,
-          ...extraContext,
+          ...extra,
         });
-        const handle = { browser: context.browser() || null, context, plan: cand, downloads: [], persistent: true, profileDir: dir };
+        const handle = { browser: context.browser() || null, context, plan: cand, downloads: [], persistent: true, profileDir: dir, videoNote };
         if (downloadsDir) attachDownloads(handle, downloadsDir);
         OPEN.add(handle);
         clearBroken(cand);
@@ -368,7 +412,8 @@ export async function launchContext({ headed = false, viewport, slowMo, download
       } catch (e) {
         const msg = String(e && e.message ? e.message : e).split('\n')[0];
         pAttempts.push({ kind: cand.kind, error: msg });
-        markBroken(cand, msg);
+        // 不 markBroken：持久化失败常是 profile 被占用/损坏之类的环境原因，
+        // 记进 broken 缓存会连累普通（非持久化）回放 7 天选不到这个浏览器
         L.warn('持久化启动失败，尝试下一个候选', { kind: cand.kind, err: msg });
       }
     }
@@ -413,21 +458,36 @@ export async function launchContext({ headed = false, viewport, slowMo, download
   }
 
   let context;
+  const ctxOpts = {
+    viewport: vp && vp.width ? { width: vp.width, height: vp.height } : undefined,
+    locale: cfg.browser.locale,
+    timezoneId: cfg.browser.timezoneId,
+    acceptDownloads: true,
+    userAgent: cfg.browser.userAgent || undefined,
+    ...extra,
+  };
   try {
-    context = await browser.newContext({
-      viewport: vp && vp.width ? { width: vp.width, height: vp.height } : undefined,
-      locale: cfg.browser.locale,
-      timezoneId: cfg.browser.timezoneId,
-      acceptDownloads: true,
-      userAgent: cfg.browser.userAgent || undefined,
-      ...extraContext,
-    });
+    context = await browser.newContext(ctxOpts);
   } catch (e) {
-    // 上下文建不起来时浏览器已启动：必须关掉，否则每次失败都泄漏一个浏览器进程
-    try { await browser.close(); } catch { /* ignore */ }
-    throw e;
+    if (ctxOpts.recordVideo) {
+      // 缺 ffmpeg 等录像依赖时降级为不录像：录像只是加分项，不能反过来把整个运行弄挂
+      const msg = String(e && e.message ? e.message : e).split('\n')[0];
+      videoNote = '录像不可用，已降级为不录像（' + msg + '）';
+      L.warn('录像上下文创建失败，降级为不录像', { err: msg });
+      delete ctxOpts.recordVideo;
+      try {
+        context = await browser.newContext(ctxOpts);
+      } catch (e2) {
+        try { await browser.close(); } catch { /* ignore */ }
+        throw e2;
+      }
+    } else {
+      // 上下文建不起来时浏览器已启动：必须关掉，否则每次失败都泄漏一个浏览器进程
+      try { await browser.close(); } catch { /* ignore */ }
+      throw e;
+    }
   }
-  const handle = { browser, context, plan, downloads: [], persistent: false };
+  const handle = { browser, context, plan, downloads: [], persistent: false, videoNote };
   if (downloadsDir) attachDownloads(handle, downloadsDir);
   OPEN.add(handle);
   L.info('浏览器已启动', { kind: plan.kind, headed, viewport: vp, attempts: attempts.length });

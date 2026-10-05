@@ -137,7 +137,7 @@ const IGNORE_DIRS = new Set([
   '.playwright-artifacts',        // CLI 快照/截图/日志（本工具自己的约定目录）
   '.playwright-cli',              // playwright-cli 自己写的产物（首次跑才会出现）
   'test-results', 'dist',
-  'generated', 'generated-e2e', 'generated-orchestrated',  // 编排/生成的产物
+  'generated', 'generated-e2e', 'generated-orchestrated', 'generated-argscheck',  // 编排/生成的产物（args-check 临时生成目录在并行波内正建删，比对必须视而不见）
   'scratch',                      // 临时探查目录：任何时刻都可能在变，不参与一致性比对
   '__pycache__',                   // Python 字节码：内嵌编译时源码路径，跨目录重新生成后必然不同
 ]);
@@ -255,12 +255,12 @@ check('握手成功', byId(1)?.result?.serverInfo?.name === 'playwright-verify',
   JSON.stringify(byId(1)?.result?.serverInfo));
 
 const tools = byId(2)?.result?.tools || [];
-check('tools/list 返回 13 个工具', tools.length === 13, `${tools.length} 个`);
+check('tools/list 返回 14 个工具', tools.length === 14, `${tools.length} 个`);
 const EXPECTED = ['check_config', 'lint_spec', 'summarize_report', 'run_verify', 'cli_health', 'cli_session',
-  'explore_page', 'nl_test_goal',
+  'explore_page', 'nl_test_goal', 'collect_table',
   'generate_scripts', 'check_standards', 'orchestrate_excel', 'explain_rules', 'selfcheck'];
 const missingTools = EXPECTED.filter((t) => !tools.some((x) => x.name === t));
-check('13 个工具名齐全', missingTools.length === 0, missingTools.join(','));
+check('14 个工具名齐全', missingTools.length === 0, missingTools.join(','));
 check('每个工具都有 description 与 inputSchema',
   tools.every((t) => t.description && t.inputSchema?.type === 'object'));
 

@@ -23,7 +23,8 @@
  * 失败以退出码 2 结束 —— 「不验证不写盘」在分发环节同样成立。
  *
  * 自校验通过后自动跑「发版门禁」（加固 H19）：把产物拷成一次性副本、在副本里跑
- * 家族验收（npm ci --omit=dev → selftest → sqlite-validate → mysql-validate）、
+ * 家族验收（npm ci --omit=dev → selftest → sqlite-validate → mysql-validate →
+ * e2e-validate → protocol-validate → realform-validate）、
  * 终态哈希终查（门禁前后产物树哈希一致 + 纯净复扫）、副本验后整目录删除。
  * 发版 = 跑 distribute，门禁不可能忘。显式跳过：--no-gate（或环境变量
  * PV_SKIP_RELEASE_GATE=1 —— 嵌套防递归）；加固自检用 PV_GATE_SKIP_VERIFY=1：
@@ -140,6 +141,37 @@ const treeHash = (dir) => {
   return h.digest('hex').slice(0, 16);
 };
 
+/* ---- v1.6.15: 已初始化口径探针配置生成脚本（门禁副本内一次性运行）----
+ * 与 selftest 计数校准探针同形（2026-10-04 实测可用）：sqlite 探针源 + 带 enc 的假 mysql 源。
+ * 假源口令 ≥4 字符（leak-guard 脱敏钉需要真实口令对象）；口令是伪造探针值，不涉真实凭据。
+ * node:sqlite 不可用（Node < 22.5）时输出 NO_NODE_SQLITE 并 exit 3 → 门禁按诚实 SKIP 判过明示。 */
+const PROBE_PROVISION_SRC = `
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const mcpDir = process.argv[2];
+let DatabaseSync;
+try { ({ DatabaseSync } = await import('node:sqlite')); }
+catch { console.log('NO_NODE_SQLITE'); process.exit(3); }
+const dbFile = path.join(mcpDir, 'probe.db');
+const db = new DatabaseSync(dbFile);
+db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'probe');");
+db.close();
+const { encryptForConfig } = await import(pathToFileURL(path.join(mcpDir, 'crypt2.mjs')).href);
+const cfg = {
+  $comment: '发版门禁已初始化口径探针配置（临时，跑完即删）：sqlite 探针源 + 带 enc 的假 mysql 源',
+  allowWrites: true, allowCreateTable: true,
+  maxRows: 200, timeoutMs: 30000, maxAffectedRows: 500,
+  exportDir: mcpDir, importDir: mcpDir,
+  sources: {
+    探针库: { type: 'sqlite', file: dbFile, description: '计数校准 sqlite 探针' },
+    probe_mysql: { type: 'mysql', env: 'TEST', enc: encryptForConfig('mysql://probe_user:Pr0bePass_2026@127.0.0.1:3307/probe_db'), description: '假 mysql 源（enc 加密态，含口令）' },
+  },
+};
+fs.writeFileSync(path.join(mcpDir, 'dbmcp.config.json'), JSON.stringify(cfg, null, 2), 'utf8');
+process.exit(0);
+`;
+
 function runGate(target, sourceMode = false) {
   const gateLines = [];
   let gateFailed = false;
@@ -188,14 +220,47 @@ function runGate(target, sourceMode = false) {
     if (process.env.PV_GATE_SKIP_VERIFY) {
       gateLines.push('  验收命令: 跳过（PV_GATE_SKIP_VERIFY —— 机械自检用；真实发版必跑）');
     } else {
-      // 家族验收（与 install.mjs 装机验收同口径）：装依赖 → 三个验证器
-      // mysql-validate 退出码 3 = 无凭据/未初始化的诚实 SKIP，判过但明示 —— 统一诚实 SKIP 口径
+      // 家族验收（与 install.mjs 装机验收同口径）：装依赖 → 六个验证器
+      // 退出码 3 = 诚实 SKIP（mysql-validate/pg-validate 无凭据 / e2e·protocol·realform-validate 无 node:sqlite），判过但明示 —— 统一诚实 SKIP 口径
       const env = { ...process.env, PV_SKIP_RELEASE_GATE: '1' };
       const mcpDir = path.join(gateCopy, 'mcp');
       npmCi(mcpDir, ['--omit=dev']);
       step('selftest 守卫/协议自检', process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      // v1.6.15: 已初始化口径自检——V1.6.14 抓获的形状钉 bug 只在已初始化部署必现（未初始化报
+      // E_CONFIG 侥幸通过），门禁必须双口径覆盖。副本里生成 enc 探针配置跑第二遍 selftest；
+      // 输出必须命中「已初始化口径」自证行——防探针生成失败时误跑成未初始化口径假绿。
+      {
+        const prov = path.join(gateTmp, 'initprobe-provision.mjs');
+        fs.writeFileSync(prov, PROBE_PROVISION_SRC, 'utf8');
+        const pr = spawnSync(process.execPath, [prov, mcpDir], { encoding: 'utf8', timeout: 60_000 });
+        const provOut = ((pr.stdout || '') + (pr.stderr || '')).trim();
+        if (pr.status !== 0) {
+          const skip = /NO_NODE_SQLITE/.test(provOut);
+          gateLines.push(`  selftest 已初始化口径（enc 探针配置）: ${skip ? '诚实 SKIP（无 node:sqlite，Node < 22.5）' : '失败（探针配置生成: ' + (provOut.split('\n').filter(Boolean).slice(-1)[0] || 'unknown') + '）'}`);
+          if (!skip) gateFailed = true;
+        } else {
+          const r = spawnSync(process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env, encoding: 'utf8', timeout: 600_000 });
+          const out = (r.stdout || '') + (r.stderr || '');
+          const caliberOk = out.includes('已初始化口径');
+          const ok = r.status === 0 && caliberOk;
+          gateLines.push(`  selftest 已初始化口径（enc 探针配置）: ${ok ? '通过（exit 0，自证行命中）' : (r.status === 0 ? '失败（输出未命中「已初始化口径」自证行——疑未初始化口径假绿）' : `失败（exit ${r.status}）`)}`);
+          if (!ok) {
+            gateFailed = true;
+            const ls = out.split('\n').filter((l) => l.trim());
+            gateLines.push(`    尾部: ${ls.slice(-3).map((l) => l.trim()).join(' ; ')}`);
+          }
+          try {
+            fs.rmSync(path.join(mcpDir, 'dbmcp.config.json'), { force: true });
+            fs.rmSync(path.join(mcpDir, 'probe.db'), { force: true });
+          } catch { /* 副本整体删除兜底 */ }
+        }
+      }
       step('sqlite-validate 活库验证', process.execPath, [path.join(mcpDir, 'sqlite-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
       step('mysql-validate 真实库段', process.execPath, [path.join(mcpDir, 'mysql-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('pg-validate 真实库段', process.execPath, [path.join(mcpDir, 'pg-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('e2e-validate 全链路 E2E', process.execPath, [path.join(mcpDir, 'e2e-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('protocol-validate 协议边界/对抗', process.execPath, [path.join(mcpDir, 'protocol-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('realform-validate 真实形态验证', process.execPath, [path.join(mcpDir, 'realform-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
     }
   } finally {
     fs.rmSync(gateTmp, { recursive: true, force: true });
@@ -311,6 +376,7 @@ const lines = [
   `  拷贝 "${OUT}" 到目标机器任意目录`,
   '  node install.mjs    # 环境检查 + 自动 npm ci --omit=dev + 自检 + 注册本地 MCP 客户端',
   '（真实库验证需自备凭据：只从环境变量读，mysql-validate 无凭据时以退出码 3 诚实 SKIP）',
+  '（e2e-validate / protocol-validate 自供给临时 SQLite fixture，无需真实库，随包常驻）',
   '',
   ...gateLines,
 ].join('\n');

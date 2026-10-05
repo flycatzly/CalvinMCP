@@ -365,6 +365,9 @@
 
   function emit(payload) {
     if (!window.__rpaRecordActive) return;
+    // 一个定位符都解析不出来的目标（如 <html>）录成步骤回放时必然点不着，
+    // 只会变成「点击 (无定位符)」把流程卡在阻断级——不是有效交互，不录
+    if (payload && payload.desc && payload.desc.locators && !payload.desc.locators.length) return;
     try {
       if (typeof window.__rpaEmit === 'function') { window.__rpaEmit(payload); return; }
     } catch (e) { /* binding 不可用时退回日志 */ }
@@ -381,6 +384,10 @@
     if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
     emit(p);
   }
+
+  // record_stop / 暂停录制前 Node 侧会调用它：防抖窗口（700ms）内挂起的填入
+  // 必须随录制停止一起提交，否则录完就丢了最后一步输入
+  window.__rpa.flush = flushFill;
 
   document.addEventListener('click', function (ev) {
     if (!window.__rpaRecordActive) return;

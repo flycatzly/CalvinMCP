@@ -2,14 +2,14 @@
   "id": "int-iframe",
   "name": "int-iframe",
   "version": 1,
-  "createdAt": "2026-10-04T01:12:22.379Z",
-  "updatedAt": "2026-10-04T01:12:22.380Z",
-  "startUrl": "http://127.0.0.1:61539/frame",
+  "createdAt": "2026-10-04T09:32:32.578Z",
+  "updatedAt": "2026-10-04T09:32:32.579Z",
+  "startUrl": "http://127.0.0.1:53256/frame",
   "params": [],
   "steps": [
     {
       "op": "goto",
-      "url": "http://127.0.0.1:61539/frame",
+      "url": "http://127.0.0.1:53256/frame",
       "seq": 1
     },
     {
@@ -71,7 +71,7 @@
           "value": "#innerFrame"
         }
       ],
-      "time": 1791076339871,
+      "time": 1791106350077,
       "seq": 2
     }
   ],
@@ -83,12 +83,12 @@
     }
   ],
   "recording": {
-    "sessionId": "rec-6dddc849",
-    "startedAt": "2026-10-04T01:12:19.693Z",
-    "finishedAt": "2026-10-04T01:12:22.379Z",
+    "sessionId": "rec-650a6c1f",
+    "startedAt": "2026-10-04T09:32:29.897Z",
+    "finishedAt": "2026-10-04T09:32:32.578Z",
     "notes": [],
     "downloads": [],
-    "finalUrl": "http://127.0.0.1:61539/frame",
+    "finalUrl": "http://127.0.0.1:53256/frame",
     "browserShape": {
       "rowCounts": {
         "table tbody tr": 0,
@@ -99,7 +99,7 @@
         ".vxe-body--row": 0
       },
       "emptyHit": null,
-      "url": "http://127.0.0.1:61539/frame",
+      "url": "http://127.0.0.1:53256/frame",
       "title": "带 iframe 的页面"
     }
   }

@@ -126,7 +126,7 @@ async function main() {
   info('  Cursor       : ~/.cursor/mcp.json');
   info('  注册后必须重启客户端。');
 
-  step(8, '安装技能到技能目录');
+  step(8, '复制工作流 / 参考文档到技能目录');
   const skillsDirs = [
     path.join(os.homedir(), '.claude', 'skills', 'web-rpa-mcp'),
     path.join(os.homedir(), '.agents', 'skills', 'web-rpa-mcp'),
@@ -137,7 +137,7 @@ async function main() {
     for (const dir of skillsDirs) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-        for (const item of ['SKILL.md', 'workflows', 'references']) {
+        for (const item of ['workflows', 'references']) {
           const src = path.join(ROOT, item);
           if (!fs.existsSync(src)) continue;
           const dst = path.join(dir, item);

@@ -20,7 +20,8 @@ export function extractAttachments(text) {
   const out = [];
   const s = String(text ?? "");
   for (const re of ATTACH_MARK) {
-    for (const m of s.matchAll(new RegExp(re.source, "g"))) {
+    // matchAll 内部会克隆正则迭代，不改 lastIndex，模块级 /g 常量可安全复用
+    for (const m of s.matchAll(re)) {
       let kind = "unknown";
       for (const [k, v] of ATTACH_KIND) if (k.test(m[0])) { kind = v; break; }
       out.push({ kind, marker: m[0] });
@@ -90,8 +91,9 @@ export function parseChatText(text, opts = {}) {
         chatTitle = mE.title;
         const rest = mE.rest;
         if (rest) {
-          const mRest = rest.match(reA) || rest.match(reD);
-          if (mRest) { lines[i] = rest; i -= 1; continue; }
+          // 标题后面的文本一律按正文继续解析（含「[2026-06-30 10:12] 张三: …」消息头），不能丢
+          lines[i] = rest;
+          i -= 1;
         }
         continue;
       }
@@ -128,20 +130,19 @@ export function parseChatText(text, opts = {}) {
 
     const mE2 = matchTitle(trimmed, reE);
     if (mE2) {
-      if (chatTitle === null) chatTitle = mE2.title;
       const rest = mE2.rest;
-      if (rest) {
-        const mRest = rest.match(reA) || rest.match(reD);
-        if (mRest) {
-          push();
-          const who = (mRest[2] ?? "").trim();
-          const ts = mRest[1] && /\d/.test(mRest[1]) ? parseMessageTime(mRest[1], refDate) : nextTs();
-          lastTs = ts;
-          current = mkMsg(who, ts, mRest[3] ?? "", isOwner(who));
-          continue;
-        }
+      const mRest = rest ? (rest.match(reA) || rest.match(reD)) : null;
+      if (mRest) {
+        // E) 【群名】张三: 内容 —— 群名前缀 + 消息
+        if (chatTitle === null) chatTitle = mE2.title;
+        push();
+        const who = (mRest[2] ?? "").trim();
+        const ts = mRest[1] && /\d/.test(mRest[1]) ? parseMessageTime(mRest[1], refDate) : nextTs();
+        lastTs = ts;
+        current = mkMsg(who, ts, mRest[3] ?? "", isOwner(who));
+        continue;
       }
-      continue;
+      // 独立成行的【…】/ […] 是消息正文（如「【重要】」「[图片]」），落到下面按内容处理，不能当标题丢掉
     }
 
     const mD = trimmed.match(reD);
@@ -216,14 +217,16 @@ function finalize(messages, chat) {
 
 /** 解析 JSON 导出：支持数组、{messages}、{chats:[{name,messages}]}、reader 契约 */
 export function parseJsonChat(obj, opts = {}) {
-  const { defaultChat = "导入会话" } = opts;
+  const { defaultChat = "导入会话", ownerNames = [] } = opts;
+  const ownerSet = new Set(["我", "自己", "本人", "me", ...ownerNames.map((n) => String(n).trim().toLowerCase())]);
+  const isOwner = (n) => ownerSet.has(String(n ?? "").trim().toLowerCase());
   const out = [];
   const add = (chat, rec) => {
     const content = String(rec.content ?? rec.text ?? rec.message ?? rec.msg ?? "");
     if (!content.trim()) return;
     const tsRaw = rec.ts ?? rec.time ?? rec.timestamp ?? rec.date ?? null;
     let ts = null;
-    if (typeof tsRaw === "number") ts = tsRaw > 1e12 ? tsRaw : tsRaw * (tsRaw > 1e9 ? 1000 : 1000);
+    if (typeof tsRaw === "number") ts = tsRaw > 1e12 ? tsRaw : tsRaw * 1000; // 秒级时间戳统一放大到毫秒
     else if (tsRaw) ts = parseMessageTime(String(tsRaw), opts.refDate ?? new Date())?.getTime() ?? null;
     const sender = String(rec.sender ?? rec.from ?? rec.name ?? rec.speaker ?? rec.user ?? "未知");
     out.push({
@@ -232,7 +235,7 @@ export function parseJsonChat(obj, opts = {}) {
       sender,
       ts,
       content,
-      is_owner: /^(我|自己|本人|me)$/i.test(sender),
+      is_owner: rec.is_owner ?? isOwner(sender),
       links: extractUrls(content),
       attachments: extractAttachments(content),
     });

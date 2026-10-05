@@ -1,13 +1,18 @@
 // web-rpa-mcp — 流程与运行的持久化 + 步骤人类可读渲染
 import fs from 'node:fs';
 import path from 'node:path';
-import { DIRS, ensureDirs, readJson, writeJson, slugify, shortId, stampId, nowIso, logger } from './core.mjs';
+import { DIRS, ensureDirs, readJson, writeJson, slugify, shortId, stampId, nowIso, logger, assertSafeId, pidAlive } from './core.mjs';
 
 const L = logger('store');
 
 export const FLOW_VERSION = 1;
 
-export function flowPath(id) { return path.join(DIRS.flows, id + '.json'); }
+export function flowPath(id) {
+  const p = path.join(DIRS.flows, assertSafeId(id, '流程 id') + '.json');
+  // 双闸：字符规则之外再复核结果确实落在 flows/ 内，防规则盲区
+  if (!path.resolve(p).startsWith(path.resolve(DIRS.flows) + path.sep)) throw new Error('流程 id 不合法（越出流程目录）: ' + String(id).slice(0, 40));
+  return p;
+}
 
 /** 由名字生成稳定且唯一的流程 id */
 export function newFlowId(name) {
@@ -115,53 +120,171 @@ export function restoreFlow(id, which) {
 }
 
 /* ---------------- 运行记录 ---------------- */
-export function runDir(flowId, stamp) { return path.join(DIRS.runs, flowId, stamp); }
+
+/** 某流程的运行根目录（runs/<flowId>）——runs 侧所有拼接统一走这里，杜绝 flowId/stamp 路径穿越 */
+export function runsFlowRoot(flowId) {
+  const p = path.join(DIRS.runs, assertSafeId(flowId, '流程 id'));
+  if (!path.resolve(p).startsWith(path.resolve(DIRS.runs) + path.sep)) throw new Error('流程 id 不合法（越出运行目录）: ' + String(flowId).slice(0, 40));
+  return p;
+}
+
+export function runDir(flowId, stamp) { return path.join(runsFlowRoot(flowId), assertSafeId(stamp, '运行标识')); }
 
 export function saveRun(report) {
   const dir = runDir(report.flowId, report.stamp);
   writeJson(path.join(dir, 'report.json'), report);
+  const base = runsFlowRoot(report.flowId);
   try {
-    writeJson(path.join(DIRS.runs, report.flowId, 'latest.json'), {
+    writeJson(path.join(base, 'latest.json'), {
       stamp: report.stamp, status: report.status, startedAt: report.startedAt,
       durationMs: report.durationMs, error: report.error || null,
     });
   } catch { /* ignore */ }
+  // 运行摘要索引随报告同步落盘；索引失败只影响性能（读侧自愈重建），绝不影响证据
+  try {
+    const map = readIndexMap(base);
+    const runs = map ? [...map.values()] : [];
+    const e = runSummary(report);
+    const i = runs.findIndex((r) => r.stamp === e.stamp);
+    if (i >= 0) runs[i] = e; else runs.push(e);
+    runs.sort((a, b) => (String(a.stamp) < String(b.stamp) ? -1 : String(a.stamp) > String(b.stamp) ? 1 : 0));
+    writeJson(path.join(base, 'index.json'), { version: RUN_INDEX_VERSION, updated: nowIso(), runs });
+  } catch { /* ignore */ }
   return path.join(dir, 'report.json');
 }
 
-export function listRuns(flowId, limit = 20) {
-  const base = path.join(DIRS.runs, flowId);
-  if (!fs.existsSync(base)) return [];
-  const out = [];
-  for (const d of fs.readdirSync(base)) {
-    if (d === 'latest.json') continue;
+/* ---------------- 运行索引（runs/<flowId>/index.json） ----------------
+   旧 listRuns 逐个 readJson 每次运行的 report.json（完整报告含步骤明细，可达几百 KB），
+   无人值守总览 statusReport 对每个流程都来一遍——运行越多越慢（探针实锤：400 次运行时
+   仅 listRuns(100) 就 5.5ms/次，marker 全目录扫描再 23ms）。
+   索引把运行摘要在 saveRun 时顺手记下来，读侧一次 readJson 拿全部摘要。
+   索引只是 report.json 的投影缓存，证据源永远是报告本身；外部直写/删除运行目录后，
+   读侧按「目录有报告却不在索引 / 索引条目无目录」两个集合差自愈重建——宁可多读一遍，
+   不可长期说谎。 */
+const RUN_INDEX_VERSION = 1;
+
+function runIndexPath(base) { return path.join(base, 'index.json'); }
+
+/** report → listRuns 摘要（索引投影与直接读报告共用同一口径，字段/缺省值必须逐个一致） */
+function runSummary(rep) {
+  return {
+    stamp: rep.stamp, status: rep.status, startedAt: rep.startedAt,
+    durationMs: rep.durationMs, trigger: rep.trigger || 'manual',
+    healedCount: (rep.healed || []).length, failedStep: rep.failedStep || null,
+    error: rep.error || null,
+  };
+}
+
+/** 读索引 → Map<stamp, 摘要>；缺/坏/版本不符返回 null（触发重建） */
+function readIndexMap(base) {
+  const idx = readJson(runIndexPath(base));
+  if (!idx || idx.version !== RUN_INDEX_VERSION || !Array.isArray(idx.runs)) return null;
+  const m = new Map();
+  for (const e of idx.runs) if (e && e.stamp) m.set(String(e.stamp), e);
+  return m;
+}
+
+/** 全量重建索引：扫运行目录、读 report.json、写 index.json。Map 的键用目录名
+ *  （生产里目录名就是 stamp，runDir 由 report.stamp 拼出；键用目录名保证自愈判定不空转） */
+function rebuildIndexMap(base, dirs) {
+  const entries = new Map();
+  const runs = [];
+  for (const d of dirs) {
     const rep = readJson(path.join(base, d, 'report.json'));
-    if (!rep) {
-      // 有开始标记却没有报告 = 进程被强杀/断电，这种"静默没跑成"必须能被看见
-      const marker = readJson(path.join(base, d, 'running.json'));
-      if (marker) {
-        out.push({
-          stamp: d, status: 'interrupted', startedAt: marker.startedAt || null,
-          durationMs: null, trigger: marker.trigger || 'unknown', healedCount: 0,
-          failedStep: null, error: '进程中断（未被正常收尾，可能是强杀/断电/崩溃）', interrupted: true,
-        });
-      }
-      continue;
-    }
-    out.push({
-      stamp: rep.stamp, status: rep.status, startedAt: rep.startedAt,
-      durationMs: rep.durationMs, trigger: rep.trigger || 'manual',
-      healedCount: (rep.healed || []).length, failedStep: rep.failedStep || null,
-      error: rep.error || null,
-    });
+    if (!rep) continue;
+    const e = runSummary(rep);
+    entries.set(d, e);
+    runs.push(e);
   }
-  out.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
-  return out.slice(0, limit);
+  runs.sort((a, b) => (String(a.stamp) < String(b.stamp) ? -1 : String(a.stamp) > String(b.stamp) ? 1 : 0));
+  try { writeJson(runIndexPath(base), { version: RUN_INDEX_VERSION, updated: nowIso(), runs }); }
+  catch { /* 索引写失败只影响性能，读侧下次再重建 */ }
+  return entries;
+}
+
+/** 运行目录枚举 + 索引自愈。dirs=全部运行目录（新→旧，剔除 latest.json/index.json），
+ *  entries=Map<目录名, 摘要>（只含已完成运行；进行中/中断的目录不在索引里，靠 running.json 判）。
+ *  自愈触发器只有两个集合差：① 目录有 report.json 却不在索引（升级前存量/外部直写）；
+ *  ② 索引条目无对应目录（外部删除）。其余情况零报告读取。 */
+export function enumerateRuns(flowId) {
+  const base = runsFlowRoot(flowId);
+  if (!fs.existsSync(base)) return { base, dirs: [], entries: new Map() };
+  let names = [];
+  try { names = fs.readdirSync(base); } catch { return { base, dirs: [], entries: new Map() }; }
+  const dirs = names.filter((d) => d !== 'latest.json' && d !== 'index.json').sort().reverse();
+  let entries = readIndexMap(base);
+  let heal = !entries;
+  if (entries) {
+    for (const d of dirs) {
+      if (!entries.has(d) && fs.existsSync(path.join(base, d, 'report.json'))) { heal = true; break; }
+    }
+    if (!heal) {
+      const set = new Set(dirs);
+      for (const k of entries.keys()) if (!set.has(k)) { heal = true; break; }
+    }
+  }
+  if (heal) entries = rebuildIndexMap(base, dirs);
+  return { base, dirs, entries };
+}
+
+/** pruneRuns 删除运行目录后同步裁掉索引条目——不裁则下次读按"幽灵条目"整段重建，白读全部报告 */
+export function dropRunIndexEntries(flowId, stamps) {
+  if (!stamps || !stamps.length) return;
+  try {
+    const base = runsFlowRoot(flowId);
+    const map = readIndexMap(base);
+    if (!map) return;
+    const drop = new Set(stamps.map(String));
+    const runs = [...map.values()].filter((e) => !drop.has(String(e.stamp)));
+    writeJson(runIndexPath(base), { version: RUN_INDEX_VERSION, updated: nowIso(), runs });
+  } catch { /* ignore */ }
+}
+
+export function listRuns(flowId, limit = 20) {
+  return listRunsEx(flowId, limit).runs;
+}
+
+/**
+ * 单遍枚举同时给出窗口摘要与真实运行总数。
+ * total=运行目录总数（一次 readdir 即得，含进行中/中断），不再被 limit 封顶——
+ * 旧实现 statusReport 用 listRuns(100).length 当 totalRuns，超过 100 次就恒报 100（少报）。
+ * 摘要仍按 limit 截，只有 total 是全量真值。
+ */
+export function listRunsEx(flowId, limit = 20) {
+  const { base, dirs, entries } = enumerateRuns(flowId);
+  const total = dirs.length;
+  if (!dirs.length) return { runs: [], total };
+  const out = [];
+  // 运行目录名就是可排序的时间戳（stampId：YYYYMMDD-HHmmss-mmm），倒序取、凑够 limit 即停。
+  // 已完成运行的摘要直接从索引拿（一次 readJson），不再逐个读 report.json
+  for (const d of dirs) {
+    if (out.length >= limit) break;
+    const e = entries.get(d);
+    if (e) { out.push(Object.assign({}, e)); continue; }
+    // 索引里没有 = 没有报告：可能是进行中/中断（running.json）或空目录，口径与旧实现一致——
+    // 按标记里的 pid 分活/死：活着是"进行中"（含等待人工），死了才是"被强杀/断电的静默没跑成"
+    const marker = readJson(path.join(base, d, 'running.json'));
+    if (marker) {
+      const alive = pidAlive(marker.pid);
+      out.push(alive ? {
+        stamp: d, status: 'running', startedAt: marker.startedAt || null,
+        durationMs: null, trigger: marker.trigger || 'unknown', healedCount: 0,
+        failedStep: null, error: null, running: true,
+        waitingHuman: marker.waitingHuman || null,
+      } : {
+        stamp: d, status: 'interrupted', startedAt: marker.startedAt || null,
+        durationMs: null, trigger: marker.trigger || 'unknown', healedCount: 0,
+        failedStep: null, error: '进程中断（未被正常收尾，可能是强杀/断电/崩溃）', interrupted: true,
+        waitingHuman: marker.waitingHuman || null,
+      });
+    }
+  }
+  return { runs: out, total };
 }
 
 export function loadRun(flowId, stamp) {
   if (stamp === 'latest') {
-    const latest = readJson(path.join(DIRS.runs, flowId, 'latest.json'));
+    const latest = readJson(path.join(runsFlowRoot(flowId), 'latest.json'));
     if (!latest) return null;
     stamp = latest.stamp;
   }

@@ -9,6 +9,7 @@ import { createLocalReader } from "./local.mjs";
 import { createMockReader } from "./mock.mjs";
 import { createSqliteReader } from "./sqlite.mjs";
 import { createVaultReader } from "./vault.mjs";
+import { createWcdbReader } from "./wcdb.mjs";
 
 const _cache = new Map();
 
@@ -48,6 +49,7 @@ export function listSources({ probe = false } = {}) {
   for (const s of sqliteRoots) {
     const exists = fs.existsSync(s);
     sources.push({ id: `sqlite:${s}`, kind: "sqlite", name: `解密数据库 ${path.basename(s)}`, path: s, available: exists, detail: exists ? "存在" : "路径不存在" });
+    sources.push({ id: `wcdb:${s}`, kind: "wcdb", name: `微信 4.x db_storage ${path.basename(s)}`, path: s, available: exists, detail: exists ? "存在" : "路径不存在" });
   }
   for (const r of cfg.readers ?? []) {
     if (r.enabled === false || !r.command) continue;
@@ -81,6 +83,9 @@ export function getSource(id) {
   } else if (key.startsWith("sqlite")) {
     const p = key.includes(":") ? key.slice(key.indexOf(":") + 1) : null;
     reader = createSqliteReader({ roots: p ? [p] : (cfg.sqliteSources ?? []).map((s) => s.path).filter(Boolean) });
+  } else if (key === "wcdb" || key.startsWith("wcdb:")) {
+    const p = key.includes(":") ? key.slice(key.indexOf(":") + 1) : null;
+    reader = createWcdbReader({ roots: p ? [p] : (cfg.sqliteSources ?? []).map((s) => s.path).filter(Boolean) });
   } else if (key.startsWith("cli:")) {
     const rid = key.slice(4);
     const conf = (cfg.readers ?? []).find((r) => (r.id ?? r.command) === rid);

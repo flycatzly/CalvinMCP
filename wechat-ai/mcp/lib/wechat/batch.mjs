@@ -78,6 +78,9 @@ function normalizeItem(raw, index) {
     ts_min: Number.isFinite(obj.ts_min) ? obj.ts_min : null,
     ts_max: Number.isFinite(obj.ts_max) ? obj.ts_max : null,
     link: obj.link ?? null,
+    // 原始载荷：创建时即写进 items/<index>.json（manifest 不存正文，防膨胀）
+    text,
+    file,
   };
 }
 
@@ -157,6 +160,22 @@ export function createBatch({ items = [], source = "manual", scene = null, targe
     kept.push(item);
   }
   const id = timestampSlug() + "-" + shortId([source, Date.now(), list.length, kept.map((i) => i.hash).join(",")].join("|"), 6);
+  // 创建即落原始载荷（items/<index>.json 永不丢弃），正文不进 manifest
+  const itemsDir = ensureDir(path.join(batchDir(id), "items"));
+  for (const item of kept) {
+    writeJson(path.join(itemsDir, String(item.index) + ".json"), {
+      index: item.index,
+      title: item.title,
+      chat: item.chat,
+      tsRange: item.tsRange,
+      hash: item.hash,
+      text: item.text,
+      file: item.file,
+      link: item.link ?? null,
+      createdAt: Date.now(),
+    });
+    item.artifact = path.join("items", String(item.index) + ".json");
+  }
   const manifest = {
     schema: BATCH_SCHEMA,
     id,
@@ -169,10 +188,9 @@ export function createBatch({ items = [], source = "manual", scene = null, targe
     dropped,
     duplicates,
     status: "pending",
-    items: kept,
+    items: kept.map(({ text, file, ...rest }) => rest),
   };
   saveManifest(manifest);
-  ensureDir(path.join(batchDir(id), "items"));
   recordOperation({
     action: "batch-create",
     target: manifest.target,
@@ -219,8 +237,10 @@ export function stageItem(batchId, index, source = {}) {
   if (item.status === "done") return { ok: false, batchId: manifest.id, status: manifest.status, item: itemView(item), detail: "该条目已交付，未重复暂存。" };
   const dir = batchDir(manifest.id);
   const itemsDir = ensureDir(path.join(dir, "items"));
-  const file = source.file ? path.resolve(String(source.file)) : null;
-  const text = asText(source.text ?? source.body ?? "");
+  const artifact = path.join(itemsDir, String(item.index) + ".json");
+  const prev = readJson(artifact, null) ?? {}; // 创建时已落原始载荷：未提供新内容时保留原文
+  const file = source.file ? path.resolve(String(source.file)) : (prev.file ?? null);
+  const text = asText(source.text ?? source.body ?? "") || asText(prev.text ?? "");
   const raw = {
     index: item.index,
     title: item.title,
@@ -233,7 +253,6 @@ export function stageItem(batchId, index, source = {}) {
     stagedAt: Date.now(),
     ...(source.raw && typeof source.raw === "object" ? { raw: source.raw } : {}),
   };
-  const artifact = path.join(itemsDir, String(item.index) + ".json");
   writeJson(artifact, raw);
   item.artifact = path.join("items", String(item.index) + ".json");
   item.status = "staging";
@@ -350,7 +369,7 @@ export function deliverBatch(batchId, { target = null, dryRun = false, scene = n
       failed: 0,
       skipped: 0,
       results: [],
-      detail: "没有 ready 状态的条目；请先 stageItem + markReady。",
+      detail: "没有 ready 状态的条目；请先 wai_batch_stage。",
     };
   }
   if (!dryRun) {

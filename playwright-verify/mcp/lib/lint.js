@@ -84,7 +84,12 @@ export const RULES = [
   {
     id: 'PW002', severity: 'ERROR', scope: 'file', text: 'noStrings', tier: 'core',
     title: '.only 泄漏',
-    re: /(?:^|[^\w$.])test\s*\.\s*only\s*\(|(?:^|[^\w$.])describe\s*\.\s*only\s*\(/,
+    // 三条形态都要认：test.only( / test.describe(.serial)*.only( / describe(.serial)*.only(
+    // 对抗洞（钉住）：test.describe.only( 里 describe 前面是「.」，被 [^\w$.] 前缀类挡住，
+    // 两条旧分支一条都匹配不上 —— 最常见的 describe 形态 .only 反而漏报。
+    // 第三分支把 test. 前缀设为可选、允许 describe 与 only 之间夹链式修饰（.serial/.parallel）；
+    // 前缀类仍排除 \w 与 .，所以 mytest.only( / x.test.only( 依旧不冤枉。
+    re: /(?:^|[^\w$.])test\s*\.\s*only\s*\(|(?:^|[^\w$.])(?:test\s*\.\s*)?describe(?:\s*\.\s*\w+)*\s*\.\s*only\s*\(/,
     fix: '提交前删掉 .only，并在 playwright.config 里设 forbidOnly: !!process.env.CI 做双保险。'
       + '注意：本规则的坑在于「用来拦 .only 的规则会被 .only 自己骗过去」——块起始正则必须写成 test(?:\\s*\\.\\s*\\w+)?\\s*\\( 才扫得到 test.only( 的用例体。',
   },
@@ -110,15 +115,19 @@ export const RULES = [
       + '先查为什么不可点：被遮挡就等遮挡物消失，动画未完成就等状态稳定。',
   },
   {
-    id: 'PW006', severity: 'ERROR', scope: 'line', text: 'noStrings', tier: 'core',
+    id: 'PW006', severity: 'ERROR', scope: 'stmt', text: 'noStrings', tier: 'core',
     title: 'Playwright 断言没有 await（假通过）',
-    re: new RegExp(`(?:^|[^\\w.])expect\\s*\\([^;\\n]*\\)\\s*\\.\\s*(?:${ASSERTION_ALT})\\s*\\(`),
-    negative: /await/,
+    // 匹配允许跨行（[^;] 含换行、禁跨语句），上限 5000 字符防病态回溯：
+    // prettier 把长断言折行后，行级正则连匹配都匹配不上 —— 规则会静默失明。
+    re: new RegExp(`(?:^|[^\\w.])expect\\s*\\([^;]{0,5000}?\\)\\s*\\.\\s*(?:${ASSERTION_ALT})\\s*\\(`),
     requireAsyncSource: true,
     fix: 'Playwright 断言是异步的，不 await 就不会被计入失败，用例会「永远通过」——'
       + '这是最危险的写法，因为它在报告里长得和成功一模一样。'
-      + '（判据限定：只有断言参数是 page/locator/getBy* 这类异步来源时才判 ERROR ——'
-      + 'expect(amount).toBe() 这种同步值断言不 await 是正确的，不该冤枉。）',
+      + '（判据限定一：只有断言参数是 page/locator/getBy* 这类异步来源时才判 ERROR ——'
+      + 'expect(amount).toBe() 这种同步值断言不 await 是正确的，不该冤枉。'
+      + '判据限定二：await 判定在语句级 —— await page.goto(...); expect(...).toBeVisible(); 里'
+      + '那个 await 属于 goto，断言本身仍然漏 await；而 const p = expect(...).toBeVisible(); await p; '
+      + '这种把 promise 接走再等的写法不算漏。）',
   },
   {
     id: 'PW007', severity: 'ERROR', scope: 'block', tier: 'core',
@@ -130,7 +139,11 @@ export const RULES = [
   {
     id: 'PW008', severity: 'ERROR', scope: 'line', text: 'noStrings', tier: 'core',
     title: '把 Playwright 断言降级成 JS 判断',
-    re: /!\s*\(?\s*await\s+[\w.$]+\s*\.\s*(?:isVisible|isHidden|isEnabled|isDisabled|isChecked|isEditable)\s*\(/,
+    // 接收者允许带调用后缀（一层括号嵌套）与链式成员：
+    //   !await page.locator('#x').isVisible()   ← 旧式只认「名字.谓词」，中间的 ('#x') 一出现就漏报
+    //   !(await page.locator('#x').isVisible()) ← 括号形态同样漏
+    // 简单形态 !await panel.isVisible() 由同一正则覆盖；谓词名后必须紧跟 (，isVisibleHelper( 不冤枉。
+    re: /!\s*\(?\s*await\s+[\w.$]+(?:\s*\((?:[^()]|\([^()]*\))*\))?(?:\s*\.\s*[\w.$]+(?:\s*\((?:[^()]|\([^()]*\))*\))?)*\s*\.\s*(?:isVisible|isHidden|isEnabled|isDisabled|isChecked|isEditable)\s*\(/,
     fix: 'isVisible() 返回真假值，写成 if (!await x.isVisible()) 会静默通过而不产生失败证据。'
       + '改用 expect(x).toBeVisible()，让它自动重试并输出可归因的失败。',
   },
@@ -166,7 +179,11 @@ export const RULES = [
   {
     id: 'PW013', severity: 'WARN', scope: 'line', text: 'noStrings', tier: 'core',
     title: '超时放宽到 100 秒以上',
-    re: /(?:timeout|Timeout)\s*[:=]\s*\d[\d_]*(?:\s*\*\s*\d[\d_]*)*/,
+    // 两种放宽形态：选项写法（timeout: / timeout=）与调用写法（test.setTimeout( / setDefaultTimeout(）。
+    // 对抗洞（钉住）：test.setTimeout(300_000) 只有调用形态，旧正则要求 [:]= 直接漏报。
+    // 调用分支带 (?<![A-Za-z]) 的等价写法（前缀类排除 \w）：resetTimeout( 里的 set 段不许起匹配，
+    // clearTimeout( 也不许 —— 那是清定时器，不是放宽超时。阈值仍由 timeoutOver100s 求值把关。
+    re: /(?:timeout|Timeout)\s*[:=]\s*\d[\d_]*(?:\s*\*\s*\d[\d_]*)*|(?:^|[^\w])set(?:Default)?[Tt]imeout\s*\(\s*\d[\d_]*(?:\s*\*\s*\d[\d_]*)*/,
     custom: 'timeoutOver100s',
     fix: '放宽超时不是修复，是把「功能坏了」拖延成「跑得很慢」。超长超时会让所有失败都以「超时」的形式出现，'
       + '你再也分不清是页面慢了还是功能坏了。先定位真正的等待条件。'
@@ -215,7 +232,12 @@ export const RULES = [
   {
     id: 'PW106', severity: 'WARN', scope: 'line', text: 'noStrings', tier: 'ext',
     title: '空等待：waitForLoadState/waitForSelector 无参',
-    re: /waitFor(?:LoadState|Selector|Function)\s*\(\s*\)/,
+    // 正则只圈出「调用」，「空参」交给 custom 判 —— 且必须看保留字符串的那份文本：
+    // 在去字符串文本上 waitForSelector('.x') 的实参被抹成空格，看起来就是 waitForSelector()，
+    // 只看正则会把所有带参等待误报成空等待（对抗样例 PW106-有参不冤枉 钉住这个洞）。
+    re: /waitFor(?:LoadState|Selector|Function)\s*\(/,
+    custom: 'emptyArgsOnly',
+    customNeedsCall: true,
     fix: '无参调用只等默认条件，往往不是你要等的那个条件。显式写出等待目标，失败归因才有依据。',
   },
   {
@@ -226,6 +248,123 @@ export const RULES = [
       + '把 baseURL 交给 config 与 env 映射，用例里不出现生产域名。',
   },
 ];
+
+/* ------------------------------------------------------------------ *
+ * 属性化对抗语料（v1.8.13）：每条规则自带 bad（必须命中自己）与 good（不许命中自己）。
+ *
+ * 为什么按规则属性组织、而不是继续手写一份远处的清单：
+ *   手写清单只会给「曾经咬过人的规则」配语料（实测只有 6/20 条规则有专属边界回归），
+ *   新规则落地时没人记得补 —— 而「改一次正则悄悄放宽/收紧、总数看起来正常」恰恰
+ *   是 PW001 的教训。语料跟着规则走 + rules-check 覆盖门（每条规则必须带 bad/good），
+ *   新规则不带语料就进不了表。
+ *
+ * raw: true 的样例按完整文件处理（PW007 这类块级规则不能包进标准用例体——
+ * 包装器自带的 expect 会把「无断言」这个判据本身掩盖掉）。
+ * ------------------------------------------------------------------ */
+const RULE_SAMPLES = {
+  PW001: {
+    bad: `await page.waitForTimeout(3_000);`,
+    good: `await expect(page.getByTestId('row')).toBeVisible();`,
+  },
+  PW002: {
+    bad: `test.only('冒烟', () => {});`,
+    good: `test('冒烟', () => {});`,
+  },
+  PW003: {
+    bad: `await page.locator('//ul[@id="list"]/li[2]').click();`,
+    good: `await page.getByRole('listitem').click();`,
+  },
+  PW004: {
+    bad: `await page.locator('li:nth-child(2)').click();`,
+    good: `await page.getByRole('listitem').click();`,
+  },
+  PW005: {
+    bad: `await page.locator('#save').click({ force: true });`,
+    good: `await page.locator('#save').click();`,
+  },
+  PW006: {
+    bad: `expect(page.getByTestId('total')).toBeVisible();`,
+    good: `await expect(page.getByTestId('total')).toBeVisible();`,
+  },
+  PW007: {
+    raw: true,
+    bad: `test('无断言', async ({ page }) => {\n  await page.goto('/home');\n});`,
+    good: `test('有断言', async ({ page }) => {\n  await page.goto('/home');\n  await expect(page.getByTestId('h1')).toBeVisible();\n});`,
+  },
+  PW008: {
+    bad: `if (!await page.getByLabel('同意').isChecked()) {\n  throw new Error('未同意');\n}`,
+    good: `await expect(page.getByLabel('同意')).toBeChecked();`,
+  },
+  PW009: {
+    bad: `await expect(page.getByTestId('rows')).toHaveCount(3);`,
+    good: `await expect(page.getByTestId('rows')).toBeVisible();`,
+  },
+  PW010: {
+    bad: `await page.locator('.btn-primary').click();`,
+    good: `await page.getByTestId('submit').click();`,
+  },
+  PW011: {
+    bad: `await page.getByRole('option').first().click();`,
+    good: `await page.getByRole('option', { name: '标准' }).click();`,
+  },
+  PW012: {
+    bad: `await page.waitForLoadState('networkidle');`,
+    good: `await page.waitForLoadState('domcontentloaded');`,
+  },
+  PW013: {
+    bad: `test.setTimeout(150_000);`,
+    good: `test.setTimeout(30_000);`,
+  },
+  PW014: {
+    bad: `await page.locator('button:visible').click();`,
+    good: `await page.getByRole('button').click();`,
+  },
+  PW101: {
+    bad: `const password = 'Sup3rSecret!';`,
+    good: `const password = process.env.E2E_PASSWORD;`,
+  },
+  PW102: {
+    bad: `debugger;`,
+    good: `await page.getByTestId('next').click();`,
+  },
+  PW103: {
+    bad: `test.skip('支付回调', () => {});`,
+    good: `test.skip(process.env.CI, 'ISSUE-123 仅 CI 环境跳过');`,
+  },
+  PW104: {
+    bad: `test.slow();`,
+    good: `await page.getByTestId('next').click();`,
+  },
+  PW106: {
+    bad: `await page.waitForLoadState();`,
+    good: `await page.waitForLoadState('domcontentloaded');`,
+  },
+  PW107: {
+    bad: `await page.goto('https://www.example.com/account');`,
+    good: `await page.goto('/account');`,
+  },
+};
+
+// 属性附加：语料挂在规则对象上（r.samples），展开与覆盖门都从规则表走 —— 单一源。
+for (const r of RULES) {
+  const s = RULE_SAMPLES[r.id];
+  if (s) r.samples = s;
+}
+
+/**
+ * 展开属性化语料：每条规则出 bad（expectIds=[自己]）与 good（forbidIds=[自己]）两案。
+ * 覆盖门在 rules-check（每条规则必须带 samples）—— 这里只负责如实展开。
+ */
+export function adversarialCorpus(rules = RULES) {
+  const out = [];
+  for (const r of rules) {
+    const s = r.samples;
+    if (!s) continue;
+    if (s.bad) out.push({ id: r.id, kind: 'bad', name: `${r.id} bad：${r.title}`, src: s.bad, expectIds: [r.id], raw: !!s.raw });
+    if (s.good) out.push({ id: r.id, kind: 'good', name: `${r.id} good：正常写法不冤枉`, src: s.good, forbidIds: [r.id], raw: !!s.raw });
+  }
+  return out;
+}
 
 /* ------------------------------------------------------------------ *
  * 页面对象（PO）方法解析 —— 用来消掉 PW007 的一类误报
@@ -397,6 +536,15 @@ const CUSTOM_CHECKS = {
     // 第一实参是字符串：它是用例名，不是理由
     return true;
   },
+
+  /**
+   * PW106 的「空参」判据：callText 来自「保留字符串」的文本（customNeedsCall），
+   * 所以 waitForSelector('.x') 的实参在这里是可见的 —— 有参就不算空等待。
+   * 反过来，注释里的 waitForSelector() 在正则那一层已被抹掉，根本走不到这里。
+   */
+  emptyArgsOnly(callText) {
+    return /waitFor(?:LoadState|Selector|Function)\s*\(\s*\)/.test(callText);
+  },
 };
 
 /** 按顶层逗号切分实参（忽略字符串与括号内部的逗号）。 */
@@ -520,6 +668,62 @@ function runFileRule(ctx, rule) {
   });
 }
 
+/** 语句级检查（PW006）：断言有没有被 await 是**语句级**事实，不是行级事实。
+ *
+ *  两个行级机制抓不到的洞（对抗样例钉住）：
+ *    await page.goto('/x'); expect(a).toBeVisible();
+ *      —— 行级 negative /await/ 看到 goto 的 await 就整行放过，断言本身仍然漏 await（漏报）
+ *    expect(\n  page.getByTestId('y')\n).toBeVisible();
+ *      —— prettier 折行后整条语句跨行，行级正则连匹配都匹配不上（静默失明）
+ *
+ *  判据：在去字符串文本上做全局匹配（[^;] 允许跨行、禁止跨语句），
+ *  「断言的结果交出去没有」只看 expect 之前那截语句前缀 ——
+ *  await / return / 变量接走（const p = ...）都算交出去，放过。
+ *  反过来 const p = expect(...).toBeVisible(); await p; 也不该冤枉：
+ *  旧式整行 /await/ 在两行分开时会误报，语句前缀 + 接走判定把它消掉。
+ *
+ *  刻意不做数据流跟踪：`arr.forEach(x => expect(x).toBe())` 里 promise 被丢掉的形态抓不到 ——
+ *  箭头表达式体（安全，promise 交回 runner）与回调体（丢弃）语法同形，区分需要数据流分析。
+ *  宁漏不误报，这里选择放过，并把已知边界写进规则文案。 */
+const HAND_BACK_RE = /\bawait\s*$|\breturn\s*$|[\w$]+\s*=\s*$/;
+
+function runStmtRules(ctx, rule) {
+  const text = ctx.mask[rule.text];
+  const re = new RegExp(rule.re.source, 'g');
+  let mm;
+  while ((mm = re.exec(text)) !== null) {
+    // expect 起点：match 可能带一个前置分隔符字符（^ 或 [^\w.] 消耗的那一个）
+    const expectAt = mm.index + (mm[0].startsWith('expect') ? 0 : 1);
+    // 语句起点：expect 之前最近的语句分隔符（; 或块边界）之后
+    let stmtStart = 0;
+    for (const sep of [';', '{', '}']) {
+      const i = text.lastIndexOf(sep, expectAt - 1);
+      if (i + 1 > stmtStart) stmtStart = i + 1;
+    }
+    const prefix = text.slice(stmtStart, expectAt);
+    if (HAND_BACK_RE.test(prefix)) continue;   // await / return / 变量接走 → 结果交出去了，放过
+    // 断言参数不是异步来源时，这条「缺 await」是正常的同步断言，不该冤枉
+    if (rule.requireAsyncSource) {
+      const arg = mm[0].replace(/^[^\w]*expect\s*\(/, '');
+      const inner = arg.slice(0, arg.lastIndexOf(')'));
+      ASYNC_SOURCE_RE.lastIndex = 0;
+      if (!ASYNC_SOURCE_RE.test(inner)) continue;
+    }
+    const line = text.slice(0, expectAt).split('\n').length;
+    ctx.push({
+      id: rule.id,
+      severity: rule.severity,
+      tier: rule.tier,
+      title: rule.title,
+      file: ctx.file,
+      line,
+      evidence: evidenceSlice(ctx.srcLines, line),   // 证据一律回「原文」取
+      match: mm[0],
+      fix: rule.fix,
+    });
+  }
+}
+
 /** 用例块级检查：PW007 断言存在性。 */
 function runBlockRules(ctx, rule) {
   if (rule.id !== 'PW007') return;
@@ -605,6 +809,7 @@ export function lintSource(src, filename = '(inline)', opts = {}) {
     try {
       if (rule.scope === 'line') runLineRules(ctx, rule, mask[rule.text]);
       else if (rule.scope === 'file') runFileRule(ctx, rule);
+      else if (rule.scope === 'stmt') runStmtRules(ctx, rule);
       else if (rule.scope === 'block') runBlockRules(ctx, rule);
     } catch (err) {
       findings.push({
@@ -723,4 +928,4 @@ export function formatText(report) {
   return out.join('\n');
 }
 
-export default { lint, lintSource, formatText, RULES, collectFiles, parsePageObjectMethods };
+export default { lint, lintSource, formatText, RULES, adversarialCorpus, collectFiles, parsePageObjectMethods };

@@ -60,13 +60,27 @@ export const CLOSING_TERMS = ["后面有机会", "下次再聊", "以后再联�
 const AMOUNT_RE = /(\d[\d,.]*)\s*(万|w|W|k|K|元|块|RMB|rmb|人民币|美元|USD|usd|美金|刀|\$)/g;
 const CN_AMOUNT_RE = /([一二三四五六七八九十百千万两]+)\s*(万|元|块|k|K)/g;
 
+// 组合词表：在逐条/逐会话热循环里避免每次 [...A, ...B] 重建数组
+const OPPORTUNITY_TERMS = [...BRAND_DEAL_TERMS, ...TRAINING_TERMS, ...PROJECT_TERMS, ...RESOURCE_TERMS];
+const DEADLINE_CONTEXT_TERMS = [...PROJECT_TERMS, ...BRAND_DEAL_TERMS, ...TRAINING_TERMS];
+const PUBLISH_CONTEXT_TERMS = [...BRAND_DEAL_TERMS, ...PUBLISH_TERMS];
+
 // ---------------- 工具 ----------------
+// 逐词 .includes 由 V8 原生实现，长文本上远快于 JS 逐字符循环（POC：6KB 文本 8 组词表
+// 0.051ms vs 跨表一趟扫描 0.135ms）；短文本 + 大词表才反过来，但本文件的热路径
+// 逐消息词表调用都有正则预筛、触发率低，不值得为此分支。保持最简实现。
 export function hits(text, terms) {
   const t = String(text ?? "");
   return terms.filter((k) => t.includes(k));
 }
 export function hitCount(text, terms) {
   return hits(text, terms).length;
+}
+/** 存在性判定：只问「有没有」时用 .some() 首处命中即停，且不分配命中数组。
+ *  与 hitCount(text, terms) > 0 严格等价（词表实例级口径不变）。 */
+export function hasAny(text, terms) {
+  const t = String(text ?? "");
+  return terms.some((k) => t.includes(k));
 }
 export function isQuestion(text) {
   const t = String(text ?? "");
@@ -85,8 +99,9 @@ export function isAck(text) {
 export function isClosing(text) {
   return CLOSING_TERMS.some((c) => String(text ?? "").includes(c));
 }
-/** 交付证据词：承诺之后出现这些词视为「已兑现」 */
-const DELIVERED_RE = /(已发|发你了|发您了|发过去|已发你|已发您|见附件|附件|已整理|已同步|已上传|链接如下)/;
+/** 交付证据词：承诺之后出现这些词视为「已兑现」。
+ *  注意不能用裸「附件」——「附件太大发不了」「帮我下载附件」都不是交付。 */
+const DELIVERED_RE = /(已发|发你了|发您了|发过去|已发你|已发您|见附件|附件如下|附件已发|已整理|已同步|已上传|链接如下)/;
 export function extractAmounts(text) {
   const out = [];
   const t = String(text ?? "");
@@ -97,8 +112,15 @@ export function extractAmounts(text) {
 export function extractDueDates(text, ref = new Date()) {
   const out = [];
   const t = String(text ?? "");
-  for (const m of t.matchAll(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/g)) out.push({ text: m[0], date: new Date(+m[1], +m[2] - 1, +m[3]) });
-  for (const m of t.matchAll(/(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/g)) out.push({ text: m[0], date: new Date(ref.getFullYear(), +m[1] - 1, +m[2]) });
+  // 便宜预筛：任何日期形态都必须含数字或日期字（月/年/周/星期/礼拜/今/明/后/尽/马/刻）。
+  // 一个字符类测试顶掉 12 组正则全扫；它是「有结果」的必要条件而非充分条件，语义不变。
+  if (!/[0-9月年周星假期礼今明后尽马刻]/.test(t)) return [];
+  // 年-月-日：前后不能紧贴数字/小数点，避免版本号、编号被当日期
+  for (const m of t.matchAll(/(?<![\d.])((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/g)) out.push({ text: m[0], date: new Date(+m[1], +m[2] - 1, +m[3]) });
+  // 月-日：只有「N月M(日)」和「N-M / N/M」两种安全形态；
+  // 旧正则把 3.5万 当 3月5日、把 3000-5000 当 5月5日、把 ISO 2026-06-30 再拆出两个假日期
+  for (const m of t.matchAll(/(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日?(?!\d)(?![\s]*[万wWkK])/g)) out.push({ text: m[0], date: new Date(ref.getFullYear(), +m[1] - 1, +m[2]) });
+  for (const m of t.matchAll(/(?<![\d.\-\/:])(\d{1,2})\s*[-\/]\s*(\d{1,2})(?![\d.\-\/:年月日])/g)) out.push({ text: m[0], date: new Date(ref.getFullYear(), +m[1] - 1, +m[2]) });
   for (const m of t.matchAll(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/g)) out.push({ text: m[0], date: new Date(+m[1], +m[2] - 1, +m[3]) });
   for (const m of t.matchAll(/(这|本|下|下个)?\s*(周|星期|礼拜)([一二三四五六日天])/g)) {
     const which = m[1] ?? "";
@@ -213,12 +235,17 @@ export function isLowValueMessage(text) {
 export const ENTERTAINMENT_GROUP_NAME_RE = /吃喝玩乐|体育|运动群|球友|厨房|羽毛球|网球|外卖|福利群|薅羊毛|追星|校友闲聊|同学群|爬山|亲子|宠物/i;
 export const ENTERTAINMENT_CONTENT_RE = /足球|篮球|世界杯|球赛|比分|演唱会|追星|八卦|外卖|红包福利|拼单|薅羊毛|吃饭|聚餐|喝酒|打牌|日常闲聊|旅游约伴|相亲|天气/i;
 
+// 计数用全局正则只编译一次（旧实现每次调用 new RegExp + match 全量收集，仅为数个数）
+const ENTERTAINMENT_CONTENT_GI = new RegExp(ENTERTAINMENT_CONTENT_RE.source, "gi");
+
 export function isEntertainmentGroup(name, text) {
   if (ENTERTAINMENT_GROUP_NAME_RE.test(String(name ?? ""))) return true;
   const t = String(text ?? "");
   if (!t) return false;
-  const hits = (t.match(new RegExp(ENTERTAINMENT_CONTENT_RE.source, "gi")) ?? []).length;
-  return hits > 0 && hits / Math.max(1, t.length / 60) > 0.5;
+  let n = 0;
+  ENTERTAINMENT_CONTENT_GI.lastIndex = 0;
+  while (ENTERTAINMENT_CONTENT_GI.exec(t)) n += 1;
+  return n > 0 && n / Math.max(1, t.length / 60) > 0.5;
 }
 
 /** 会话分类（用于优先级与栏目归属） */
@@ -241,16 +268,26 @@ export function chatTopics(name, text) {
   return [...new Set(found)];
 }
 
-/** 低价值娱乐/闲聊判定：需要群名或讨论内容确实以生活/娱乐为主，且没有当前目标信号 */
-export function isLowValueChat({ name, text }) {
+/** 低价值娱乐/闲聊判定：需要群名或讨论内容确实以生活/娱乐为主，且没有当前目标信号
+ *  opportunityHits：调用方（analyze）已对 text 完成商机 4 组词表扫描时传入命中总数，
+ *  免去把整段拼接全文再扫 90 词（OPPORTUNITY_TERMS 就是那 4 组的并集）；存在性口径与
+ *  「名字+\n+全文」一次扫描严格等价（消费方只看 >0，名字补扫覆盖名字命中）。不传则维持原实现。 */
+export function isLowValueChat({ name, text, opportunityHits = null }) {
   const n = String(name ?? "");
   const t = String(text ?? "");
-  const targetSignals = hitCount(`${n}\n${t}`, [...BRAND_DEAL_TERMS, ...TRAINING_TERMS, ...PROJECT_TERMS, ...RESOURCE_TERMS]);
+  const targetSignals = opportunityHits == null
+    ? hitCount(`${n}\n${t}`, OPPORTUNITY_TERMS)
+    : (opportunityHits > 0 ? 1 : 0) + hitCount(n, OPPORTUNITY_TERMS);
   if (targetSignals > 0) return false;
   const nameHit = /(闲聊|娱乐|生活|爬山|吃喝|亲子|游戏|追剧|摸鱼|灌水|闲聊群)/.test(n);
-  const lowHits = hitCount(t, LOW_VALUE_TERMS);
-  const total = t.length || 1;
-  return nameHit || lowHits / Math.max(1, total / 40) > 0.5;
+  if (nameHit) return true;
+  // 密度按「含低价值词的消息占比」算。旧实现用 hitCount（只数唯一词项）除以字数/40，
+  // 长会话永远达不到阈值——那一支实际是死代码；改为消息级占比才真正生效
+  const lines = t.split("\n").filter((l) => l.trim());
+  if (!lines.length) return false;
+  let low = 0;
+  for (const l of lines) if (LOW_VALUE_TERMS.some((k) => l.includes(k))) low += 1;
+  return low / lines.length > 0.6;
 }
 
 // ---------------- 主分析 ----------------
@@ -269,6 +306,49 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     return v;
   };
   const isOwnerMsg = (m) => !!(m.is_owner || ownerOf(m.sender));
+  // 可行动判定按内容文本记忆化：recap/boost/low/cats 四判只依赖文本，聊天语料重复度高
+  // （寒暄/套话/转发刷屏），同一文本只判一次。内部分步短路与逐条判定完全同序——
+  // 首次出现才计算，且 recap 命中就不算 boost/low/cats。缓存生命周期 = 本次 analyze 调用，
+  // 键是文本引用、值百字节级，最坏全不同文本的峰值远小于消息数组本身。
+  const actionCache = new Map();
+  const actionOf = (text) => {
+    let p = actionCache.get(text);
+    if (p !== undefined) return p;
+    if (isGroupRecap(text)) p = { recap: true };
+    else if (isBoostOnly(text)) p = { boost: true };
+    else if (isLowValueMessage(text)) p = { low: true };
+    else p = { cats: Object.freeze(discussionCategories(text)) };
+    actionCache.set(text, p);
+    return p;
+  };
+  // 承诺/截止链路的文本判定同理记忆化：isAck / isPromise / 短承诺快判 / 交付证据只依赖文本。
+  // due 另按（文本 × 消息本地日历日）记忆化——extractDueDates 的相对日期全部以 ref 的本地
+  // y/m/d 计算（nextWeekday 还会归一到本地零点），同日同文本结果必然相同；键带长度前缀防碰撞。
+  const chainCache = new Map();
+  const chainOf = (text) => {
+    let p = chainCache.get(text);
+    if (p !== undefined) return p;
+    p = {
+      ack: isAck(text),
+      delivered: DELIVERED_RE.test(text),
+      shortPromise: PROMISE_PATTERNS[2].test(text),
+      promise: isPromise(text),
+    };
+    chainCache.set(text, p);
+    return p;
+  };
+  const dueCache = new Map();
+  const dueOf = (text, ts) => {
+    const d = new Date(ts);
+    const dayNum = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    const key = `${String(text).length}|${text}|${dayNum}`;
+    let v = dueCache.get(key);
+    if (v === undefined) {
+      v = extractDueDates(text, d)[0] ?? null;
+      dueCache.set(key, v);
+    }
+    return v;
+  };
   // 兼容两种行结构：store 行用 session_name，reader 行用 chat
   const chatOf = (m) => m.session_name ?? m.chat ?? m.talker ?? "未知会话";
   const byChatMap = new Map();
@@ -296,6 +376,26 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
   const links = new Map();
   const exclusions = new Set([...(profile.exclude_chats ?? []), ...extraExclusions]);
 
+  // ---- 链接聚合先行：跨群判定与链接画像要看到全部会话的分布，不能依赖会话遍历顺序 ----
+  for (const [chat, msgs] of byChatMap) {
+    if (exclusions.has(chat)) continue;
+    for (const m of msgs) {
+      for (const url of messageLinks(m)) {
+        const norm = normalizeUrl(url);
+        const owner = isOwnerMsg(m);
+        if (!links.has(norm)) links.set(norm, { norm, url, chats: new Set(), senders: new Set(), first_ts: m.ts, last_ts: m.ts, hits: 0, heat: false, contexts: [] });
+        const rec = links.get(norm);
+        rec.chats.add(chat);
+        if (!owner) rec.senders.add(m.sender);
+        rec.first_ts = Math.min(rec.first_ts, m.ts);
+        rec.last_ts = Math.max(rec.last_ts, m.ts);
+        rec.hits += 1;
+        if (isHeatLink(url) || hasAny(m.content, HEAT_TERMS)) rec.heat = true;
+        if (rec.contexts.length < 4) rec.contexts.push({ chat, sender: m.sender, ts: m.ts, content: truncate(m.content, 160), is_owner: owner });
+      }
+    }
+  }
+
   for (const [chat, msgs] of byChatMap) {
     if (exclusions.has(chat)) continue;
     const kind = classifyChat(chat);
@@ -310,7 +410,6 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     const projHits = hits(textAll, PROJECT_TERMS);
     const resHits = hits(textAll, RESOURCE_TERMS);
     const heatHits = hits(textAll, HEAT_TERMS);
-    const nonDeal = hits(textAll, NON_DEAL_TERMS);
     const amounts = extractAmounts(textAll);
     const senderCount = new Set(msgs.map((m) => m.sender)).size;
 
@@ -321,11 +420,12 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     let effectiveCount = 0;
     for (const m of msgs) {
       const text = String(m.content ?? "");
-      if (isGroupRecap(text)) { recapCount += 1; continue; }         // 群内已有日报不计入话题/机会
-      if (isBoostOnly(text)) { boostCount += 1; continue; }          // 三连/已三连等纯互动不计入证据
-      if (isLowValueMessage(text)) continue;                          // 收到/好的/表情等
+      const p = actionOf(text);
+      if (p.recap) { recapCount += 1; continue; }                     // 群内已有日报不计入话题/机会
+      if (p.boost) { boostCount += 1; continue; }                     // 三连/已三连等纯互动不计入证据
+      if (p.low) continue;                                            // 收到/好的/表情等
       effectiveCount += 1;
-      for (const c of discussionCategories(text)) actionable[c] += 1;
+      for (const c of p.cats) actionable[c] += 1;
     }
     const actionableHits = Object.values(actionable).reduce((a, b) => a + b, 0);
     const entertainment = kind === "group" && isEntertainmentGroup(chat, textAll);
@@ -372,16 +472,20 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     const laterDelivered = new Array(n + 1).fill(false);
     const laterAcked = new Array(n + 1).fill(false);
     for (let i = n - 1; i >= 0; i--) {
-      laterDelivered[i] = laterDelivered[i + 1] || (isOwnerMsg(msgs[i]) && DELIVERED_RE.test(msgs[i].content));
-      laterAcked[i] = laterAcked[i + 1] || (!isOwnerMsg(msgs[i]) && isAck(msgs[i].content));
+      const c = chainOf(msgs[i].content);
+      laterDelivered[i] = laterDelivered[i + 1] || (isOwnerMsg(msgs[i]) && c.delivered);
+      laterAcked[i] = laterAcked[i + 1] || (!isOwnerMsg(msgs[i]) && c.ack);
     }
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
       if (!isOwnerMsg(m)) continue;
-      if (isAck(m.content) || m.content.length < 6) continue;
-      if (!isPromise(m.content)) continue;
+      const c = chainOf(m.content);
+      if (c.ack) continue;
+      // 短消息多是寒暄碎片，但「明天给你」「发你报价」这类短承诺必须保留
+      if (m.content.length < 6 && !c.shortPromise) continue;
+      if (!c.promise) continue;
       const delivered = laterDelivered[i + 1];
-      const due = extractDueDates(m.content, new Date(m.ts))[0] ?? null;
+      const due = dueOf(m.content, m.ts);
       const ackedByOther = laterAcked[i + 1];
       promises.push({
         chat, kind, ts: m.ts, content: m.content,
@@ -397,19 +501,22 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     // ---- 截止：交付类词 + 日期 ----
     for (const m of msgs) {
       if (!/(截止|之前|前给|前发|要交付|必须|今天要|明天要|本周|下周|周[一二三四五六日天])/.test(m.content)) continue;
-      if (hitCount(m.content, [...PROJECT_TERMS, ...BRAND_DEAL_TERMS, ...TRAINING_TERMS]) === 0) continue;
-      const due = extractDueDates(m.content, new Date(m.ts))[0];
+      if (!hasAny(m.content, DEADLINE_CONTEXT_TERMS)) continue;
+      const due = dueOf(m.content, m.ts);
       if (!due) continue;
       deadlines.push({ chat, kind, ts: m.ts, sender: m.sender, content: m.content, due: due.date.getTime(), due_text: due.text, overdue: due.date.getTime() < now.getTime(), days_left: Math.round((due.date.getTime() - now.getTime()) / 86400000) });
       flagDeadline = true;
     }
 
     // ---- 结算 / 发布后义务 ----
-    if (hitCount(textAll, SETTLEMENT_TERMS) > 0) {
-      settlements.push({ chat, kind, ts: last.ts, terms: hits(textAll, SETTLEMENT_TERMS), amounts, last_sender: last.sender, content: truncate(last.content, 160), pending: !lastFromOwner });
+    // 「已打款/已到账/结清了」是完成态：是过去的账，不再进「待结算」
+    const settlementTerms = hits(textAll, SETTLEMENT_TERMS);
+    const settlementDone = /(已打款|已付款|已结清|已到账|已收款|收到款|已开票|付过了|打过款|款已付|结算完成|结清了)/.test(textAll);
+    if (settlementTerms.length > 0 && !settlementDone) {
+      settlements.push({ chat, kind, ts: last.ts, terms: settlementTerms, amounts, last_sender: last.sender, content: truncate(last.content, 160), pending: !lastFromOwner });
       flagSettlement = true;
     }
-    if (hitCount(textAll, PUBLISH_TERMS) > 0 && hitCount(textAll, [...BRAND_DEAL_TERMS, ...PUBLISH_TERMS]) > 1) {
+    if (hasAny(textAll, PUBLISH_TERMS) && hitCount(textAll, PUBLISH_CONTEXT_TERMS) > 1) {
       published.push({ chat, kind, ts: last.ts, terms: hits(textAll, PUBLISH_TERMS) });
     }
 
@@ -417,14 +524,14 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
     const privateStage = kind === "private" && ownerCount > 0;
     const labelBonus = labelScore(chat, profile);
     const activeStage = /(排期|档期|发布时间|交付|初稿|终稿)/.test(textAll);
-    const settlement = hitCount(textAll, SETTLEMENT_TERMS) > 0;
+    const settlement = settlementTerms.length > 0;
     const directDeal = /(私聊|对接|直接联系|加我|发我邮箱|微信详聊)/.test(textAll);
     const lowName = /(闲聊|娱乐|灌水|资源群|互推群|涨粉)/.test(chat);
 
     const base = labelBonus * 10 + (activeStage ? 24 : 0) + (settlement ? 14 : 0) + (amounts.length ? 18 : 0) + (directDeal ? 12 : 0) + (resHits.length ? 8 : 0) - (lowName ? 14 : 0);
     const signalScore = Math.max(0, base) + dealHits.length * 3 + trainHits.length * 3 + projHits.length * 3;
 
-    if (dealHits.length && nonDeal.length === 0) {
+    if (dealHits.length && !hasAny(textAll, NON_DEAL_TERMS)) {
       const explicitRequest = /(找|招|招募|需要有|想找|求推荐|谁可以|谁能)/.test(textAll);
       const hasBudget = amounts.length > 0 || /(预算|报价|稿费|佣金|保底)/.test(textAll);
       const hasDeadline = flagDeadline;
@@ -438,45 +545,29 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
         chat, kind, ts: last.ts, qualification, confidence, signal_score: signalScore,
         explicit_request: explicitRequest, has_budget: hasBudget, has_deadline: hasDeadline,
         cross_group: crossGroup, amounts, hits: dealHits.slice(0, 8),
-        evidence: msgs.filter((m) => hitCount(m.content, BRAND_DEAL_TERMS) > 0).slice(-3).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 200), is_owner: isOwnerMsg(m) })),
+        evidence: msgs.filter((m) => hasAny(m.content, BRAND_DEAL_TERMS)).slice(-3).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 200), is_owner: isOwnerMsg(m) })),
         record_type: (projHits.length && (privateStage && activeStage)) || (privateStage && activeStage && qualification >= 55) ? "opportunity" : "candidate",
       });
       flagBrandDeal = true;
     }
     if (trainHits.length >= 2 || (trainHits.length === 1 && /(找|需要|招募|想请|求推荐)/.test(textAll))) {
       const qualification = clampScore((/(找|需要|招募|想请|求推荐)/.test(textAll) ? 30 : 0) + (amounts.length ? 20 : 0) + (kind === "private" ? 30 : 0) + (/(试讲|大纲|课时|排期|档期)/.test(textAll) ? 20 : 0));
-      trainings.push({ chat, kind, ts: last.ts, qualification, confidence: qualification >= 50 ? "高概率" : qualification >= 30 ? "中概率" : "待核实", hits: trainHits.slice(0, 8), amounts, evidence: msgs.filter((m) => hitCount(m.content, TRAINING_TERMS) > 0).slice(-3).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 200) })) });
+      trainings.push({ chat, kind, ts: last.ts, qualification, confidence: qualification >= 50 ? "高概率" : qualification >= 30 ? "中概率" : "待核实", hits: trainHits.slice(0, 8), amounts, evidence: msgs.filter((m) => hasAny(m.content, TRAINING_TERMS)).slice(-3).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 200) })) });
       flagTraining = true;
     }
     if (projHits.length >= 2 && !flagBrandDeal) {
       projects.push({ chat, kind, ts: last.ts, hits: projHits.slice(0, 8), score: projHits.length * 3 + (privateStage ? 10 : 0) });
     }
     if (resHits.length >= 1 && /(可以|帮忙|介绍|引荐|推荐|拉群)/.test(textAll)) {
-      resources.push({ chat, kind, ts: last.ts, hits: resHits.slice(0, 6), evidence: msgs.filter((m) => hitCount(m.content, RESOURCE_TERMS) > 0).slice(-2).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 160) })) });
+      resources.push({ chat, kind, ts: last.ts, hits: resHits.slice(0, 6), evidence: msgs.filter((m) => hasAny(m.content, RESOURCE_TERMS)).slice(-2).map((m) => ({ sender: m.sender, ts: m.ts, content: truncate(m.content, 160) })) });
     }
     if (heatHits.length >= 1) {
       heat.push({ chat, kind, ts: last.ts, hits: heatHits.slice(0, 6) });
     }
 
-    // ---- 链接聚合 ----
-    for (const m of msgs) {
-      for (const url of messageLinks(m)) {
-        const norm = normalizeUrl(url);
-        const owner = isOwnerMsg(m);
-        if (!links.has(norm)) links.set(norm, { norm, url, chats: new Set(), senders: new Set(), first_ts: m.ts, last_ts: m.ts, hits: 0, heat: false, contexts: [] });
-        const rec = links.get(norm);
-        rec.chats.add(chat);
-        if (!owner) rec.senders.add(m.sender);
-        rec.first_ts = Math.min(rec.first_ts, m.ts);
-        rec.last_ts = Math.max(rec.last_ts, m.ts);
-        rec.hits += 1;
-        if (isHeatLink(url) || hitCount(m.content, HEAT_TERMS) > 0) rec.heat = true;
-        if (rec.contexts.length < 4) rec.contexts.push({ chat, sender: m.sender, ts: m.ts, content: truncate(m.content, 160), is_owner: owner });
-      }
-    }
-
     // ---- 低价值判定 ----
-    session.low_value = isLowValueChat({ name: chat, text: textAll });
+    // 商机 4 组词表已在上方扫过 textAll，命中总数直接复用（>0 存在性口径等价），不再重扫拼接全文
+    session.low_value = isLowValueChat({ name: chat, text: textAll, opportunityHits: dealHits.length + trainHits.length + projHits.length + resHits.length });
     session.priority = signalScore + (session.low_value ? -20 : 0) + labelBonus * 5;
     if (session.low_value) lowValue.push({ name: chat, messages: msgs.length, reason: "以生活/娱乐/闲聊为主且无当前目标信号" });
     session.signals = [
@@ -565,11 +656,15 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
 }
 
 function crossGroupHit(links, msgs) {
+  const self = msgs[0]?.session_name;
   for (const m of msgs) {
-    for (const url of m.links ?? []) {
-      const norm = normalizeUrl(url);
-      const rec = links.get(norm);
-      if (rec && rec.chats.size >= 1 && !rec.chats.has(m.session_name)) return true;
+    for (const url of messageLinks(m)) {
+      const rec = links.get(normalizeUrl(url));
+      if (!rec) continue;
+      // 同链接出现在别的会话才算跨群（链接表已含全部会话，与遍历顺序无关）
+      for (const c of rec.chats) {
+        if (c !== self) return true;
+      }
     }
   }
   return false;
@@ -606,8 +701,10 @@ const REACTIVATION_ANY_RE = new RegExp([
   ...REACTIVATION_DECISIVE.map((re) => re.source),
 ].join("|"));
 
-export function reactivation({ messages, now = new Date(), inactiveDays = 21, maxPerBand = 20 }) {
+export function reactivation({ messages, now = new Date(), inactiveDays = 21, maxPerBand = 20, label = null } = {}) {
   const profile = loadProfile();
+  // 「限定标签」：非空时只保留会话名命中任一标签的会话，且这些会话按重点标签待遇（不受沉默天数门槛限制）
+  const limitLabels = (Array.isArray(label) ? label : [label]).map((l) => String(l ?? "").trim()).filter(Boolean);
   const byChat = new Map();
   for (const m of messages) {
     if (m.session_name === undefined) m.session_name = m.chat ?? m.talker ?? "未知会话";
@@ -628,7 +725,8 @@ export function reactivation({ messages, now = new Date(), inactiveDays = 21, ma
     msgs.sort((a, b) => a.ts - b.ts);
     const last = msgs[msgs.length - 1];
     const inactive = Math.floor((now.getTime() - last.ts) / 86400000);
-    const labelMatch = priorityLabels.some((l) => l && chat.includes(l));
+    if (limitLabels.length && !limitLabels.some((l) => chat.includes(l))) continue;
+    const labelMatch = limitLabels.length > 0 || priorityLabels.some((l) => l && chat.includes(l));
     // 单遍扫描：逐条消息累计信号并早停，不再把整个会话拼成一个巨型字符串跑 6 遍正则。
     // 各正则的最长命中不超过 48 字符，带上一条消息的尾部做重叠即可覆盖跨消息边界，
     // 与「拼接全文再测」等价。

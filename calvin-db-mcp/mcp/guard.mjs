@@ -3,13 +3,37 @@
  *
  * 职责：词法掩码（方言感知）→ 只读/写守卫 → 恒真 WHERE 判定 → 写目标解析 →
  *       LIMIT 包裹 → CREATE TABLE 守卫与表名提取。
- * 本模块全部为纯函数、零依赖（不 import 任何东西）：可独立审计、可单独加载做单元测试。
+ * 本模块零依赖（不 import 任何东西）：纯函数 + ToolError 错误类（v1.6.6 起，错误码载体，无副作用），
+ * 可独立审计、可单独加载做单元测试。
  * server.mjs 从这里导入并对外重导出（selftest 经由 server.mjs 消费，API 面不变）。
  *
  * 方言背景（v1.0.3 两族修复，详见各函数注释）：
  *  - MySQL：-- 后须跟 ASCII 空白才是注释；可执行注释（/*! / /*M! 开头）是代码；# 是注释；'...' 反斜杠转义。
  *  - PostgreSQL：-- 总是注释；无可执行注释；# 是运算符；'...' 反斜杠是字面量（仅 E''/U&'' 转义）。
  */
+
+/* v1.6.6: ToolError —— 工具错误在抛出点显式携带机器可读错误码（E_*）与重试态，
+ * 不再依赖消息模式匹配（server.mjs classifyError 的模式匹配仅作未标注错误/驱动错误的兜底）。
+ * 属性名用 errCode/errRetry 而非 code：驱动错误的 e.code（如 ECONNREFUSED）会被
+ * callTool 的 catch 拼进消息文本展示，不能被覆盖。 */
+const ERR_DEFAULT_RETRY = {
+  E_SAFETY: "no-retry",     // 守卫/安全红线拒绝——同样调用永远失败
+  E_PARAM: "no-retry",      // 参数或语句形态错误——修正后重试
+  E_NOT_FOUND: "no-retry",  // 源/表/列/文件不存在
+  E_CONFIG: "no-retry",     // 部署/配置态（初始化、权限）——需运维动作
+  E_LIMIT: "conditional",   // 超上限——缩小范围后重试
+  E_DB: "no-retry",         // 数据库/驱动错误——调用点可显式指定重试态（如批写入结果未知=conditional）
+  E_INTERNAL: "no-retry",   // 未分类兜底（fail-closed）
+};
+
+export class ToolError extends Error {
+  constructor(code, message, retry) {
+    super(message);
+    this.name = "ToolError";
+    this.errCode = code;
+    this.errRetry = retry || ERR_DEFAULT_RETRY[code] || "no-retry";
+  }
+}
 
 /**
  * Mask out string literals / quoted identifiers / comments; detect multi-statement.
@@ -38,6 +62,10 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
   let state = "normal";
   let squoteEscape = true;  // '...' 内反斜杠是否转义（MySQL: 是；PG: 仅 E''/U&'' 是）
   let dquoteEscape = true;  // "..." 内反斜杠是否转义（MySQL 字符串: 是；PG 定界标识符: 否）
+  // v1.6.21+（adv26）：引号标识符（"..." / `...`）调用形态记录——名字 + 闭引号下标。
+  // 掩码把引号标识符整体抹掉后黑名单函数名对守卫不可见，需按名字二次校验（见 guardReadOnly 尾部）。
+  const quotedIdents = [];
+  let identStart = -1;
   // PG 转义串前缀：紧邻引号前的裸 e 或 U&（前一个字符不能再是标识符字符，防 name'…' 误判）
   const isPgEscapePrefix = (quoteAt) => {
     const p1 = sql[quoteAt - 1] || "";
@@ -78,9 +106,10 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
       if (c === '"') {
         state = "dquote";
         dquoteEscape = !pgDialect;
+        identStart = i;
         out.push(keep ? c : " "); i += 1; continue;
       }
-      if (c === "`") { state = "btick"; out.push(keep ? c : " "); i += 1; continue; }
+      if (c === "`") { state = "btick"; identStart = i; out.push(keep ? c : " "); i += 1; continue; }
       if (c === "$") {
         // v1.0.3 复核修复：标签遵循 PG scan.l 的 dolqdelim 规则——字母/下划线开头、仅字母/数字/下划线
         // （标签是两个 $ 之间的内容，构造上不能含 $）。旧正则不认 $tag1$（误报 multi-statement）；
@@ -129,6 +158,7 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
           if (keep) { out.push(c); out.push(d); } else { out.push("  "); }
           i += 2; continue;
         }
+        if (state === "dquote") quotedIdents.push({ name: sql.slice(identStart + 1, i), end: i });
         state = "normal"; out.push(keep ? c : " "); i += 1; continue;
       }
       out.push(keep ? c : " ");
@@ -136,12 +166,19 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
       continue;
     }
     if (state === "btick") {
-      if (c === "`") { state = "normal"; out.push(keep ? c : " "); } else { out.push(keep ? c : " "); }
+      if (c === "`") { quotedIdents.push({ name: sql.slice(identStart + 1, i), end: i }); state = "normal"; out.push(keep ? c : " "); } else out.push(keep ? c : " ");
       i += 1;
       continue;
     }
   }
-  return { text: out.join("") };
+  const masked = out.join("");
+  // 调用形态判定：闭引号后紧跟左括号（中间允许空白/注释——注释已掩为空格）才视为函数调用；
+  // 允许一个右括号覆盖 ("f")(x) 复合形态。列名引用（无左括号）不进调用名单，不误伤。
+  const quotedCalls = [];
+  for (const qi of quotedIdents) {
+    if (/^\s*\)?\s*\(/.test(masked.slice(qi.end + 1))) quotedCalls.push(qi.name);
+  }
+  return { text: masked, quotedCalls };
 }
 
 /**
@@ -199,30 +236,45 @@ const LOCK_SHARE_RE = /\bfor\s+(key\s+)?share\b|\block\s+in\s+share\s+mode\b/i;
 
 /** Throw unless the statement is a single, read-only statement. dialect: "mysql" | "postgres"（缺省按 mysql）. */
 export function guardReadOnly(sql, dialect = "mysql") {
-  if (!sql || !sql.trim()) throw new Error("Empty SQL.");
+  if (!sql || !sql.trim()) throw new ToolError("E_PARAM", "Empty SQL.");
   const s = sanitizeSql(sql, dialect);
   if (s.error === "executable-comment") {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "Blocked by read-only guard: MySQL/MariaDB executable comments (/*!...*/, /*M!...*/) are code, not comments."
     );
   }
   if (s.error === "multi-statement") {
-    throw new Error("Only a single SQL statement is allowed (found content after ';').");
+    throw new ToolError("E_PARAM", "Only a single SQL statement is allowed (found content after ';').");
   }
   const text = s.text.trim();
   // v1.2.1: 允许括号开头的复合查询（"(SELECT ...) UNION ..."）——旧版一票拒绝属可用性缺口
   //（fail-closed 不是安全洞）；括号仅是优先级语法，语句仍必须是 select/with 家族，写词/行锁照常被后续检查拦截。
   if (!/^(select|with|show|describe|desc|explain)\b/i.test(text) && !/^\(\s*(select|with)\b/i.test(text)) {
-    throw new Error(
+    throw new ToolError("E_PARAM", 
       "Read-only tool: statement must start with SELECT / WITH / SHOW / DESCRIBE / EXPLAIN. " +
       "Use the 'execute' tool for writes (only when enabled in config)."
     );
   }
   const w = text.match(WRITE_WORDS_RE);
-  if (w) throw new Error(`Blocked by read-only guard: found '${w[1].toUpperCase()}' outside string literals.`);
+  if (w) throw new ToolError("E_SAFETY", `Blocked by read-only guard: found '${w[1].toUpperCase()}' outside string literals.`);
   const df = text.match(DANGER_FUNC_RE);
-  if (df) throw new Error(`Blocked by read-only guard: administrative/destructive function call '${df[1]}(' is not allowed in reads.`);
-  if (LOCK_SHARE_RE.test(text)) throw new Error("Blocked by read-only guard: row locking (FOR SHARE / LOCK IN SHARE MODE) is not allowed.");
+  if (df) throw new ToolError("E_SAFETY", `Blocked by read-only guard: administrative/destructive function call '${df[1]}(' is not allowed in reads.`);
+  // v1.6.21+（adv26 收口）：引号标识符调用形态同黑名单——掩码把 "..." / `...` 整体抹掉后黑名单
+  // 函数名对上两段正则不可见，`sleep`(5) / "pg_sleep"(5) / U&"pg_sleep"(5) / pg_catalog."pg_sleep"(5)
+  // 曾绕过守卫直达数据库（adv26 真实库实证：sleep/benchmark 实际执行、load_file/pg_read_file/
+  // lo_export/dblink 触达驱动层）。调用形态（闭引号后紧跟左括号）的名字按同一黑名单拦截；
+  // 引号列名引用（非调用形态）不受影响。
+  for (const qn of s.quotedCalls) {
+    const name = qn.trim();
+    if (!name) continue;
+    if (DANGER_FUNC_RE.test(name + "(")) {
+      throw new ToolError("E_SAFETY", `Blocked by read-only guard: administrative/destructive function call '${name}(' is not allowed in reads.`);
+    }
+    if (WRITE_WORDS_RE.test(name)) {
+      throw new ToolError("E_SAFETY", `Blocked by read-only guard: found '${name.toUpperCase()}' (quoted function name) outside string literals.`);
+    }
+  }
+  if (LOCK_SHARE_RE.test(text)) throw new ToolError("E_SAFETY", "Blocked by read-only guard: row locking (FOR SHARE / LOCK IN SHARE MODE) is not allowed.");
 }
 
 /** Throw unless the statement is a single DML statement (INSERT/UPDATE/DELETE). */
@@ -278,7 +330,11 @@ export function exprHasColumn(expr) {
   //         被误判成列，使 WHERE length('ab')=2 这类不引用任何列的恒真条件通过词法守卫。
   //         现规则：标识符后紧跟 "(" 者是函数名，其本身不算列引用；
   //         函数实参里的裸标识符（如 length(name) 的 name）仍照常计为列。
-  const re = /[A-Za-z_][\w$]*/g;
+  // v1.6.8 真实测试修复：标识符识别改 Unicode 感知——旧版 [A-Za-z_] 纯 ASCII，
+  // 中文列名（国内库常态）不被识别为列引用，导致 WHERE 订单号='D001' 被误判
+  // 「WHERE 未引用任何列」而拒执行（红线误杀合法写）。规则不变：非关键字、非函数名的
+  // 标识符即列引用；恒真形态（1=1 / true=true / 字面量对）依旧无标识符可命中。
+  const re = /[_\p{L}][\p{L}\p{N}$_]*/gu;
   let m;
   while ((m = re.exec(expr))) {
     const name = m[0];
@@ -323,8 +379,8 @@ export function extractWriteTarget(sql, dialect = "mysql") {
   if (s.error) return null;
   const head = original.trim();
   // 目标表从原文头部取：标识符可能被反引号/双引号包裹，而 sanitizeSql 会把它们抹成空格
-  const m = /^delete\s+from\s+(`?[\w$]+`?(?:\.`?[\w$]+`?)?)/i.exec(head)
-         || /^update\s+(?:low_priority\s+|ignore\s+)*(`?[\w$]+`?(?:\.`?[\w$]+`?)?)/i.exec(head);
+  const m = /^delete\s+from\s+(`?[\p{L}\p{N}$_]+`?(?:\.`?[\p{L}\p{N}$_]+`?)?)/iu.exec(head)
+         || /^update\s+(?:low_priority\s+|ignore\s+)*(`?[\p{L}\p{N}$_]+`?(?:\.`?[\p{L}\p{N}$_]+`?)?)/iu.exec(head);
   if (!m) return null;
   const where = extractWhereClause(s.text);
   if (where === null) return null;
@@ -335,37 +391,37 @@ export function extractWriteTarget(sql, dialect = "mysql") {
 }
 
 export function guardWrite(sql, dialect = "mysql") {
-  if (!sql || !sql.trim()) throw new Error("Empty SQL.");
+  if (!sql || !sql.trim()) throw new ToolError("E_PARAM", "Empty SQL.");
   const s = sanitizeSql(sql, dialect);
   if (s.error === "executable-comment") {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "Blocked: MySQL/MariaDB executable comments (/*!...*/, /*M!...*/) are code, not comments."
     );
   }
   if (s.error === "multi-statement") {
-    throw new Error("Only a single SQL statement is allowed (found content after ';').");
+    throw new ToolError("E_PARAM", "Only a single SQL statement is allowed (found content after ';').");
   }
   const text = s.text.trim();
   if (/^truncate\b/i.test(text)) {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "安全红线：禁止通过 MCP 执行 TRUNCATE TABLE（等同于无条件清空全表，且不可恢复）。" +
       "即使用户明确要求也不执行——如确有需要，请通过 DBeaver 等人工渠道由 DBA 操作。"
     );
   }
   if (!/^(insert|update|delete)\b/i.test(text)) {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "'execute' only allows single INSERT / UPDATE / DELETE statements. " +
       "DDL (CREATE/ALTER/DROP/TRUNCATE...) and admin statements must be run manually by a DBA."
     );
   }
   if (/^(update|delete)\b/i.test(text) && !/\bwhere\b/i.test(text)) {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "安全红线：拒绝执行无 WHERE 条件的 UPDATE/DELETE（会导致全表数据被覆盖/清空）。" +
       "即使用户明确要求全表操作也不执行——如确有需要，请通过 DBeaver 等人工渠道由 DBA 操作。请补充 WHERE 条件后重试。"
     );
   }
   if (/^(update|delete)\b/i.test(text) && FIG_LEAF_WHERE_RE.test(text)) {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "安全红线：WHERE 子句为恒真条件（如 WHERE 1=1 / WHERE true），等同无条件的全表操作，拒绝执行。" +
       "请写出真实业务条件；如确有全表操作需求，请通过人工渠道由 DBA 操作。"
     );
@@ -373,7 +429,7 @@ export function guardWrite(sql, dialect = "mysql") {
   // v1.0.1：泛化恒真判定——WHERE 必须真正引用至少一个列
   // （覆盖旧版遗漏的 WHERE 1 / WHERE 2>1 / WHERE 'a'='a' / WHERE true=true 等写法）
   if (/^(update|delete)\b/i.test(text) && !whereHasColumn(text)) {
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       "安全红线：WHERE 子句未引用任何列（如 WHERE 1 / WHERE 2>1 / WHERE 'a'='a' / WHERE true=true），" +
       "等同于无条件的全表操作，拒绝执行。请写出真实业务条件；" +
       "如确有全表操作需求，请通过 DBeaver 等人工渠道由 DBA 操作。"
@@ -388,7 +444,7 @@ export function guardWrite(sql, dialect = "mysql") {
     if (outerWhere !== null) {
       for (const part of splitTopLevelOr(outerWhere)) {
         if (!exprHasColumn(part)) {
-          throw new Error(
+          throw new ToolError("E_SAFETY", 
             "安全红线：WHERE 存在不引用任何列的恒真 OR 分支（如 OR 1=1 / OR true），" +
             "恒真分支使整个条件等同无过滤的全表操作，拒绝执行。请写出真实业务条件；" +
             "如确有全表操作需求，请通过 DBeaver 等人工渠道由 DBA 操作。"
@@ -410,7 +466,7 @@ export function enforceLimit(sql, maxRows, dialect) {
   // v1.0.3: 异常语句给出明确错误，而不是 "Cannot read properties of undefined (reading 'trim')"。
   // 服务器路径上 guardReadOnly 会先拒绝，这里是兜底（enforceLimit 是导出 API）。
   if (st.error) {
-    throw new Error("Refusing to build a limited query: " + st.error + " (the statement must be rejected by the guard first).");
+    throw new ToolError("E_INTERNAL", "Refusing to build a limited query: " + st.error + " (the statement must be rejected by the guard first).");
   }
   // v1.2.1: 括号开头的复合查询（"(SELECT...) UNION..."）——SQLite 的派生表/顶层都不接受
   // 以括号开头的 compound 左操作数（实测 near "(" 语法错误），无法统一包裹；
@@ -430,29 +486,40 @@ export function enforceLimit(sql, maxRows, dialect) {
 /** 校验 where 条件片段（sample_data/count_rows/distinct_values 共用：多语句/可执行注释/写词拦截） */
 export function checkWhereFragment(where, dbType) {
   const s = sanitizeSql(String(where), dbType);
-  if (s.error === "multi-statement") throw new Error("WHERE must be a single condition expression.");
+  if (s.error === "multi-statement") throw new ToolError("E_PARAM", "WHERE must be a single condition expression.");
   if (s.error === "executable-comment") {
-    throw new Error("Blocked in WHERE: MySQL/MariaDB executable comments are not allowed.");
+    throw new ToolError("E_SAFETY", "Blocked in WHERE: MySQL/MariaDB executable comments are not allowed.");
   }
   const m = s.text.match(WRITE_WORDS_RE);
-  if (m) throw new Error(`Blocked in WHERE: found '${m[1].toUpperCase()}' outside string literals.`);
+  if (m) throw new ToolError("E_SAFETY", `Blocked in WHERE: found '${m[1].toUpperCase()}' outside string literals.`);
   const df = s.text.match(DANGER_FUNC_RE);
-  if (df) throw new Error(`Blocked in WHERE: administrative/destructive function call '${df[1]}(' is not allowed.`);
+  if (df) throw new ToolError("E_SAFETY", `Blocked in WHERE: administrative/destructive function call '${df[1]}(' is not allowed.`);
+  // v1.6.21+（adv26 收口）：引号标识符调用形态同黑名单（与 guardReadOnly 同口径，防 `sleep`(1) 经 where 通道绕行）
+  for (const qn of s.quotedCalls) {
+    const name = qn.trim();
+    if (!name) continue;
+    if (DANGER_FUNC_RE.test(name + "(")) {
+      throw new ToolError("E_SAFETY", `Blocked in WHERE: administrative/destructive function call '${name}(' is not allowed.`);
+    }
+    if (WRITE_WORDS_RE.test(name)) {
+      throw new ToolError("E_SAFETY", `Blocked in WHERE: found '${name.toUpperCase()}' (quoted function name) outside string literals.`);
+    }
+  }
 }
 
 export function createTableGuard(sql, dialect = "mysql") {
-  if (!sql || !sql.trim()) throw new Error("Empty SQL.");
+  if (!sql || !sql.trim()) throw new ToolError("E_PARAM", "Empty SQL.");
   const s = sanitizeSql(sql, dialect);
-  if (s.error === "multi-statement") throw new Error("Only a single CREATE TABLE statement is allowed.");
+  if (s.error === "multi-statement") throw new ToolError("E_PARAM", "Only a single CREATE TABLE statement is allowed.");
   if (s.error === "executable-comment") {
-    throw new Error("Blocked: MySQL/MariaDB executable comments (/*!...*/, /*M!...*/) are not allowed.");
+    throw new ToolError("E_SAFETY", "Blocked: MySQL/MariaDB executable comments (/*!...*/, /*M!...*/) are not allowed.");
   }
   const text = s.text.trim().replace(/;\s*$/, "");
   if (!/^create\s+(temporary\s+)?table\b/i.test(text)) {
-    throw new Error("'create_table' only accepts a single CREATE TABLE statement. For reads use 'query'; for writes use 'execute'; TRUNCATE/DROP are prohibited.");
+    throw new ToolError("E_SAFETY", "'create_table' only accepts a single CREATE TABLE statement. For reads use 'query'; for writes use 'execute'; TRUNCATE/DROP are prohibited.");
   }
   if (/\b(drop|truncate|delete|insert|update|alter|rename)\b/i.test(text)) {
-    throw new Error("Blocked: CREATE TABLE statement must not contain data-changing keywords.");
+    throw new ToolError("E_SAFETY", "Blocked: CREATE TABLE statement must not contain data-changing keywords.");
   }
   // v1.0.3: CTAS 会写入数据，绕开 allowWrites 开关；只允许纯建表。
   // v1.4.1: MySQL 的 CTAS 可省略 AS（CREATE TABLE t SELECT ...，实测旧正则漏拦）——表名或
@@ -461,7 +528,20 @@ export function createTableGuard(sql, dialect = "mysql") {
   const ctasTail = /create\s+(?:temporary\s+)?table\s+(?:if\s+not\s+exists\s+)?[\s\S]*?(?:\bas\s*)?\(?\s*(select|table|values|execute)\b/i;
   const ctasWith = /create\s+(?:temporary\s+)?table\s+(?:if\s+not\s+exists\s+)?[\s\S]*?(?:\bas\s*)?\(?\s*with\b(?!\s*\()(?!\s+system\s+versioning)/i;
   if (ctasTail.test(text) || ctasWith.test(text)) {
-    throw new Error("Blocked: CREATE TABLE ... AS SELECT writes data; use the 'execute' tool (with allowWrites) instead.");
+    throw new ToolError("E_SAFETY", "Blocked: CREATE TABLE ... AS SELECT writes data; use the 'execute' tool (with allowWrites) instead.");
+  }
+  // C1 DDL 表名标识符预校验：与 import_data.table 的 splitIdent 同口径同文案（正则同族）。
+  // 旧版表名原样透传解析器，CREATE TABLE 1bad 落 [E_DB] unrecognized token——错误类误导
+  // （E_DB=数据库故障，实为参数问题）。名字提取复用 createTableName（先抹注释）；"(unknown)"
+  // （提取失败的畸形 DDL）不硬拦，交还解析器报语法错。安全红线检查在前：带危险关键字的
+  // 非法表名仍按 E_SAFETY 拒，参数语义不越过安全语义。
+  const ddlName = createTableName(sql, dialect);
+  if (ddlName !== "(unknown)") {
+    for (const p of ddlName.split(".")) {
+      if (!/^[_\p{L}][\p{L}\p{N}$_]*$/u.test(p)) {
+        throw new ToolError("E_PARAM", `Invalid identifier '${p}'. Pass plain names; use the schema parameter instead of qualified names.`);
+      }
+    }
   }
   // v1.0.3 安全修复：校验只针对脱敏文本，返回/执行的必须是原文——sanitizeSql 会把字符串字面量与
   // 反引号标识符一起抹成空格，执行脱敏文本会让任何带 COMMENT 'x' / DEFAULT 'x' / `db`.`t` 的 DDL 报语法错误。

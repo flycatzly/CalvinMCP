@@ -3,9 +3,12 @@
 自研 MCP 服务器：**MySQL + PostgreSQL + OceanBase(MySQL模式) + 本地 SQLite** 多库操作，支持 TEST/PRE 等多环境源，为大模型调用与数据验证设计。
 stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` 两个驱动（SQLite 用 Node ≥ 22.5 内置的 `node:sqlite`，零额外依赖）。
 
-> **实测 2026-10-03（V1.6.2，Node v24.15.0）**：selftest `277 passed, 0 failed`（未初始化口径 263）·
-> sqlite-validate `76 passed, 0 failed` · mysql-validate `29 passed, 0 failed`（真实 MySQL 全工具面：元数据发现/读链/事务/导出导入/建表/红线零副作用）·
-> 16 工具经真实库验证（MySQL 真实库 + SQLite demo）。
+**适用场景**：需要查询、核对、操作 MySQL / PostgreSQL / OceanBase(MySQL模式) 数据的任务——覆盖 TEST/PRE/UAT/DEV 环境、按任意库名定位数据源、执行 SQL、查看表结构、建表与增删改。**不适用于**：无 WHERE 条件的全表 UPDATE/DELETE、TRUNCATE 等破坏性操作（安全红线强制拒绝，即使用户明确要求）；首次使用需导入 DBeaver 连接配置(.dbp) 完成初始化。内置安全红线与凭据保护。
+
+> **实测 2026-10-05（V1.6.25，Node v24.15.0）**：selftest `336 passed, 0 failed`（未初始化口径 322，双口径已实测，断言数由自证常量钉住）·
+> sqlite-validate `83 passed, 0 failed` · mysql-validate `36 passed, 0 failed` · pg-validate `56 passed, 0 failed`（三库真实库全链路，每步与直连核对；真实 MySQL 8.4.5 / PostgreSQL 17.5 实测 2026-10-05）·
+> e2e-validate `42 passed, 0 failed`（真 stdio 全链路）· protocol-validate `24 passed, 0 failed`（协议边界/对抗/取消语义）· realform-validate `43 passed, 0 failed`（真实形态：中文库/表/列 + 边界值 + 导出导入回环 + 红线/注入负例 + 复制粘贴不可见字符/Windows 文件名/CSV 表头/CRLF 保真/截断边界/BLOB 序列化对抗回归）·
+> 16 工具经真实库验证（真实 MySQL 8.4.5 + 真实 PostgreSQL 17.5 + SQLite 文件库；操作核对台 realdb-v1617 三库矩阵 68/0：建表/导入/插入/查询/计数/改/删/红线零副作用/导出/删表，每步 MCP 行为 ↔ 直连真实结果一致）。
 
 ## 工具列表（16 个）
 
@@ -20,28 +23,54 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
 | `query_plan` | 对单条 SELECT/WITH 执行 EXPLAIN（text/json；不执行语句本身，不支持 ANALYZE） | ✓ |
 | `sample_data` | 抽样看表数据（默认 10 行，最多 50，支持 `where` 过滤与 `order_by` 升/降序） | ✓ |
 | `distinct_values` | 某列取值分布 Top-N（GROUP BY 计数，默认 20 上限 200）+ 精确去重总数，可带 `where` | ✓ |
-| `column_stats` | 单列画像一条聚合搞定：行数/非空/去重数/最值/均值，可带 `where`；V1.6.0 起可选 `histogram`（数值等宽桶频数）与 `top_values`（高频值 TopN）——空值率、值域与分布形态速查 | ✓ |
+| `column_stats` | 单列画像一条聚合搞定：行数/非空/去重数/最值/均值，可带 `where`；V1.6.0 起可选 `histogram`（数值等宽桶频数）与 `top_values`（高频值 TopN）——空值率、值域与分布形态速查；均值方言语义：MySQL/SQLite 非数值文本强转 0，PG 类型门控 NULL（v1.6.19 锚定） | ✓ |
 | `export_data` | 只读查询结果导出 CSV/JSON 文件（需 `DBMCP_EXPORT_DIR` 白名单目录；防穿越/20MB 上限/原子落盘——临时文件+原子占位，跨进程同名互斥） | 写文件 |
-| `import_data` | CSV 导入表（批量参数化 INSERT，批失败逐行定位坏行；`DBMCP_IMPORT_DIR` 白名单；表头即列名仅裸标识符；万行/20MB 上限） | 写库 |
+| `import_data` | CSV 导入表（批量写入：MySQL/SQLite 参数化 INSERT、PostgreSQL COPY FROM STDIN；批失败逐行定位坏行；`DBMCP_IMPORT_DIR` 白名单；表头即列名仅裸标识符；万行/20MB 上限） | 写库 |
 | `count_rows` | 精确计数（可带 WHERE），用于数据验证/前后对比 | ✓ |
 | `execute` | 写操作（默认关闭，见下） | ✗ |
 | `create_table` | 建表：单条 CREATE TABLE（需 allowCreateTable=true；禁 DROP/TRUNCATE/数据变更语句） | ✗ |
 | `find_database` | 按库名/环境（TEST/PRE/UAT/DEV）检索源；`probe=true` 并行 TCP 探测可达性 | ✓ |
 
-典型大模型工作流：`list_sources → list_tables / describe_table / find_tables_by_column / fk_relationships → query / sample_data / distinct_values / column_stats / count_rows`（昂贵查询前用 `query_plan` 看计划），
-写后用 `count_rows` / `query` 验证影响行数；需要把数据交给用户或其它工具时用 `export_data` 落盘。
+典型工作流（大模型调用规范）：
 
-## 首次初始化：导入 DBeaver 连接配置
+1. **定位**：`find_database`（按库名/环境，如 TEST/PRE）或 `list_sources` → 选定 source id；
+2. **摸结构**：`list_tables` → `describe_table`（列/主键/索引）；只知道列名时用 `find_tables_by_column` 反查表；跨表 JOIN 前用 `fk_relationships` 看外键关系；
+3. **读取**：`query`（只读 SQL）/ `sample_data`（抽样）/ `distinct_values`（取值分布）；昂贵查询前用 `query_plan` 看执行计划；
+4. **核对**：`count_rows`（前后计数对比、断言总数、查重）+ `distinct_values`（枚举列取值集合比对）；
+5. **写入**：`execute`（单条 INSERT/UPDATE/DELETE）→ **写后必须用 `count_rows`/`query` 验证影响行数**；
+6. **建表**：`create_table`（单条 CREATE TABLE）→ `describe_table` 验证；
+7. 同实例跨库读取可用 `库名.表名` 限定。
 
-部署包**默认不含** `dbmcp.config.json`（不预置任何连接与凭据）。首次使用：
+写类请求的执行纪律（写前确认 / 写后验证 / 全表操作即拒）见「安全设计」下的**安全红线（Agent 执行纪律）**。需要把数据交给用户或其它工具时用 `export_data` 落盘。
 
-```bash
-node import-dbeaver.mjs "C:\Users\<you>\Documents\保险-20260929.dbp"
-```
+**完整自然语言使用示例（16 工具全覆盖）**见《部署说明.详细版.md》「安装完成后：完整使用示例（自然语言）」——按场景分类，可直接说给大模型。
 
-导入器自动解包 `.dbp` → 解密 DBeaver 凭据（DBeaver 26 方案，实现已混淆）→ 过滤 MySQL/PG →
-连接串加密为 `enc` 字段写入配置（无明文落盘）→ 连通性预检。
-未初始化时 server 以「未初始化模式」运行：`list_sources` 返回 `init_required` 提示。
+**使用注意（数据语义与环境）**：
+
+- **BIGINT/DECIMAL 以字符串返回**（MySQL/PG/SQLite 三库一致）：超过 JS 安全整数（2^53-1）的整数——雪花 ID 普遍如此——以字符串原样返回（如 `"9223372036854775807"`），WHERE 里直接用该字符串（`WHERE id = '9223372036854775807'`），**不要**转成数字（会精度丢失）；
+- OceanBase 走 MySQL 模式（协议兼容），其账号需相应建表权限才能 `create_table`；部分源需 VPN/白名单（`find_database` probe 与导入预检会标注不可达主机）；
+- `query` 对大表请尽量带条件（自动 LIMIT 默认 200 行）；输出为紧凑 JSON，超长单元格截断并标注；建表主键写 `INTEGER PRIMARY KEY`（SQLite 不要 AUTOINCREMENT，除非明确需要）。
+
+## 首次安装与初始化（Agent 按序执行）
+
+部署包**默认不含** `dbmcp.config.json`（不预置任何连接与凭据）与 `node_modules`。首次使用：
+
+1. 进入部署目录：`cd <部署目录>/calvin-db-mcp`；
+2. 运行 `node install.mjs` —— **自动安装依赖**（`npm ci --omit=dev`，需联网；内网可自行加镜像）→ 功能自检；
+3. 若输出「尚未初始化」：**向用户索取 DBeaver 导出项目文件(.dbp) 路径**，然后运行
+   `node install.mjs "<.dbp>" [--allow-writes] [--allow-create-table]`——
+   `.dbp` 三种写法：完整路径 / 同级目录裸文件名 / 通配符 `"*.dbp"`（`*`/`?`，大小写不敏感；多个匹配时拒绝并列候选不猜）。
+   导入器自动解包 `.dbp` → 解密 DBeaver 凭据（DBeaver 26 方案，实现已混淆）→ 过滤 MySQL/PG/OceanBase →
+   连接串加密为 `enc` 字段写入配置（无明文落盘）→ 连通性预检；
+   也可单独跑 `node mcp\import-dbeaver.mjs "<.dbp>"`（只导入连接，`--force` 覆盖已有配置）；
+4. 将注册 JSON 写入客户端（见「接入 MCP 客户端」），**重启客户端**；
+5. 重跑 `node install.mjs` 确认「已初始化：N 个源」且 selftest `FAIL=0`。
+
+> 用户导出 .dbp 的方法：DBeaver → 文件 → 导出 → 项目 → 勾选「包含连接凭据」。
+> `--allow-writes` 放开 execute 写操作、`--allow-create-table` 放开建表（**默认均关闭**；安全红线始终生效）。
+> 导入后自检期望 `336 passed, 0 failed`；未初始化时 `322 passed, 0 failed`（SKIP 计入通过）。
+> 未初始化时 server 以「未初始化模式」运行：`list_sources` 返回 `init_required` 提示，不泄露任何信息。
+> 更多安装细节（手动兜底 / 注册 env / 分场景排错 / 升级卸载）见《部署说明.md》与《部署说明.详细版.md》。
 
 ## 配置 `dbmcp.config.json`
 
@@ -127,23 +156,47 @@ node import-dbeaver.mjs "C:\Users\<you>\Documents\保险-20260929.dbp"
 > 重要：不要依赖 MCP 层做最终权限边界（参考 DBHub 只读模式被绕过的 CVE-2026-61788）。
 > 请给 MCP 配最小权限数据库账号：只读场景用 SELECT-only 账号；写场景只授权目标库表。
 
+### 安全红线（Agent 执行纪律，最高优先级——Agent 与 MCP 双层执行）
+
+机制性限制（无 WHERE / 恒真 WHERE / 影响行数预检 / DDL 拒绝）由 MCP 强制执行，见上文第 5 条；Agent 侧必须遵守：
+
+1. **写前确认**：INSERT/UPDATE/DELETE、建表、CSV 导入——先向用户给出影响行数与条件，经确认后才执行；
+2. **写后验证**：写入后必须用 `count_rows`/`query` 验证影响行数与预期一致；
+3. **全表操作即拒并转人工**：无 WHERE 的全表 UPDATE/DELETE、TRUNCATE——即使用户明确说「就是要更新/删除全表」也不执行，须告知：出于安全考虑禁止该操作，如有全表需求请通过 DBeaver 等人工渠道由 DBA 执行；
+4. **跨环境二次确认**：对 PRE/UAT 等非 TEST 环境的操作，必须先向用户二次确认目标环境；
+5. **超限不放水**：预检命中超过 `maxAffectedRows` 被拒时，提示改用更精确条件或由 DBA 人工执行，**不要**为绕过而调大上限；
+6. **凭据红线**：任何输出不得包含 url/口令（server 已强制清洗）；`.dbp` 与 `dbmcp.config.json` 均按敏感文件对待，禁止入 git（导入时自动生成 `.gitignore` 保护）。
+
 ## 自测
 
 ```bash
 node selftest.mjs
 ```
-277 项断言（已初始化口径，未初始化 263）：只读守卫（含注释/字符串混淆、可写 CTE、OUTFILE、行锁、`pg_read_file`/`pg_ls_dir`/`dblink`、
+336 项断言（已初始化口径，未初始化 322）：只读守卫（含注释/字符串混淆、可写 CTE、OUTFILE、行锁、`pg_read_file`/`pg_ls_dir`/`dblink`、
 管理/破坏性函数黑名单（`pg_terminate_backend`/`set_config`/`pg_sleep`/`SLEEP`/`load_extension`/`dblink_exec` 等）、
 CTAS 全形态拦截（含 MySQL 无 AS）、MySQL/PG 方言语义回归）、写守卫（无 WHERE、DDL、多语句、**不引用任何列的 WHERE、恒真 OR 分支**）、
 安全红线（无 WHERE 的 UPDATE/DELETE、TRUNCATE、字符串/注释藏 WHERE、写目标解析与嵌套 WHERE）、外发防护（口令清洗、URL 编码变体、工具输出零口令）、
 LIMIT 强制（含 WITH 已带 LIMIT 的回归用例）、JSON 整形与单元格截断、sample_data 的 WHERE/ORDER BY 构造与注入防护、
-import 批回退/结果未知分类、导出/导入目录门禁、MCP 协议握手与调用、真实 stdio 子进程回环、
-find_database 检索与 TCP 探测、未初始化模式、export 原子落盘与双进程并发、sqlite-add 幂等语义、crypt-cli 加解密往返。无需真实数据库。
-已初始化目录预期汇总 `277 passed, 0 failed`（oceanbase 连通性用例在主机不可达时打印 SKIP，仍计入通过）；
-未初始化目录预期汇总 `263 passed, 0 failed`（leak-guard 口令检查套件整体 SKIP）。
-真实库套件：`sqlite-validate.mjs`（SQLite 真实库 76 项）与 `mysql-validate.mjs`（真实 MySQL 全链路 29 项：
+import 批回退/结果未知分类、COPY FROM STDIN 分方言路由与文本转义保真、导出/导入目录门禁、MCP 协议握手与调用、真实 stdio 子进程回环、
+find_database 检索与 TCP 探测、未初始化模式、export 原子落盘与双进程并发、sqlite-add 幂等语义、crypt-cli 加解密往返、
+export JSON 保真（长文本/二进制全量落盘）、peekRpcId 坏行恢复请求 id、notifications/cancelled 取消语义（在途登记/形状判别/未知与迟到忽略/取消抑制派发）、getPool 并发首触去重、
+错误码分类（E_SAFETY/E_PARAM/E_NOT_FOUND/E_CONFIG/E_LIMIT/E_DB/E_INTERNAL 与重试语义、回环格式兼容、ToolError 显式标签优先于消息模式匹配）、
+工具声明收口（16 工具 title/annotations/inputSchema 形状钉、description 全量含 `Example: {json}` 用法示例）、
+Unicode 标识符适配（中文表/列名识别与红线列引用检测、注入形态仍拒绝）、
+观测面打点（DBMCP_ERR_LOG 可选 NDJSON 审计日志：默认关闭、每调用 1 条可关联记录、错误码/重试态/耗时可统计、脱敏截断、写失败 fail-open、超限滚动总量有界）。无需真实数据库。
+已初始化目录预期汇总 `336 passed, 0 failed`（oceanbase 连通性用例在主机不可达时打印 SKIP，仍计入通过）；
+未初始化目录预期汇总 `322 passed, 0 failed`（leak-guard 口令检查套件整体 SKIP）。
+真实库套件：`sqlite-validate.mjs`（SQLite 真实库 83 项）、`mysql-validate.mjs`（真实 MySQL 全链路 36 项：
 全工具面（元数据发现/画像/直方图/TopN/NULL 语义/查询与 EXPLAIN/事务提交回滚/execute 红线/建表/导出导入/原子回滚），stdio JSON-RPC 真客户端链路，探针库 dbmcp_probe_hist 自建自删；
-配置缺 mysql 源时打印 SKIP 以退出码 3 结束）。
+配置缺 mysql 源时打印 SKIP 以退出码 3 结束）与 `pg-validate.mjs`（真实 PostgreSQL 56 项，v1.6.17 起，v1.6.18 扩全工具面、v1.6.19 语义锚定、v1.6.20 直方图/超时锚定、v1.6.21 全 NULL/单行边界锚定、v1.6.22 空表锚定、v1.6.23 事务内 COPY、v1.6.24 取消传导：
+操作矩阵 × 直连双向核对——建表/CSV 导入/插入/查询逐值/计数/更新/删行/红线负例零副作用/BLOB(bytea) 往返/导出核对/DBA 删表 E_NOT_FOUND 确认，每步核对数据库真实状态是否与 MCP 行为一致；
+加全工具面钉测——column_stats 画像/直方图/TopN、发现类（list/describe/find/fk）、query/query_plan/count/distinct/sample、CTAS 拒绝、import 原子回滚、事务提交回滚（PG 方言分支真实端到端）；
+配置缺 postgres 源时打印 SKIP 以退出码 3 结束）。
+链路套件：`e2e-validate.mjs`（全链路 E2E 42 项：真 stdio 子进程 16 工具全调用面——握手/发现/读链/红线负例/写 + 公式中和导出与 import 往返/atomic 回滚/export 保真）与
+`protocol-validate.mjs`（协议边界 24 项：超长行/坏 JSON 回带请求 id、噪声静默、批量数组、id 边界、10 条守卫对抗负例 + notifications/cancelled 取消语义——运行中取消不发响应、排队中取消不执行、未知/迟到取消忽略）。
+真实形态套件：`realform-validate.mjs`（真实形态 43 项：真 SQLite 中文库文件名/中文表/中文列 + 边界值——BigInt 精度/超长文本/emoji/换行/NULL/BLOB + 导出导入回环保真（公式中和 strip_neutralization）+ 写面红线 + 注入面负例 + 真实对抗回归——复制粘贴不可见字符（ZWSP 前导可执行且红线不因剥除失效）/Windows 文件名边界（保留设备名拒绝、COM10 不误伤、超长截断保扩展名、大写扩展名不重复追加、尾点归一含 import 寻址）/CSV 表头语义（重名列拒绝防静默丢值、空列名明确报错）/引号内 CRLF 导出导入回环保真/行数截断边界（truncated 语义）/BLOB 序列化（Uint8Array→`<binary N bytes: hex>`，导出确定性 hex），真 stdio 子进程跑真实 `server.mjs`）。
+三套件 fixture 自供给（mkdtemp 临时 SQLite 库 + 临时配置 + 导出/导入白名单目录，自建自删，不触碰部署配置与业务库），无需真实数据库；
+Node ≥ 22.5，无 node:sqlite 时打印 SKIP 以退出码 3 结束。
 > 断言数随版本演进增长，**以 selftest 实际汇总行为准**（`=== N passed, M failed ===`），
 > `install.mjs` 也以该行（而非 PASS/FAIL 字样计数）判定自检结果。
 
@@ -158,10 +211,25 @@ find_database 检索与 TCP 探测、未初始化模式、export 原子落盘与
    ```json
    { "mcpServers": { "db": { "command": "node", "args": ["<部署目录>/server.mjs"] } } }
    ```
-3. 部署后自检：`node install.mjs` 会依次跑 selftest + 全链路 E2E 验收（步骤 5；E2E 在技能仓库 `sql-check-script/tests` 或 `DBMCP_E2E` 指定时启用，缺 demo fixture 自动用 `demo.db` 自供给）；手动则 `node selftest.mjs`（277 项断言 FAIL=0 即正常）
+3. 部署后自检：`node install.mjs` 会依次跑 selftest + 全链路 E2E 验收（步骤 5；E2E 随包 `mcp/e2e-validate.mjs` 自带临时 fixture，可 `DBMCP_E2E` 覆盖，技能仓库 `sql-check-script/tests/fullchain_test.mjs` 存在时优先）；手动则 `node selftest.mjs`（336 项断言 FAIL=0 即正常）
 4. 配置 `dbmcp.config.json` 已加密（`enc` 字段）。新增/更换连接：
    - 临时把明文 url 写入源（或 `node crypt-cli.mjs decrypt`），改完执行 `node crypt-cli.mjs encrypt` 恢复加密
 5. 启动门禁：配置文件在 git 仓库内且未被 ignore / 已被跟踪时，服务拒绝启动
+6. 可选观测日志（默认关闭）：设置环境变量 `DBMCP_ERR_LOG=<日志文件路径>` 后，每次工具调用追加一行 NDJSON 审计记录（JSON-RPC 请求 id / 工具名 / 错误码 / 重试态 / 耗时 / 经脱敏截断的 SQL 与错误摘要）；不设置则零行为。总量有界：单文件超限自动滚动为 `<路径>.1`（最近）…`<路径>.N`，`DBMCP_ERR_LOG_MAX_BYTES`（缺省 10MB）与 `DBMCP_ERR_LOG_KEEP`（缺省 3 份）可调，非法值回落缺省。日志含业务元数据（表名/SQL 摘要），请放于受控目录并定期清理；写日志失败不影响工具调用
+
+## 排错速查
+
+| 现象 | 处理 |
+|---|---|
+| install 提示「尚未初始化」 | 提供 .dbp 路径重跑（同级目录可简写 `"*.dbp"` / 裸文件名，多个匹配时拒绝并列候选），或 `node mcp\import-dbeaver.mjs "<.dbp>"` |
+| `list_sources` 返回 `init_required` | 同上，导入后**重启客户端** |
+| `Access denied for user` | 账号无该库权限：换最小权限账号 |
+| ECONNREFUSED / ETIMEDOUT | 主机不可达：VPN/白名单（`find_database` 的 `probe` 可预检主机连通性） |
+| 依赖自动安装失败 | 检查网络/换镜像：`npm ci --omit=dev --registry=https://registry.npmmirror.com` |
+| 自测 FAIL | 看 FAIL 行提示；未初始化时 SKIP 属正常 |
+| 配置丢失 | 从源仓库或 `Documents\dbmcp-key` 备份恢复加密版配置 |
+
+> 分场景排错（安装/注册/初始化/连接/权限/环境变量/升级回滚）见《部署说明.md》「出问题先看这几条」与《部署说明.详细版.md》故障排查章节。
 
 ## 版本与文档同步规范
 
@@ -169,11 +237,226 @@ find_database 检索与 TCP 探测、未初始化模式、export 原子落盘与
 
 1. `mcp/package.json` 的 `version` —— **唯一事实源**（`server.mjs` 启动横幅与 selftest 版本一致性断言读它）
 2. `mcp/server.mjs` 中 `pkgVersion("x.y.z")` 的 fallback 串
-3. 全部文档版本行：`README.md`（实测行）、`SKILL.md`、`部署说明.md`、`部署说明.详细版.md`
-4. **版本说明**：本页「更新记录」新增条目（**唯一落点**）；`部署说明.md`「更新记录」留短条目并注明「完整条目见 README『更新记录』」
+3. 全部文档版本行：`README.md`（实测行）、`部署说明.md`、`部署说明.详细版.md`
+4. **版本说明**：本页「更新记录」新增条目（**唯一落点**）；`部署说明.md` 与 `部署说明.详细版.md` 的「更新记录」仅保留一行指引指向本页，不复制条目（历史条目不回填、不改写）
 5. 发版自检：`node mcp\selftest.mjs` 0 failed；随技能侧（`sql-check-script`）发布时其 `node tests\run_all.mjs` 须全绿
 
 ## 更新记录
+
+### V1.6.25（import 解析内存峰值收口：parseCsv 构建重写消 cons-rope 病理 + 流式 CSV 分段解析，18MB 导入峰值 574→41MB）
+
+- **背景**：V1.6.24 把大导入同步块切到阶段粒度后，残余最大同步块是 `parseCsv` 整文件解析；探针实测发现比预估更糟的病理——旧版 `field += c` 逐字符拼接产生 per-char cons rope（~32B/字符 rope 节点）：18MB CSV 解析驻留 **574.7MB heap（~31× 文件）**、RSS 734MB，且 rope 构建拖累解析本身（270ms）。doImportData 另有 readFileSync 整文件 + rows 2D 数组 + valueRows 三份驻留；export 侧同样整缓冲。
+- **探针实测（先实测后断言，`_dist/probe_streammem_{before_v1624,after_v1625}.txt`）**：18MB（万行）夹具峰值 heap **574.7→41MB（14×↓）**、retained 574.1→27.9MB（20×↓）、RSS **734.5→102.4MB（7×↓）**、解析耗时 **270→103ms（2.6×）**；2MB（千行）夹具峰值 65.4→13.2MB。流式化后解析按段让出，取消插队延迟 p50 **17→1.6ms**、max **68→10ms**（10 样本，atomic 8MB 中途取消：0 行落库 + 连接健康 + 不回响应全成立，`_dist/probe_cancella2_after_v1625.txt`）。
+- **产品变更（import 解析）**：`parseCsv` 构建重写为「原样 run 切片 + 合成片段 join」（引号开/闭与 `""` 转义是 run 断点）——**语义逐字不变**（20 万随机对抗样本差分 0 不一致 + 既有 CRLF/引号/尾空行/`\N` 保真钉全绿）；新增导出纯步进器 `createCsvSegmenter`（引号态跨块延续、尾部前瞻依赖字符暂缓、空记录跟随后段防尾 pop 误伤）与 `readCsvForImport`（fd 256KB 流式读 + StringDecoder 多字节安全 + BOM 剥除 + 段间 `yieldEventLoop`）——`concat(parseCsv(seg_i)) == parseCsv(whole)` 全偏移 + 随机多切分等价钉锁定。**错误契约逐字不变**：「CSV 为空。」「CSV 首行（表头）为空。」「CSV 表头列名重复…」「CSV 表头含非法列名…」「CSV 无数据行。」行宽/超限文案原样；错误优先级保持旧可观测序（解析期错误先于 splitIdent，行宽错误仍**在 splitIdent 后**抛、超限仍优先于行宽）。`Error: [E_CODE:retry]` 分类、maxAffectedRows 预检、安全红线零变化。
+- **性能（万行导入 duration_ms 中位，before/after 同机同日，`_dist/bench_streammem_{before_v1624,after_v1625}.json` 含 atomic 变体）**：吞吐零回归——非 atomic mysql 152→153、pg 29→28、sqlite 59→63（噪声带内，mysql after 1 轮 291ms 为负载噪声）；atomic mysql **143→114**、pg 26→27、sqlite 20→18。
+- **产品变更（DBeaver 导入 .dbp 参数简写，同发并行工作线）**：`resolveDbpArg`（`dbeaver-parse.mjs` 纯函数，目录遍历/文件判定注入式）支持三种写法——完整/相对路径（相对先 cwd 再脚本目录回退）、同级目录裸文件名（cwd 找不到回退脚本目录）、通配符 `*.dbp`/`保险-*.dbp`（`*`/`?`，大小写不敏感，目录段可带路径；cmd 引号内通配符不展开、由解析器处理，故 `node install.mjs "*.dbp"` 可用）；`install.mjs` 与 `import-dbeaver.mjs` 同语义共用。零匹配 `no-match`、多匹配 `ambiguous`（列候选）一律显式拒绝——不静默挑一个，与 `--force` 防误覆盖同一条安全口径。
+- **回归钉（selftest +6：解析层 3 + .dbp 简写 3）**：parseCsv 构建重写边界钉（引号中途开闭/纯空引号/连续转义/未闭引号收尾）+ csvSegmenter 全偏移单点切分等价 + 随机多切分等价（1-5 字符碎片 2000 组，种子 20261005）+ .dbp 参数解析钉（完整路径/裸名回退/通配符/大小写）+ 拒绝语义钉（零匹配/多匹配/大小写歧义列候选不猜）+ 接线钉（install.mjs 与 import-dbeaver.mjs 均经 resolveDbpArg，防改名漂移；注入式 fixture 不触盘）——selftest **330→336（316→322）**；e2e/protocol/realform/sqlite/mysql/pg-validate 钉数不变（纯解析层 + 初始化 CLI 收口）。
+- **export 侧实测定案（排入 V1.6.26）**：18.5MB CSV 全链（组装→scrub→Buffer→原子写）峰值 heap **113.2MB / RSS 251.5MB（~6×）**，受 20MB 导出上限封顶、非无界病理；scrub 逐 key 流式化（|k|−1 尾随暂存）可证逐字节恒等但触碰凭据清洗契约，与本轮 parseCsv 重写分车防回归归因混淆（`_dist/probe_exportmem_before_v1625.txt`）。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 336/0（未初始化 322/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+
+### V1.6.24（COPY 分块发送让出事件循环 + 长导入取消收口：取消传导进 COPY 传输，atomic 随回滚归零）
+
+- **背景**：V1.6.23 事务内 COPY 上线后，`PgCopyInQuery.handleCopyInResponse` 对大 payload（万行级 ~MB）一个同步循环发完全部 64KB 块（8MB ≈128 块），短暂阻塞事件循环；更实质的缺口在取消侧——MCP 取消（v1.6.12 `notifications/cancelled`）此前只释放「等待与响应」，COPY 传输期无让出、取消不传导进工作侧：探针实测中途取消后 10000 行照常落库（「不回滚、不中断」旧边界）。
+- **探针实测（先实测后断言，before/after 三组观测；输出入仓 `_dist/probe_copyyield_after_v1624.txt`）**：
+  - **A1 并发 ping 画像（8MB 非事务导入）**：导入 442→413ms；48-49 个并发 `count_rows` 全部排到导入结束成批放行（p50 51ms 不变、max 423→409ms）——实证 v1.1.0 串行派发队列是并发调用排队的根因（按到达顺序串行是设计语义，本轮不动）；同步阻塞的真实受害者是**取消快扫插队与定时器**。
+  - **A2 取消通知处理延迟（导入中 7 个偏移点插队，量 stderr 出现时刻）**：max **109→68ms**，早段偏移 30ms 点 109→68、70ms 点 86→37——发送分块 + 阶段让出后取消插队窗口变窄，残余峰值由 parseCsv 最大同步块决定（流式解析另立方向）。
+  - **B 取消语义（atomic 8MB 导入 +100ms 中途 notifications/cancelled）**：**落库 10000→0 行**（COPY 传输中断 + 事务整体回滚）；被取消请求不回响应（MCP 规范「Not send a response」如实保持）；连接健康（后续查询正常）。
+- **产品变更（pg COPY + import）**：`PgCopyInQuery` 改异步泵送 `_pump`——64KB 块间 `setImmediate` 让出（pg `sendCopyFromChunk` 无背压返回值，纯让出、不臆造 drain/flush 语义）；第三参 signal（AbortSignal）取消传导：未发完补 copyFail、done 仍只 settle 一次（`_sentDone`/`_copyClosed` 防双发、`_sawCopyIn` 保证只在服务端 copy-in 态补 fail、CopyInResponse 迟到时兜底补 fail 防连接滞留）——**协议生命周期契约逐字不变**。`signal` 沿 handleRpc→callTool→doImportData→runCopyIn/withTransaction copyIn opts 传导；`doImportData` 读盘/解析/值变换阶段间让出；非 atomic 路径批前/批后/逐行回退三处 `signal?.aborted` 检查——取消中止如实回报「导入已被客户端取消（…此前 N 行已写入）」，**取消优先于 isAmbiguousWriteError 分类、绝不回退逐行重试**；atomic 模式取消→异常→ROLLBACK，「原子导入失败，已全部回滚（未写入任何行）」文案逐字不变。`Error: [E_CODE:retry]` 分类、maxAffectedRows 预检、安全红线零变化。
+- **取消语义显式化**：v1.6.12 边界注释如实收口——取消现在**尽力中断 import_data 的 COPY 传输**（atomic 随回滚整体归零、非 atomic 停批界并如实回报已写入行数）；COPY 之外的在执行驱动查询仍不中断（各驱动既有超时上界约束）；串行派发队列语义不变。
+- **性能（万行导入 duration_ms 中位，before/after 同机同日）**：吞吐零回归——非 atomic real_pg 27→26ms、real_mysql 236→219ms、real_sqlite 87→87ms；atomic real_pg 26→27ms、real_mysql 144→184ms、real_sqlite 21→21ms（均在机器噪声带内）。10k 行仅 ~10 次块间让出，开销测不出。基准 before/after 入仓 `_dist/bench_copyyield_{before_v1623,after_v1624}.json`（含 atomic 变体，after 盖版本戳 1.6.24）。
+- **回归钉（pg-validate +1）**：「import 取消传导：atomic 长导入中途 notifications/cancelled → 不回响应（MCP 规范）+ 0 行落库（COPY 中断随整体回滚）+ 连接健康」——pg 55→**56**，探针表 `pg_probe_cancel` 自建自删（前后 DROP + finally 兜底清单，8MB CSV 夹具随套件临时目录清理）；既有「import: atomic 冲突整体回滚（5 行不变）」与「事务内 COPY 特殊字符逐字节保真 + 失败整体回滚」钉继续全绿；selftest 断言数不变 **330/316**（纯函数零变更）。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 330/0（未初始化 316/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+
+### V1.6.23（import_data PG atomic（事务）路径改 COPY FROM STDIN：事务内 COPY 提速 + 契约逐字不变）
+
+- **背景**：V1.6.21 把 postgres 非事务批路径改成 COPY FROM STDIN（万行 65→28ms）后，atomic（全文件单事务）路径仍走参数化批 INSERT——同一导入引擎两条路径 2×+ 性能差；事务内 COPY 天然原子（批失败随 ROLLBACK 整体消失），与批 INSERT 的事务语义逐字一致，是同族收口的最后一段。
+- **产品变更（import atomic）**：`withTransaction` 回调扩第二参 `copyIn(sql, payload)`——pg 分支把 `PgCopyInQuery`（与 runCopyIn 同一封包）钉在事务连接上，BATCH 循环内 `useCopy → copyIn`、否则照旧参数化批 INSERT；mysql/sqlite 传抛错占位（走参数化 INSERT，行为零变化）。**契约逐字不变**：失败文案「原子导入失败，已全部回滚（未写入任何行）」、isAmbiguousWriteError 分类不变（atomic 模式本就不咨询，任一失败→回滚→E_DB 包装）、`Error: [E_CODE:retry]` 分类不破坏；COPY FROM STDIN 为客户端流式灌入、**无需服务端文件读取权限**（权限语义不变）；超时仍由池级 query_timeout 兜底。
+- **探针实测（先实测后断言，8 项观测）**：事务内 COPY 成功 8 行 + 特殊字符逐字节往返（引号双写/反斜杠/LF/CRLF/制表/字面量 `\N` 不成 NULL/空串不成 NULL）+ 文件内 PK 冲突失败——错误文案逐字「原子导入失败，已全部回滚（未写入任何行）: …」、E_DB 分类完好、失败后计数 8 不动（整体回滚实证）。
+- **性能（万行 atomic 单事务，duration_ms 中位）**：real_pg **62→27ms（2.3×）**（逐轮 [66,62,62] vs [29,27,27]）；real_mysql 117→176ms、real_sqlite 17→20ms——路径未动，先后两轮机器负载噪声波动（V1.6.21 同类现象），仅作参考。基准扩 `DBMCP_BENCH_ATOMIC=1` atomic 轮次（结果带 mode 字段），before/after 入仓 `_dist/bench_atomic_*.json`（after 为版本 1.6.23 复跑）。
+- **回归钉（pg-validate +1）**：「import atomic: 事务内 COPY 特殊字符逐字节保真（引号/反斜杠/LF/CRLF/制表/字面量 `\N`/空串）+ 失败整体回滚（E_DB 文案逐字、7 行不变）」——pg 54→**55**，探针表 `pg_probe_txc` 自建自删（前后 DROP + finally 兜底清单）；既有「import: atomic 冲突整体回滚（5 行不变）」钉在 COPY-in-tx 下继续全绿；selftest 断言数不变 **330/316**（纯函数零变更、接线层收口）。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 330/0（未初始化 316/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 55/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+
+### V1.6.22（空表（0 行）histogram/stats 边界锚定收尾：产品零变更）
+
+- **背景**：V1.6.21 边界锚定收口「全 NULL 列」与「单行列」后，同族最后一类真实边界——空表（0 行域）——探针已实测但注释明确标注「留待后续轮锚定」，回归钉缺位。0 行域 MIN/MAX=NULL 与全 NULL 列同走 NULL-rng 兜底路径，预期行为一致，但此前从未有真实回归钉盯住。
+- **探针复跑（先实测后断言，12 项观测三库逐一对照）**：0 行表 × 数值/文本列 × histogram+top_values / 仅 stats 三种调用形态——histogram `[]`、top_values `[]`、row_count=0 / non_null=0 / distinct_values=0、min/max/avg=NULL，三库逐项一致：不崩、不脏桶、不除零。未抓获产品缺陷（v1.6.20 兜底路径恰好覆盖），产品代码零变更。
+- **回归钉（三套件各 +1 同名钉）**：「histogram/stats 空表锚定: 0 行表空数组收口（row_count=0、min/max/avg=NULL 不除零）+ top_values 空数组」——sqlite 82→**83**、mysql 35→**36**、pg 53→**54**；探针表自建自删（mysql 整库 DROP 覆盖、pg 前后双保险 DROP + finally 兜底清单、sqlite 随 tmp 目录清理）。selftest 断言数不变 **330/316**。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 330/0（未初始化 316/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 54/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+
+### V1.6.21（import_data PG 路径 COPY FROM STDIN 提速 + 基准入仓 `mcp/bench.mjs` + 直方图全 NULL/单行边界锚定 + mysql 时间列脏桶修复）
+
+- **import_data 的 postgres 非事务批路径改用 COPY FROM STDIN（文本格式）**：每批一次网络往返整批灌入，绕过多 VALUES 逐条绑定/解析开销；走 pg 驱动 Submittable 扩展点直发 copyData/copyDone 线协议（`connection.sendCopyFromChunk`/`endCopyFrom`/`sendCopyFail`），零新依赖。文本格式转义逐字节保真（NULL=`\N`、`\`→`\\`、LF/CR/TAB/BS/FF/VT 对应转义、字面量 `\N`→`\\N`、空串=空字段），值内换行（v1.6.13 引号内 CRLF 保真）原样往返；表/列名经 quoteIdent 白名单（splitIdent/表头正则钉死裸标识符），值永不进 SQL 文本。**批失败逐行定位坏行的回退契约逐字不变**：COPY 批语句同样原子失败、不写入，`isAmbiguousWriteError` 分类不变（超时/连接类 → 结果未知中止不回退；约束/数据类 → 回退逐行定位坏行），pg-validate 全绿中「非 atomic 定位第 3 行且保留 2 好行（7 行）」钉继续锚定。mysql/sqlite 与 atomic 路径不动（仍参数化多 VALUES INSERT）。selftest +2 钉（COPY 分方言路由 + 文本转义逐字节保真，双口径 330/316 实测）。工具描述与 INSTRUCTIONS 同步改述真实路径。
+- **基准入仓 `mcp/bench.mjs`（可重复、JSON 输出、零明文口令）**：收编 `_dist` 手拼基准脚本——万行非事务导入 × 3 轮取中位，env 可配（DBMCP_BENCH_ROWS/ROUNDS/SOURCES/TABLE/OUT），凭据走配置 `enc` 解密（不读 `_secrets.json`、不落明文），跑完自动清基准表。before/after 对比（同机同日，10k 行 CSV 非 atomic，duration_ms 中位）：
+
+  | 源 | before（批 INSERT） | after | 变化 |
+  |---|---|---|---|
+  | real_pg | 65ms | **28ms** | **2.3×（COPY）** |
+  | real_mysql | 309ms | 167ms | 路径未动（暖机差异） |
+  | real_sqlite | 85ms | 59ms | 路径未动（暖机差异） |
+
+  pg 逐轮 before [68,65,63] vs after [30,28,28]——最暖一轮仍 2.3×+，排除缓存因素；mysql/sqlite 代码零改动，其回落是同日冷→暖环境差异（before 内部同样首轮偏慢：mysql [410,309,285]），仅作环境参考。
+- **mysql 直方图时间列脏桶修复（⑥b 残洞）**：DATETIME/DATE 隐式转数读数字头（`'2024-01-01 00:00:05'`→20240101000005）曾产出 20240101000000.00000 伪数值桶界，破「非数值列 → 空数组」契约——mysql 减法前按值形状 REGEXP 门控（仅数值形状参与减法），数值样文本照旧放行 GIGO（与 avg 强转 0 同哲学）。配套锚定钉：DATETIME/DATE 空数组收口 + 数字样文本桶保留。
+- **直方图全 NULL 列 / 单行列边界锚定（语义钉死，该子任务产品零变更）**：
+  - **背景**：V1.6.20 收口文本列与退化分布后，仍有两类真实高频边界未锚定——「一列全是 NULL」与「整表只有一行」。全 NULL 域让 rng CTE 的 MIN/MAX 得 NULL（桶宽退化为 NULL），单行域 hi=lo 走防除零分支；此前只被 where 过滤形态（`where: "v = 7"` 模拟单值域）间接覆盖，真实表形态（row_count>0 且 non_null=0 / 整表 1 行）从未钉住。
+  - **探针实测（24 项观测，三库逐项对照，先实测后断言零臆造）**：全 NULL 数值列/文本列 → histogram `[]` 空数组、stats min/max/avg=NULL、row_count=3/non_null=0，三库一致不崩不脏不除零；单行列 v=7 → 单桶 `[7,8)`（hi=lo 宽 1.0 防除零）；附加观察：空表同 NULL-rng 路径（`[]` + row_count=0）。**探针未抓获产品缺陷**——v1.6.20 的类型门控 + NULL 桶号过滤恰好把这两类边界兜住，该锚定子任务产品代码零变更、MCP 契约零变化（时间列残洞另行修复，见上条）。
+- **锚定断言（探针实测后钉住）**：sqlite 81→82、mysql 33→35（边界锚定 + 时间列锚定）、pg 52→53——同一断言钉三库：全 NULL 列（数值 + 文本）→ 空数组 + min/max/avg=NULL 不除零 + row_count/non_null 计数正确；单行列 → 单桶 [7,8)×1 + min=max=7。探针表自建自删（mysql 整库 DROP 覆盖、pg 前后双保险 DROP + finally 兜底清单）。selftest +2 → 330/316（COPY 钉）。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 330/0（未初始化 316/0）· sqlite-validate 82/0 · mysql-validate 35/0 · pg-validate 53/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+
+### V1.6.20（import 批大小动态化：非事务万行导入 mysql 2.7×/sqlite 7×提速 + 直方图 PG NULL/文本列修复）
+
+- **import 批大小按方言动态定（原硬编码 100 行/条）**：新增纯函数 `importBatchSize(dbType, colCount)`——占位符硬上限（mysql/pg 65535、node:sqlite 编译默认 32766 且 25_000 实测可用）各留裕量（sqlite 20000 / mysql·pg 50000）后按列数均摊，窄表封顶 1000、宽表自动降批。直连实测依据（万行非事务路径）：批 100 时 mysql 672ms / sqlite 607ms（每条多 VALUES 语句一个往返+一次提交），批 1000 mysql 降至 ~108ms、pg 86→60ms 趋平；MCP 层复测（10k 行 CSV 默认非 atomic）：**mysql 672→249ms（2.7×）、sqlite 607→87ms（7×）、pg 118→99ms**；60 列宽表三源降批导入回归通过（sqlite 327/批、pg 819/批）。批失败回退逐行定位坏行的语义不受批大小影响（isAmbiguousWriteError 分类不变）；selftest +2 钉（窄表封顶/宽表退化+非法列数兜底）。
+- **直方图两处真实库修复（配套锚定钉）**：PG 的 LEAST 忽略 NULL 参数（`LEAST(NULL, n-1)=n-1` 曾把 NULL 行顶进末桶漏过滤）——histogramStatsSql 桶号表达式对 NULL 短路；文本列直方图在 PG 上 `text-text` 42883 硬错误——类型门控减法仅对数值列生效。三 validate 套件锚定断言（sqlite 78→81、mysql 30→33、pg 48→52 含时间列同族钉 `::text::numeric`；pg 计数含 V1.6.19 文档漂移修正：文档写 46 实际 48，本轮 +4 后实测 52）。
+- **查询/执行超时三形态统一 `E_DB:conditional`（真实库超时抓获）**：pg query_timeout 无 code 曾掉 E_INTERNAL 兜底、pg statement_timeout 57014 与 mysql2 PROTOCOL_SEQUENCE_TIMEOUT 曾按驱动码走 E_DB:no-retry——超时属「同参重试必再超、改变范围可成」的条件态，统一收口 `E_DB:conditional`；连接建立超时 ETIMEDOUT 不混类（仍 `E_DB:retryable`）。selftest +2 errcode 钉（连同批大小 +2：本轮 selftest 324→328、未初始化口径 310→314）。
+- **实测口径（2026-10-05，Node v24.15.0，双会话并行验证后合并计数）**：selftest 328/0（未初始化 314/0）· sqlite-validate 81/0 · mysql-validate 33/0 · pg-validate 52/0 · e2e 42/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness（spawn→stdio JSON-RPC 逐工具调用 + 8 例红线负例 + 导出导入跨源回环 + DBMCP_ERR_LOG 观测面口令清洗核验）46/0。
+
+### V1.6.19（三库文本列画像语义锚定：avg 方言分歧钉为契约）
+
+- **背景**：V1.6.18 修复 PG 文本列 `column_stats` 后，三方言对「文本列 avg」各给一种答案——MySQL/SQLite 把非数值文本强转 0（`'10','20','x'` → avg=10）、PG 类型门控 → NULL，且此前没有任何测试看住这个分歧。语义一旦被无意「统一化」（例如把 PG 门控照搬到 mysql/sqlite，或反向抹掉门控）即属契约破坏，必须有锚定断言。
+- **测试锚定（三套件各 +1，先实测后断言零臆造）**：sqlite-validate 77→78、mysql-validate 29→30、pg-validate 45→46——同一探针列（tag=a50/b30/c20 非数值文本）钉三方言实测语义：row_count 100 / non_null 100 / distinct 3、min/max 字典序 `a`/`c` 三方言一致；avg：sqlite/mysql **0**（非数值强转）、pg **NULL**（类型门控）。
+- **工具描述注明语义**：`column_stats` description（server.mjs）与 SKILL/README 工具表补均值方言语义说明——大模型消费侧也能看到这一分歧，不再靠口口相传（selftest 仅钉 `Example: {` 存在，描述文案扩展不改断言数 324/310）。
+- **产品代码除描述文案外零变更**，MCP 工具契约兼容。
+- **实测环境注记（取证结论，非产品缺陷）**：本轮回归期间真实 MySQL 的 `realdb` 库被外部 GUI 会话删除——binlog 尾笔事务取证为 DBeaver 26.2.1 于 2026-10-05 00:59:14 执行 `DROP SCHEMA \`realdb\``（故此前 `DROP DATABASE` 关键字排查全程无命中）。按 rig bootstrap 重建后 mysql-validate 30/0 复绿。真实库套件再遇 `Unknown database` 先做 binlog 取证再重建，勿先怀疑产品。
+
+### V1.6.18（真实库套件扩全工具面：pg-validate 22→45 项 + 修复 PG 文本列 column_stats 真 bug）
+
+- **背景**：pg-validate 止步于「操作矩阵 × 直连核对」22 项，mysql-validate 的全工具面（画像/直方图/TopN/发现类/EXPLAIN/事务/import 原子性）在真实 PG 上从未端到端执行过——PG 方言分支（information_schema $n 占位符、EXPLAIN (FORMAT JSON)、COUNT(*)::bigint 字符串化、ILIKE 子串、括号复合不包外层 LIMIT）此前只被纯函数单测覆盖。本轮把这些分支全部在真实 PostgreSQL 17.5 上跑通。
+- **真 bug 修复（新套件抓获）**：`column_stats` 对文本列在 PG 上整条失败——`columnStatsSql` 无条件 `AVG(col)`，PG 的 `AVG(varchar)` 是 42883 硬错误（MySQL 靠隐式强转侥幸通过、sqlite 静默转 0，故此前漏掉），导致 `top_values` 的主用例（tag 之类低基数文本列）在 PG 完全不可用。修复：PG 分支 avg 类型门控 `AVG(CASE WHEN pg_typeof(col) IN (smallint/integer/bigint/numeric/real/double precision) THEN col::numeric END)`——仅数值类型求均值、文本列 avg=NULL（CASE 短路保证 THEN 的 cast 不在文本行求值）；min/max 文本仍按字典序（契约不变），mysql/sqlite 零变化。selftest colstats 断言补 pg_typeof 门控钉（断言数不变 324/310）。
+- **新套件 pg-validate 22→45 项**：新增 23 项全工具面钉测（对标 mysql-validate）——column_stats 画像/直方图（clamp 上限/过滤域/NULL 排除）/TopN（频数降序 + 值升序）/combo、list_tables（ILIKE name_like）/describe_table（列序/主键/pkey 索引）/find_tables_by_column（ILIKE 子串）/fk_relationships（单表 + 全 schema）、count_rows（::bigint total）/distinct_values（稳定次序）/sample_data（order_by 白名单）/query（自动 LIMIT 截断/括号复合 UNION/SHOW server_version）、query_plan（text + json 双格式/EXPLAIN 写语句拒绝）、execute（affected_rows=pg rowCount）/create_table（CTAS E_SAFETY 拒绝且零建表）、import（rows_imported/atomic 整体回滚/非 atomic 定位第 3 行且保留好行）、withTransaction（提交/PK 冲突整体回滚）。甄别非 bug 1 项：`name_like: "hist_"` 只命中 2 表是 SQL LIKE `_` 单字符通配符标准语义（非产品缺陷），套件改用 `probe_hist` 关键字并注明。
+- **自测**：pg-validate 45/0（真实 PostgreSQL 17.5）；全量回归 selftest 324/0、sqlite-validate 77/0、mysql-validate 29/0、e2e 42/0、protocol 24/0、realform 43/0；发版门禁通过（mysql/pg 真实库段诚实 SKIP 口径）。
+
+### V1.6.17（真实数据库实测认证：三库操作矩阵直连双向核对 + 新增 pg-validate 真实库套件）
+
+- **背景（用户要求）**：使用真实数据库对每一步实际操作（查表/建表/删表/删数据等）测试，并对比数据库真实操作是否执行。便携部署真实 MySQL 8.4.5 与真实 PostgreSQL 17.5 于 `D:\work\Zcode\DB`（Windows 无 OceanBase 发行版且无 Docker/WSL——该库「待确认/不适用」，其 MySQL 模式语义由真实 MySQL 覆盖）
+- **操作核对台 realdb-v1617（三库矩阵 68/0）**：对真实 MySQL / 真实 PostgreSQL / SQLite 文件库各跑 22 步操作矩阵，每步「MCP 工具行为 ↔ 独立直连真实结果」双向核对：预清理 → create_table（直连验证表存在）→ describe_table（结构一致）→ import CSV 3 行（直连计数/取值）→ execute INSERT（直连验证）→ query 逐值一致 → count_rows 一致 → UPDATE 真实改值（20→25）→ DELETE 真实删行 → 6 条红线负例（无 WHERE UPDATE/DELETE、恒真 WHERE、TRUNCATE、DROP、多语句——每条拒绝后直连快照零变化且表仍在）→ BLOB(bytea) 入库与 `<binary N bytes: hex>` 形状 → 导出 JSON/CSV 与直连逐值一致 → DBA 直连删表后 MCP `describe_table` 报 `E_NOT_FOUND`（真实删除确认）。产品行为零例外：所有差异均为测试台自身期望写错（count_rows 键名 `total`、pg `to_regclass` 不存在时返回 1 行 NULL、export 防覆盖契约需 `overwrite:true`），逐项修正测试台后 68/0
+- **新套件 pg-validate.mjs（真实 PostgreSQL 22 项）**：操作矩阵 × 直连双向核对沉淀入仓（对标 mysql-validate.mjs：真 stdio 客户端链路、enc 密文原样临时配置、探针表 pg_probe_* 自建自删、无 postgres 源时 SKIP 退出码 3）——填补 mysql/sqlite 均有真库套件而 PG 无的缺口；首发实测 22/0
+- **发版门禁**：distribute.mjs 新增「pg-validate 真实库段」步骤（诚实 SKIP 口径同 mysql-validate：退出码 3 判过明示）
+- **mysql-validate 首次真实 MySQL 全量实测 29/0**：历史基线（2026-10-03）后首次真库全跑——直方图/TopN/NULL 画像、事务提交与 PK 冲突回滚、导入 atomic 回滚、红线零副作用核对、CTAS 拒绝、探针库自建自删全部真实执行验证
+- **自测**：realdb-v1617 68/0；mysql-validate 29/0、pg-validate 22/0、sqlite-validate 77/0；全量回归 selftest 324/0（已初始化口径）+ e2e 42/0 + protocol 24/0 + realform 43/0；发版门禁全绿
+- **契约兼容**：产品代码零改动（仅新增测试套件 + 门禁步骤 + 版本回落值）
+
+### V1.6.16（真实对抗测试驱动修复：BLOB/Uint8Array 序列化键值垃圾）
+
+- **方法论**：沿用 V1.6.13 真实对抗测试台方法（独立脚本 adv-v1616、31 项期望行为断言，先写期望后对照实现）——靶区 ①字节/大整数序列化 ②SQL 入口形态 ③CSV Excel 生态 ④参数边界语义 ⑤写路径边界；抓获 1 类真 bug，另甄别 3 类「测试台期望写错、产品按设计语义」不误改
+- **真 bug（BLOB 序列化键值垃圾）**：`stringify`/`csvCell` 的字节分支只认 `{type:"Buffer",data:[...]}` 形状（Buffer.prototype.toJSON 产物），而 node:sqlite 的 BLOB 返回 `Uint8Array`（无 toJSON）——JSON 面被序列化成 `{"0":0,"1":1,"2":2,"3":255}` 键值垃圾、CSV 面掉进 `String(v)` 变 `0,1,2,255`（mysql2/pg 的 live Buffer 实例同样漏，旧分支实际只覆盖已 toJSON 的形状）。修复：两处在旧分支前补 `ArrayBuffer.isView()` 分支——响应面 `<binary N bytes: hex…>`（≤8 字节无省略号，沿 v1.0.2 预览口径）、导出面全量 hex、CSV 确定性 hex；契约兼容（旧 `{type:"Buffer"}` 形状行为不变，仅补漏）
+- **甄别为非 bug（有据不改）**：① sqlite 整数全字符串化（pool.mjs `setReadBigInts(true)` + bigint→string，防雪花 ID 精度被 JS 篡改，与 mysql bigNumberStrings/pg int8 策略一致，sqlite-validate 既有钉佐证）② `limit` 超 schema 上限 clamp 不拒绝（工具 schema 明示 "Values above the max are clamped to the max"）③ export/import 独立白名单目录（DBMCP_EXPORT_DIR / DBMCP_IMPORT_DIR 分离，回环需文件复制）——三者回改测试台期望，产品零改动
+- **回归钉**：selftest +3 项 → **324 项断言**（未初始化 310）：Uint8Array stringify 响应形状/导出全量 hex/csvCell hex；realform-validate +3 项 → **43 项**：真实链路查询 `<binary 4 bytes: 000102ff>` 契约形状（断言无 `{"0"` 键值垃圾）+ 导出 JSON hex + 导出 CSV hex（断言非 `0,1,2,255`）
+- **自测**：adv-v1616 31/0（修复后反证复跑）；全量回归实测 2026-10-04 全绿：selftest 未初始化 310/0 + 已初始化 324/0（双口径，门禁内自证行命中）、sqlite-validate 77、e2e-validate 42、protocol-validate 24、realform-validate 43，全部 0 failed；发版门禁通过
+- **契约兼容**：字节序列化仅补漏不改既有形状；sqlite 数字字符串化等既定语义零改动
+
+### V1.6.15（发版门禁补已初始化口径：selftest 双口径覆盖 + 防假绿反向断言）
+
+- **背景（漏检根因）**：V1.6.14 抓获的 E_NOT_FOUND 形状钉 bug 属「已初始化部署必现、未初始化侥幸通过」类——发版门禁只跑未初始化口径 selftest，该口径下未知源报 `E_CONFIG` 恰好绕过 `/^E_[A-Z]+$/` 的错误正则。测试台只覆盖一个口径 = 另一口径的缺陷永远漏到用户现场
+- **门禁双口径**：`distribute.mjs` 发版门禁在「selftest 守卫/协议自检」后新增「selftest 已初始化口径」步骤——一次性副本内生成 enc 探针配置（sqlite 探针源 + 带口令假 mysql 源，走副本自带 `crypt2.encryptForConfig` 真加密；与 V1.6.14 计数校准探针同形）跑第二遍 selftest，两口径均绿才放行
+- **防假绿（反向断言，非恒真）**：步骤不只看 exit 0——输出必须命中「已初始化口径」自证行；探针生成失败时 selftest 会退化跑未初始化口径且 exit 0，此断言把假绿路径封死。实测反证：篡改探针不写配置 → 步骤判红「输出未命中『已初始化口径』自证行——疑未初始化口径假绿」+ 门禁 exit 3 发布包不可交付
+- **诚实 SKIP 口径延续**：无 node:sqlite（Node < 22.5）时探针生成 exit 3 → 门禁按既有诚实 SKIP 判过明示（与 mysql-validate 无凭据同语义，不冒充全绿）；探针配置与探针库跑完即删（副本终将整体删除，此为纵深）
+- **自测**：断言数不变（307/321）；门禁实测 2026-10-04 全绿（新增步骤「通过（exit 0，自证行命中）」），反证一并实测；全量回归 + 门禁全绿
+- **契约兼容**：仅发版工具链（distribute.mjs）变更，产品代码与测试断言零改动
+
+### V1.6.14（自检口径自证：已初始化实测校准 + 抓获 E_NOT_FOUND 形状钉误判）
+
+- **已初始化口径首次实测校准**：temp 副本 + enc 探针配置（sqlite 探针源 + 带口令假 mysql 源，走 `crypt2.encryptForConfig` 真加密）实测 selftest 已初始化口径 → **321 passed, 0 failed**，与此前推导值（307+14，init 块 15 钉 vs else 分支 +1）精确一致；该口径此前自 V1.6.9 起从未实测（历史「312 项」系推算）
+- **实测抓获真 bug（已初始化部署必现）**：observe 端到端钉的错误码形状正则 `/^E_[A-Z]+$/` 不接受第二段下划线——`E_NOT_FOUND` 永不匹配，已初始化部署（未知源真实报 E_NOT_FOUND）该钉必挂；未初始化部署报 E_CONFIG 侥幸通过，故从未暴露。改为 7 错误码显式枚举 `/^E_(SAFETY|PARAM|NOT_FOUND|CONFIG|LIMIT|DB|INTERNAL)$/`（与错误分类法契约同源，顺带钉死码名拼写）
+- **断言数自证常量（防口径漂移）**：selftest 新增 `EXPECTED_TOTAL = { uninit: 307, init: 321 }` + 汇总前自证检查（不计入断言数，只在不符时 FAIL）——断言增删若不显式同步常量即红，杜绝「文档 298 实测 301」类静默口径漂移（+3 差异成因已不可考古，本版起口径由代码钉死）；反向测试实测：篡改常量 → `FAIL meta` + 退出码 1，非恒真
+- **自测**：断言数不变（307/321）；双口径实测 2026-10-04 全绿：未初始化 307/0（自证一致）、已初始化 321/0（自证一致，leak-guard 口令套件带真口令实测过 scrub/URL 编码变体/输出无泄漏/配置无明文 4 钉）；全量回归 + 6 验证器门禁全绿
+- **契约兼容**：仅测试代码与文档变更，产品代码零改动（server.mjs 只动版本回落值）
+
+### V1.6.13（真实测试驱动修复：8 类真实形态缺陷）
+
+- **方法论**：沿用 V1.6.8「自测全绿 ≠ 真实形态可用」教训——先搭对抗性真实测试台（57 项、独立脚本、期望行为断言），32 项失败即 bug 目录，修复后 57/57 全绿再折回归钉。全部缺陷均真实形态触发（复制粘贴/Windows 文件名/CSV 往返），纯函数自测未覆盖
+- **S1 前导不可见字符剥除**：`callTool` 入口对 sql/where/order_by/table/column/schema/source 7 个字符串键剥前导 Unicode 不可见字符（ZWSP/ZWNJ/ZWJ/soft-hyphen/RTL override/BOM 等 30+ 码位）——聊天/网页/Excel 复制粘贴的 SQL 不再被误判 E_PARAM；只剥前导（字符串字面量内数据不动），红线在剥除后照常判定（前导 ZWSP 的无 WHERE UPDATE 仍拒）
+- **S2 parseCsv 引号内 CRLF 保真**：删除全文 `\r\n→\n` 预归一（会把引号内嵌换行压平，导出→导入往返丢真）；改为仅记录分隔符归一（引号外 CRLF/CR→LF），引号内容字节保真
+- **S3 Windows 保留设备名拒绝**：`safeExportPath` 拒绝 CON/PRN/AUX/NUL/COM1-9/LPT1-9（含 `NUL.csv` 带扩展名形态）——防写进设备命名空间造出无法处理的文件；COM10/console.csv/NULL.csv 等不误伤；import 侧同一清洗，报错提「保留设备名/被清洗拒绝」防误判文件缺失
+- **S4–S6 文件名卫生**：超 120 字符截断保扩展名（旧版把 `.csv` 截成 `.c`）；扩展名判定大小写不敏感（`REPORT.CSV` 不再追加成双扩展）；尾点/尾空格归一（`report2.csv.`→`report2.csv`，import `data1.csv.` 可寻址）；清洗后为空显式 E_PARAM（旧版拼出 `....csv` 垃圾名）
+- **S7 CSV 表头语义**：重名列名明确拒绝（实测 sqlite `INSERT INTO t (a,a) VALUES('first','second')` 只存 'first'——重名表头导入静默丢值，属数据完整性缺陷故硬拒并注明「未写入任何行」）；空表头列名报错带提示（期望 N 列（表头含 M 个空列名已被忽略））；全空表头拒绝
+- **S8 sqlite 重名结果列前置拒绝**：`runOnPool` sqlite 分支 `stmt.columns()` 预检重名列（`SELECT id AS x, id+1 AS x` 裸路径实测对象行静默折叠丢首值）→ E_PARAM 建议加别名。纵深防御地板：LIMIT 包裹路径当前会自动消歧（x/x:1）保值，但裸路径/未来行为变化有前置闸
+- **自测**：selftest +6 项 → **321 项断言**（未初始化 307）：stripLeadingInvis 剥除钉（内部/非字符串零改动）、剥除后红线照常判定钉、parseCsv 引号内 CRLF 保真 + 记录分隔归一钉、保留设备名拒绝（含带扩展名形态）+ 非保留名不误伤钉、超长截断保扩展名 + 尾点归一 + 清洗后为空拒绝钉、sqlite 重名结果列前置拒绝钉（runQuery 真链路）；realform-validate +14 项 → **40 项**：前导 ZWSP SELECT 可执行 + 红线不因剥除失效、保留名 NUL 拒绝 + COM10 不误伤、超长截断保扩展名、大写扩展名不重复追加、尾点归一 + import 尾点寻址、引号内 CRLF 导出→导入回环保真、空表头/重名表头明确报错、行数截断边界（max_rows=2 截断 truncated=true / 恰满不截断）（实测 2026-10-04 全绿：selftest 307/321、sqlite-validate 77、e2e-validate 42、protocol-validate 24、realform-validate 40，全部 0 failed）
+- **契约兼容**：全部为「拒绝错误行为」或「放宽误拒」——不改工具 schema、不改成功响应形状；旧行为里唯一被收紧的是重名 CSV 表头（原本静默丢值）与保留设备名/病态文件名（原本生成坏文件），均为缺陷修正非契约变更。sqlite-validate 既有钉 `export_data '..' + ext becomes ordinary file` 期望随 S4 同步更新为显式拒绝（病态名 `".."/". "/"..."` 清洗后为空不再静默拼 `...csv` 垃圾名；断言数 77 不变）
+
+### V1.6.12（notifications/cancelled：MCP 规范取消语义）
+
+- **协议面**：实现 MCP 2025-06-18 Cancellation——`notifications/cancelled`（params: `requestId`, `reason?`）**插队处理**（串行队列会把通知排到长查询之后，永远来不及中断）：运行中请求与 AbortController 竞速，命中即**不发响应**（规范明示 “Not send a response”，不引入 -32800——那是 LSP 习惯）；`initialize` 按规范 MUST NOT 被取消（从不入表，取消天然忽略）
+- **排队中请求不执行不响应（写安全）**：报文到达即登记在途表（区分规范要求的「未知 id 忽略」与「排队中可取消」），派发口消费取消标记——被取消的 UPDATE 不会落库，这是比规范最低要求更安全的方向；标记一次性消费，id 复用安全
+- **忽略语义（规范 SHOULD ignore）**：未知 id / 已完成（含迟到取消）/ 无效通知（缺 requestId、非标量、带 id 的请求形状）一律忽略；带 id 的 `notifications/cancelled` 按请求分发回 -32601
+- **边界如实**：取消释放的是「等待与响应」，已在执行的驱动查询不回滚不中断（mysql2 单查询 timeout / pg statement_timeout / sqlite 同步不可中断为各自上界）——写操作若已开跑仍可能落库，取消不是事务回滚；取消理由过权威 scrub 后出 stderr（规范 SHOULD log reasons）；tools/call 契约零改动（审计日志照常每次 1 条，与取消行按 id 关联）
+- **自测**：selftest +6 项 → **312 项断言**（未初始化 298）：isCancelNotification 形状钉、未知/无效取消忽略钉、登记表 abort/严格 id 类型/迟到忽略钉、beginDispatch 一次性消费（id 复用安全）钉、已取消 tools/call 不执行不响应钉、请求形状 -32601 钉；protocol-validate +7 项 → **24 项**：静默 TCP fixture 制造真实挂起请求——运行中取消不发响应且队列立即解放、排队中取消不执行不响应、未知/迟到/无效取消忽略（实测 2026-10-04 全绿：selftest 298/312、sqlite-validate 77、e2e-validate 42、protocol-validate 24、realform-validate 26，全部 0 failed）
+### V1.6.11（真实形态测试台转正：realform-validate 随包常驻）
+
+- **测试资产转正**：V1.6.8 打的真实形态测试台（真 SQLite + 真 stdio server + 业务形态中文/边界数据，26 场景）转正为随包常驻套件 `mcp/realform-validate.mjs`（沿用 V1.6.4 套件转正先例与家族契约）：`here` 自定位 mcp 目录、无 node:sqlite 时诚实 SKIP 退出码 3、统一汇总行 `=== realform-validate: N passed, M failed ===`、FAIL 保留现场 + FAILDETAIL、PASS 自建自删（mkdtemp 中文库 `业务库.db` + 临时配置 + 导出/导入目录）
+- **场景面**：中文库文件名/中文表/中文列全链路（发现/读/写/建表）+ 边界值（BigInt 精度 9007199254740993、超长文本、emoji/换行、NULL/BLOB）+ 导出导入回环保真（CSV 公式中和与 `strip_neutralization` 原样还原）+ 写面红线（无 WHERE UPDATE / 多语句 / 恒真 WHERE 拒绝）+ 注入面负例（注入表名/恒真 WHERE）
+- **接线**：`distribute.mjs` 发版门禁家族验收 5 → **6 验证器**（selftest / sqlite-validate / mysql-validate / e2e-validate / protocol-validate / **realform-validate**），退出码 3 判过明示口径不变——发版必须过真实形态回归
+- **自测**：新增 realform-validate 26 项（selftest 断言数不变 → **306 项断言**（未初始化 292））（实测 2026-10-04 全绿：selftest 292/306、sqlite-validate 77、e2e-validate 42、protocol-validate 17、realform-validate 26，全部 0 failed；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03）
+
+### V1.6.10（观测日志滚动：总量有界）
+
+- **超限滚动**：写入前 stat 当前大小，`size + 行 > 上限` 时滚动——`<路径>.KEEP` 删除、`.N` 顺次后移（`.KEEP-1→.KEEP` … `.1→.2`）、主文件 → `<路径>.1`，再追加新行（Windows rename 目标必须不存在，故从高位往低位挪并先删末端）。上限 `DBMCP_ERR_LOG_MAX_BYTES`（缺省 10MB，合法域 [1024B, 1GB]）、保留份数 `DBMCP_ERR_LOG_KEEP`（缺省 3，合法域 [1, 20]）
+- **总量有界不变量**：单行 <2KB（字段截断）+ 每文件 ≤ max(上限, 单行上限) + 保留 ≤ KEEP 份 → 长期运行日志总量有上界，不再有灌盘风险
+- **失败边界**：stat/rename/删除任一步失败静默跳过并照常追加（宁可暂时超限也不丢记录），下次调用重试滚动；追加写失败依旧 fail-open——观测面永不改变工具调用行为
+- **参数容错**：上限/份数取值为非整数、越界、空串时回落缺省值，不引入新的参数校验错误面（观测配置不是安全控制）
+
+**自测**：selftest +2 项 → **306 项断言**（未初始化 292）：超限滚动钉（.1 生成、总量有界、最新记录在主文件尾、旧记录在 .1、保留外无 .4）+ 保留上限与参数容错钉（KEEP=2 不留 .3、非法值回落缺省仍写盘）（实测 2026-10-04 全绿：selftest 292/306、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed）
+
+### V1.6.9（观测面打点：DBMCP_ERR_LOG 结构化脱敏审计日志）
+
+- **可选观测日志**：环境变量 `DBMCP_ERR_LOG=<日志文件路径>` 开启后，每次 tools/call（含失败与未知工具）恰好追加 1 行 NDJSON 审计记录：`ts`/`id`（JSON-RPC 请求 id，跨调用关联）/`tool`/`is_error`/`code`/`retry`（稳定错误码与重试态）/`duration_ms`/`source`/`table`/`sql_head`/`err_head`——错误率与重试态分布可直接统计（分母=全部行）。**未设置该变量时零行为**（默认完全关闭，不产生任何文件）
+- **日志脱敏单一真相源**：全部字符串字段过与工具输出相同的权威 `scrub`（配置口令及 URL 编码变体 → `***`），先整段脱敏再截断（每字段 ≤200 字符，防截断出半个秘密/防超长灌爆）；清洗规则不在日志模块内复制，防规则漂移漏洗
+- **fail-open 边界明确**：日志写失败（路径是目录/磁盘满/无权限）静默吞掉，工具调用行为与结果零影响——打点不是安全控制，安全红线照旧 fail-closed；单行 <2KB 追加写，不引入网络/异步/超时面
+- **契约零侵入**：打点在 `callTool` 出口单点，tools/call 的 result/error 载荷字段零改动；新模块 `observe.mjs` 零依赖（仅 node:fs）
+- **适用边界（如实）**：日志含业务元数据（表名/SQL 摘要），部署方负责存放与清理；多进程并发写同一文件时单行原子性以本地文件系统为准（本服务单进程串行处理请求，常规部署无并发写）
+
+**自测**：selftest +6 项 → **304 项断言**（未初始化 290）：默认关闭零写盘、单行 NDJSON 字段完整、错误行带码/成功行 null、脱敏走权威 scrub + 截断有界、端到端每调用 1 条记录 id 可关联（含字符串 id）、日志写失败 fail-open（实测 2026-10-04 全绿：selftest 290/304、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed）
+
+### V1.6.8（真实测试驱动修复：file 形态源 + Unicode 标识符全链路）
+
+- **真实形态测试**：自建真实测试台（真实 SQLite 业务库 + 真实 stdio 子进程 + 中文表/列名 + 边界数据：大整数 9007199254740993 精度、emoji/CRLF/BLOB、CSV 公式文本），26 个真实场景矩阵（发现/读链/导出导入回环/execute 红线/注入负例）实测抓获 3 个产品 bug 并全部修复——此前自测全绿但真实形态（尤其中文标识符）存在失守面
+- **bug① getSource 拒绝 file 形态 SQLite 源**：`{type:"sqlite", file:...}` 形态的源（文档明确支持）因 `if (!s || !s.url)` 被误判 Unknown source，列出却不可用；改为 `url || file` 双形态准入，并分流错误语义（无此源 → E_NOT_FOUND；缺连接信息 → E_CONFIG 指引检查 dbmcp.config.json）
+- **bug② splitIdent 纯 ASCII 正则拒绝中文表/列名**：`/^[A-Za-z_][\w$]*$/` 把国内库常态的中文标识符全判 "Invalid identifier '订单表'"（describe/sample/distinct/stats/count 全读链受累）；改 Unicode 感知 `/^[_\p{L}][\p{L}\p{N}$]*$/u`，注入字符（引号/分号/空格等）照旧拒绝
+- **bug③ 红线列引用检测漏认中文列（误拒合法写）**：`exprHasColumn` 同根 ASCII 正则把 `WHERE 订单号='D001'` 判成"WHERE 未引用任何列"拒绝合法写入；`extractWriteTarget` 中文写目标解析失败致 maxAffectedRows 预检静默失效。全链路共 6 处同根正则一并 Unicode 化（exprHasColumn、extractWriteTarget、列名校验×2、CSV 表头、order_by）；顺带收紧一处红线盲区：续位字符类补 `_` 后，`my_func(1)` 形态的下划线函数名不再被误计为列引用。端到端钉确认：字面量伪装恒真（`WHERE 'a'='a'`）脱敏后无列引用仍被 E_SAFETY 拒绝，红线不因放宽而松动
+- **兼容性**：纯校验正则放宽（ASCII 子集行为不变，新增 Unicode 文字准入），工具契约/消息文本零改动
+
+**自测**：selftest +2 项 → **298 项断言**（未初始化 284）：splitIdent Unicode 钉（接受中文/拒绝注入与三段名）+ 红线列引用 Unicode 钉（中文列识别 + 恒真条件识破 + guardWrite 端到端拒绝）（实测 2026-10-04 全绿：selftest 284/298、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed，另真实形态测试台 26/26；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03）
+
+### V1.6.7（工具声明收口：全量调用示例 + 契约形状钉）
+
+- **用法示例全覆盖**：16 个工具的 `description` 全量追加 `Example: {json 参数}` 调用示例（与 inputSchema 字段一一对应的真实参数形态；`execute` 示例示范带 WHERE 的红线合规写法，`query` 示例示范显式 LIMIT）——LLM 选工具与填参有具体参照，减少凭空猜参数。纯 description 文本追加，`inputSchema`/`annotations`/调用行为零改动
+- **契约形状钉**：selftest 新增 2 项断言——① 16 工具 `title` + `annotations` + `inputSchema`（type=object 且 additionalProperties:false）收口，防声明字段被静默删除；② 全部 description 必须含 `Example: {`，防示例回归丢失。经真 `tools/list` 回环验证（非直接读常量）
+- **背景**：`title` 字段此前已 16/16 覆盖（MCP 2025-06-18 规范展示名；2024-11-05 旧客户端按未知字段忽略，向后兼容），本轮缺口实测为「示例缺失 + 无形状保障」
+
+**自测**：selftest +2 项 → **296 项断言**（未初始化 282）：工具声明形状钉 + 示例覆盖钉（实测 2026-10-04 全绿：selftest 282/296、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03）
+
+### V1.6.6（错误码覆盖深化：全 throw 点显式分类，模式匹配降级兜底）
+
+- **ToolError 显式分类**：guard.mjs 新增 `ToolError` 类（携带 `errCode`/`errRetry` 属性，命名避开驱动 `e.code` 冲突），69 个 throw 点（guard.mjs 27 + server.mjs 40 + pool.mjs 2）全部显式携带错误码与重试态；`classifyError` 首查显式标签，消息模式匹配降级为未标注错误/第三方驱动错误的兜底——错误分类不再依赖报错文案的措辞
+- **误分类修正（模式匹配盲区实测抓获）**：5 类真实报错此前不匹配任何模式、被兜底为 `E_INTERNAL`——`'execute' only allows single INSERT/UPDATE/DELETE...` 与 `'create_table' only accepts...`（守卫拒绝 → E_SAFETY）、`第 N 行导入失败，整批中止`（→ E_DB:no-retry）、`Writes are disabled...`（→ E_CONFIG）、自动 LIMIT 派生表重名列（→ E_PARAM）。指标达成：工具路径 `E_INTERNAL` 占比 → 0（仅 guard 内部不变量违例一处保留，属诚实兜底）
+- **重试态缺省映射**：`ERR_DEFAULT_RETRY` 按码给缺省重试态（E_LIMIT→conditional，其余 no-retry），调用点仅在语义偏离缺省时显式指定（如批写入结果未知 → E_DB:conditional）
+- **兼容性**：69 处仅替换构造器与参数前缀，错误消息文本逐字不变；`Error: [E_CODE:retry] 原文` 格式与全部子串匹配回归钉不变；JSON-RPC 层错误（-32600/-32700/-32601/-32603）不受影响
+
+**自测**：selftest +2 项 → **294 项断言**（未初始化 280）：显式标签优先于模式匹配钉 + 缺省重试态映射钉（实测 2026-10-04 全绿：selftest 280/294、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03——错误码改造未动消息文本，真实库复跑列入下一轮）
+
+### V1.6.5（错误语义标准化：稳定机器可读错误码）
+
+- **错误码 taxonomy**：工具错误统一携带稳定错误码，格式 `Error: [E_CODE:retry] 原文`。CODE 七类：`E_SAFETY`（守卫/红线拒绝，同参重试必然再拒）、`E_PARAM`（参数/语句形态错误，修正后重试）、`E_NOT_FOUND`（源/表/列/文件不存在）、`E_CONFIG`（部署/配置态：未初始化、权限未开，需运维处理）、`E_LIMIT`（超上限，缩小范围后可重试）、`E_DB`（数据库/驱动错误）、`E_INTERNAL`（未分类兜底）；retry 三态 `retryable | conditional | no-retry`（连接类驱动错误码 retryable，语法/约束类 no-retry）。**错误原文逐字保留在标签之后**——存量客户端按子串匹配错误文案的行为不变（回归钉确认）；`classifyError` 为纯函数可单测，未知错误兜底 `E_INTERNAL:no-retry`（fail-closed，不鼓励盲目重试）
+- **动机（MCP 调用方视角）**：LLM 此前无法区分「安全拒绝勿重试」与「瞬时 DB 错误可重试」，会对不可重试错误反复改写重试——烧 token 且无进展；现在可依据错误码 + retry 标签直接决策（重试/改参/停手/找运维）。错误码语义写入 `initialize` 的 `instructions`，客户端握手即可见
+- **兼容性**：`isError` 布尔、`content[0].text` 前缀 `Error: ` 与错误原文全部保持；仅在两者之间插入 `[E_CODE:retry]` 标签。JSON-RPC 层错误（-32600/-32700/-32601/-32603）维持 MCP 规范语义不变
+
+**自测**：selftest +11 项 → **292 项断言**（未初始化 278）：7 类错误码分类纯钉 + 连接类/语法类驱动错误重试语义 + fail-closed 兜底 + 回环格式兼容钉（实测 2026-10-04 全绿：selftest 278/292、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03）
+
+### V1.6.4（测试资产转正：全链路 E2E + 协议边界入仓库测试族）
+
+- **测试资产转正**：v1.6.3 的两套临时套件（全链路 E2E 41 项、协议对抗 17 项）转正为仓库常驻套件 `mcp/e2e-validate.mjs`（**42 项**，新增 export JSON 保真真链路回归）与 `mcp/protocol-validate.mjs`（**17 项**），沿用家族契约（统一汇总行 + 退出码 0/1/3 诚实 SKIP）：fixture 自供给（mkdtemp 临时 SQLite 库 + 临时配置 + 导出/导入白名单目录，自建自删，不触碰部署配置与业务库），无 node:sqlite（Node < 22.5）时诚实 SKIP 退出码 3；自定位 mcp 目录并兼容 `install.mjs` 的 argv[2] 传参；e2e 的版本断言改读 `package.json` 动态比对（消除硬编码版本漂移点）
+- **接线**：`distribute.mjs` 发版门禁家族验收 3 → **5 验证器**（selftest / sqlite-validate / mysql-validate / e2e-validate / protocol-validate，退出码 3 判过明示）；`install.mjs` 步骤 5 E2E 解析链改为 `DBMCP_E2E` > 技能仓库 fullchain_test.mjs > **随包 mcp/e2e-validate.mjs**——部署机从此必然执行全链路 E2E，不再因技能仓库未随包而跳过；`mcp/package.json` 新增 `validate:e2e` / `validate:protocol` scripts
+- **附带加固**：两套件 rpc 层加 30s 超时（回归挂死 → FAIL 而非套件挂起）；notification 无响应断言由恒真改为「stdout 行数不增」实断言（临时套件原断言恒真，属假绿点）
+
+**自测**：实测 2026-10-04 全绿：selftest 281/267、sqlite-validate 77、e2e-validate 42、protocol-validate 17，全部 0 failed（selftest/sqlite-validate 本轮无代码变更；mysql-validate 29 项真实 MySQL 基线仍为 2026-10-03）
+
+### V1.6.3（导出保真 + 协议错误可关联 + 连接首触去重）
+
+**修复（全链路 E2E 41 项 + 协议对抗 17 项实测抓获）**
+
+- **export JSON 导出保真**：JSON 导出此前复用响应面序列化，长单元格被截断（`<truncated` 标记）、二进制列只留 8 字节 hex 预览——导出文件是数据交付物，静默截断即数据丢失。现导出模式全量落盘（长文本不截断、Buffer 全量 hex），响应面截断行为不变（上下文成本护栏）；selftest 与 sqlite-validate 双钉（3000 字符长文本完整落盘且无截断标记）
+- **stdio 错误响应携带请求 id**：超长行（>2MB）拒绝此前回 `id: null`、坏 JSON 静默丢弃，客户端按 id 等待时**永久挂起**（协议对抗实测抓获）。现 `peekRpcId` 从坏行恢复请求 id：超长行回 `-32600`、JSON 解析失败回 `-32700`，均携带可关联 id；非 JSON 噪声行维持静默（stdout 洁净）
+- **getPool 并发首触去重**：并发首触同一源会创建两个连接池（SQLite 双 `DatabaseSync` 句柄泄漏、mysql/pg 双池浪费连接数）。现 in-flight 去重（`creating` Map），并发首触返回同一池实例，孤儿连接不再产生
+
+**自测**：selftest +4 项 → **281 项断言**（未初始化 267）+ sqlite-validate +1 项 → **77 项**（实测 2026-10-04 全绿：selftest 281/267、sqlite-validate 77、mysql-validate 29，全部 0 failed；mysql-validate 本轮无代码变更，真实 MySQL 基线仍为 2026-10-03）。另有临时全链路 E2E 41 项（16 工具真 stdio 链路：握手/发现/读链/守卫负例/写导出导入闭环）与协议对抗 17 项（超长行/坏 JSON/批量/id 边界/守卫对抗负例）全绿——两套件转正入仓库测试族为下一步
 
 ### V1.6.2（稳定次序修复 + 全工具面真实库钉测 + 文档纪律）
 

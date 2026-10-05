@@ -3,7 +3,7 @@
 // 退出码：0=成功 1=失败 2=被阻断（静态检查/缺参数）3=用法错误
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDirs, readConfig, logger, nowIso, readJson } from './lib/core.mjs';
+import { ensureDirs, readConfig, logger, nowIso, readJson, redactPath } from './lib/core.mjs';
 import { listFlows, loadFlow, listRuns, flowMarkdown } from './lib/store.mjs';
 import { runFlow, preflightFlow } from './lib/player.mjs';
 import { statusReport, pruneRuns, pruneAllRuns, pruneLogs } from './lib/ops.mjs';
@@ -49,6 +49,8 @@ function print(rep) {
   }
   if (rep.emptyGuard && rep.emptyGuard.suspicious) lines.push('空结果告警: ' + rep.emptyGuard.reason);
   if ((rep.screenshots || []).length) lines.push('截图: ' + rep.screenshots.length + ' 张');
+  if ((rep.videos || []).length) lines.push('录像: ' + rep.videos.length + ' 段（' + rep.videos.map((v) => path.basename(v)).join('、') + '）');
+  if (rep.timedOut) lines.push('总超时: 是（maxDurationMs=' + rep.maxDurationMs + 'ms，已优雅收尾）');
   if (rep.reportPath) lines.push('报告: ' + rep.reportPath);
   return lines.join('\n');
 }
@@ -186,7 +188,8 @@ async function main() {
 main()
   .then(async (code) => { await closeAll(); process.exit(code || 0); })
   .catch(async (e) => {
-    process.stderr.write('执行器异常: ' + String(e && e.stack ? e.stack : e) + '\n');
+    // stderr 会经定时包装器（>> logs/schedule-*.log）落盘，stack 同样脱敏后再写
+    process.stderr.write('执行器异常: ' + redactPath(String(e && e.stack ? e.stack : e)) + '\n');
     await closeAll();
     process.exit(1);
   });

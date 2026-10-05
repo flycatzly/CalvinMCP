@@ -3,10 +3,10 @@ name: playwright-verify
 description: |
   Playwright 端到端测试的「验收 / 门禁 / 执行 / 智能体」工具集：配置基线体检、用例静态扫描（20 条规则，ERROR 阻断）、
   失败聚类与四类归因、落盘式执行、PO 分层脚本生成（带生成门禁）、Excel 用例编排、团队规范校验，
-  以及自然语言声明式测试（说目标不说步骤：LLM 只做规划，执行与判定走确定性链路，输出 JSON Pass/Fail）
-  与页面探索巡检（死链/坏图/表单盘点）。
+  以及自然语言声明式测试（说目标不说步骤：LLM 只做规划，执行与判定走确定性链路，输出 JSON Pass/Fail，
+  定位失败走两层自愈、断言绝不自愈）、页面探索巡检（死链/坏图/表单盘点）与分页表格采集（翻页收集 + 两期对比）。
   用于「这批用例能不能合入」「这次失败该谁修」「长流程回归怎么跑不烧上下文」「手工用例表怎么变可执行回归」
-  「说个测试目标帮我验一遍」「帮我巡检这个页面有没有死链坏图」这类问题。
+  「说个测试目标帮我验一遍」「帮我巡检这个页面有没有死链坏图」「把分页的档案表都采下来和上期对比」这类问题。
   明确不负责：生成用例（官方 planner/generator/healer 做得更好）、搭建被测应用、自动修复断言、单元测试、
   纯接口契约测试、需要真机的移动端原生测试。也不自动提交修复 —— 只产出提案与门禁结论，判断必须由人来做。
 ---
@@ -29,6 +29,8 @@ description: |
 | 「团队规范怎么定 / 检查一下 AGENTS.md」 | 规范线：`check_standards` |
 | 「说个目标帮我验一遍：登录加购后购物车应有该商品」 | 智能体线：`nl_test_goal` |
 | 「帮我巡检这个页面，有没有死链坏图」 | 探索巡检：`explore_page` |
+| 「把这几页的档案表都采下来，和上期对比」 | 采集线：`collect_table` |
+| 「采集中断了 / 昨天没采完，从断点接着采」 | 采集线：`collect_table`（`resumeFrom` 断点续采） |
 
 ## 硬规则（每条都是一句 No，不含「尽量」）
 
@@ -104,7 +106,7 @@ CI 挂门禁读报告 JSON 的 `verdict` 字段。死链/坏图巡检用 `explor
 
 ## 自然语言使用示例
 
-用户不会记命令，说人话是常态。下面三个完整对话示范「听到什么 → 调什么 → 怎么答」；更多说法见使用文档 §12。
+用户不会记命令，说人话是常态。下面三个完整对话示范「听到什么 → 调什么 → 怎么答」；更多说法见 README「自然语言使用示例」。
 
 **门禁：「帮我看看这批用例能不能合入」**
 
@@ -200,11 +202,112 @@ playwright-verify/
 | `orchestrate_excel` | Excel 手工用例 → 可执行回归 |
 | `explain_rules` | 规则表自省（哪条为什么报、怎么关） |
 | `selfcheck` | 服务级自检（脱敏不变量、运行器、CLI、Python、LLM） |
-| `explore_page` | 页面探索巡检：死链/坏图/表单盘点，确定性判定出 Pass/Fail |
-| `nl_test_goal` | 智能体线：自然语言目标 → 受限计划 → 真执行真断言 → JSON verdict |
+| `explore_page` | 页面探索巡检：死链/坏图/表单盘点，确定性判定出 Pass/Fail；表单指纹（formsHash）+ 两期对比（diffAgainst） |
+| `nl_test_goal` | 智能体线：自然语言目标 → 受限计划 → 真执行真断言 → JSON verdict（定位失败两层自愈、自愈 LLM 有预算总闸，断言绝不自愈） |
+| `collect_table` | 分页表格采集：页码框/下一页翻页、三选止损、两期 diff、断点续采（`resumeFrom`，指纹不符拒续）、rows.json + CSV 只落盘 |
 
 ## 版本记录
 
+- **v1.8.15（2026-10-05）**：log_summary 按工具块 —— text 按工具段落改多行块、按调用量
+  降序、透出 maxMs 与 cache 三态/命中率；--json 零变化。protocol-check 115 → 116；
+  全量 13 套件 686 断言。
+- **v1.8.14（2026-10-05）**：安装器镜像式复制 —— 默认安装先清后拷（托管子树/现役 Skill
+  目录/bundle，源码删过的文件不留旧账），`--force` = 整目录重置。H23 沙箱真装三钉；
+  hardened-check 94 → 97；全量 13 套件 685 断言。
+- **v1.8.13（2026-10-05）**：对抗语料属性化生成 —— 每条 lint 规则自带 `samples`（bad/good，
+  `adversarialCorpus()` 展开、lint-check 真 lint 跑 40 案）；rules-check 覆盖门：新规则不带
+  语料进不了表。lint-check 32 → 53、rules-check 35 → 37；全量 13 套件 682 断言。
+- **v1.8.12（2026-10-05）**：explore_page 表单指纹与两期对比 —— facts 补采 `required`；
+  报告带 `formsHash`/逐表单 `hash`（字段重排不算漂移）；`diffAgainst` 指上一期 `factsFile`
+  出两期对比（字段增删/必填位变化/表单增删，明细有界 + total 诚实，不改 verdict，
+  不可读报错 DIFF_TARGET_INVALID）。nl-agent-check 127 → 133、nl-agent-e2e 18 → 21；
+  全量 13 套件 659 断言。
+- **v1.8.11（2026-10-05）**：趋势 structuredContent 瘦身 —— 全量趋势 JSON 落盘
+  `trend-*.json`（与 md 同名，含 sample，CI 对账以落盘为准）；structuredContent 有界化
+  （version 2：四列表各截 50 与 md 同一常量、去 sample、`*Total` 诚实计数、`contextTruncated`）；
+  format=json text 同口径。130 签名实测 50.9KB → 21.7KB（省 58%）。
+  signature-check 37 → 42、nl-agent-check 126 → 127；全量 13 套件 650 断言。
+- **v1.8.10（2026-10-05）**：计划缓存命中率观测 —— `PVMCP_LOG` 的 nl_test_goal 行扩
+  `cache=hit|miss|skip` 字段（其余工具不落；值取报告 planCache 单一源）；`log_summary`
+  按工具透出三态分布与命中率 `hit/(hit+miss)`（skip 不进分母、只有 skip 时 null）；
+  白名单外值进 malformed 不静默猜；无 cache 行输出与旧口径逐字节一致。
+  protocol-check 109 → 115、flow-check 41 → 44（真 stdio 双调用实测行格式）；
+  全量 13 套件 644 断言。
+- **v1.8.9（2026-10-05）**：趋势 md 行截断 —— 多报告趋势四个渲染列表按权重序各截前 50 行
+  + 诚实「还有 N 条」计数；结构化数据保全量，md 只截展示不截数据。
+  signature-check 31 → 37、nl-agent-check 125 → 126；全量 13 套件 635 断言。
+- **v1.8.8（2026-10-05）**：`nl_test_goal` 计划缓存 —— 同指纹（goal/url/provider/model）复用
+  LLM 规划、绝不复用执行（命中后仍全量真跑、证据新鲜落盘）；TTL 5 分钟 / 容量 8，
+  只缓存成功的 LLM 计划；报告增量字段 `planCache`（hit/miss/skip）可审计。
+  nl-agent-check 118 → 125、flow-check 34 → 41；全量 13 套件 628 断言。
+- **v1.8.7（2026-10-05）**：`summarize_report` 多报告趋势 —— 传 `files`（N 份报告路径或目录）
+  出通过率曲线 + 签名漂移（新签名/消除/持续），趋势表落盘 md 只回摘要；坏报告整体报错
+  不静默跳过；readOnlyHint 诚实翻 false。signature-check 27 → 31、nl-agent-check 115 → 118；
+  全量 13 套件 614 断言。
+- **v1.8.6（2026-10-05）**：同类参数整数化清扫收尾 —— `run_verify.retries/timeoutMs`、
+  `cli_session.timeoutMs`、`nl_test_goal.maxSteps` 换 `intArg`（小数参数层拒绝；
+  timeoutMs=0.5 曾被放行成 0.5ms 真超时）；`collect_table` 报告补 `pagesTotal`
+  （含基准累计页账，pagesScanned 保持本轮语义）。nl-agent-check 111 → 115、
+  flow-check 32 → 34；全量 13 套件 607 断言。
+- **v1.8.5（2026-10-05）**：`explore_page` 探活预算 —— 慢死主机整段放大（上限 50 条 ≈ 65s
+  无反馈）双层预算兜住：单条 `probeTimeoutMs`（默认 5000）+ 整段 `probeBudgetMs`（默认
+  20000）；耗尽后剩余链接逐条记不可达 + `budgetExhausted`、报告标注 partial（不静默跳过）；
+  `maxLinks` 换 `intArg`（2.5 拒绝）。nl-agent-check 105 → 111；全量 13 套件 601 断言。
+- **v1.8.4（2026-10-04）**：观测日志容量上限与轮转（`PVMCP_LOG_MAX_MB`，默认 2MB、0=关闭、
+  非法值回退默认并 stderr 提示）—— 超限轮转移 `<file>.1`，`log_summary` 提示轮转前件，
+  调用量少一段不再静默；协议套 102 → 109；全量 13 套件 595 断言。
+- **v1.8.3（2026-10-04）**：真实测试轮（真 stdio + 真浏览器 11 项实测）抓出 2 个参数语义 bug 修复 ——
+  整数参数严格校验（`intArg`）：`keyIndex`/`maxPages` 传小数参数层报「应为整数」，不再静默取整
+  跑出误导结果（keyIndex=1.5 曾误报「站点没数据」）；负向咬合抓出测试钉脆断并加固，4/4 具名回红。
+  args-check 42 → 46、nl-agent-check 103 → 105；全量 13 套件 588 断言。
+- **v1.8.2（2026-10-04）**：`collect_table` 断点续采（`resumeFrom`）—— 带上次 rows.json 从断点页续扫、
+  pages 链式归并可再续；基准指纹（url/keyIndex）不符拒绝续采（`COLLECT_STALE`），单页组合
+  `COLLECT_RESUME_NOT_APPLICABLE`（打开浏览器前拒）；nl-agent-check 94 → 103、flow-check 27 → 32，
+  1 组负向咬合 4 条具名钉回红；全量 13 套件 582 断言。
+- **v1.8.1（2026-10-04）**：自愈 LLM 调用预算硬化 —— 二级自愈加整次运行总闸 `healLlmBudget`
+  （默认 2、硬上限 10、0=不问 LLM），预算尽如实 `HEAL_LLM_BUDGET_EXHAUSTED`（LLM 零调用、
+  不静默降级），报告增量字段 healLlmBudget/healLlmUsed 可审计；nl-agent-check 85 → 94
+  （预算钉 +9），2 组负向咬合回退全红；全量 13 套件 568 断言。
+- **v1.8.0（2026-10-04）**：两篇文章差异化能力合入 —— 两层定位自愈（快照按名整词匹配 → LLM 从
+  ≤40 条元素清单挑 ref，选择题契约；**断言绝不自愈**）、第 14 个工具 `collect_table`（翻页采集/
+  两期 diff/CSV 只落盘）、flow-check 全流程验证套件（27 断言）。真实测试抓 5 个真 bug 修复 +
+  5 组负向咬合回退全红。工具面 13 → 14，全量 13 套件 559 断言。
+- **v1.7.3（2026-10-04）**：对抗语料轮 —— 修掉 7 个规则洞（PW002 链式 .only、PW008 链式接收者、
+  PW013 调用形态、PW006 前缀劫持与跨行断言漏报、PW106 有参等待误报、链式修饰容器误判成用例）；
+  扫描器套新增 18 条对抗语料钉（9 洞钉 + 9 守卫），14 → 32，全量 12 套件 518 断言。
+- **v1.7.2（2026-10-04）**：修复 `summarize_report` 静默全零假绿（坏 JSON/非报告形状现在
+  isError + REPORT_ERROR）；签名套 +4、协议套 +2，全量 12 套件 500 断言。
+- **v1.7.1（2026-10-04）**：真实测试修复轮 —— 修复 stdin EOF 静默丢调用（close 先排空队列再退出，
+  排空钉 40 连发钉住）；修复版本漂移（VERSION 只认仓库根 package.json）；错误码语义化
+  （失败出口强制 `errorCode` 短码，日志 `code=` 不再落字面 `isError`）。MCP 协议套 95 → 99，
+  全量 12 套件 494 断言。
+- **v1.7.0（2026-10-04）**：新增 `log_summary` 命令（消费 `PVMCP_LOG` 观测日志）：调用量（含被拒）、
+  成功率、延迟分布、错误分布一页纸，`--json` 可接后续处理；纯函数与 CLI 同一份判定，解析异常行
+  不静默丢。protocol-check 新增 8 项；加固 +1（H20 退出取证：崩溃退出保留输出尾部）；
+  MCP 协议套 87 → 95，全量 12 套件 490 断言。
+- **v1.6.0（2026-10-04）**：观测日志结构化（`PVMCP_LOG`）：每请求一行 `name/ms/outcome/code`，
+  三态（ok/error/rejected）全记账，延迟与错误分布可离线聚合；脱敏（参数值/密钥不落盘、哨兵钉住）
+  与防注入（`\n` 不拆行）。protocol-check 新增 C 段 7 项；MCP 协议套 80 → 87，全量 12 套件 481 断言。
+- **v1.5.0（2026-10-04）**：MCP 工具面补 `annotations` 副作用声明 —— 13 个工具逐个按真实副作用标注
+  只读/破坏性/幂等/openWorld 四类 hint（最坏情形定性，判定口径在 server.mjs 注释），`tools/list`
+  真实下发，客户端可据此自动放行或要求确认；行为零变化、契约向后兼容。protocol-check 新增 6 项
+  （声明完备、精确集合、语义自洽、线上真发）；MCP 协议套 74 → 80，全量 12 套件 474 断言。
+- **v1.4.0（2026-10-04）**：断言数单一源与 CI 口径机械对账（加固 H22）：逐套件断言数声明收进
+  `mcp/test/suites.mjs`（assertions / 零依赖态部分数 / . 前缀钉，coreCounts 派生核心数），
+  verify-all 逐套对账（实跑 ≠ 声明即失败，日常态也拦）；README 套件表、§15.3 判据行、
+  CI 三 job 定义全部机械对账；CI 加固（手动触发 + zero-dep 跨 Node 20/22/24 矩阵）。
+  加固 H22 新增 5 项（基座 89 → 93、存在性钉 2 → 3）；全量 12 套件 468 断言。
+- **v1.3.0（2026-10-04）**：全链路并行安全与通道优先级钉死（加固 H21）：套件表与波次规划抽出
+  `mcp/test/suites.mjs`（`planWaves`：非 serial 套件一波内并发、serial 套件各占独立末波，
+  部署副本整树比对独占最后跑），`--parallel` 四处踩踏点逐一封钉（会话名/产物名时间戳唯一、
+  `demo/generated-*` 三层排除、收尾 `kill-all` 防 rmSync EPERM）；浏览器通道优先级实证钉住
+  （显式 `--browser` > 配置文件 `channel` > CLI 默认，args-check 新增 2 条机器无关探针）；
+  `.gitattributes`/`.gitignore` 入库；GitHub Actions 三段 CI（零依赖态 + 双平台全量 + 发版门禁）；
+  H16 扩为 7 检（五份文档首条版本、§15.3-CORE 机械对账）、H21 新增 5 检；全量 12 套件 463 断言。
+- **v1.2.1（2026-10-04）**：CLI 失败摘要诊断质量（加固 H20）：根因行优先于堆栈噪声（daemon 崩溃时
+  不再只报 `daemonPid`），浏览器通道缺失直接附修法；源码树 CLI 通道配置自愈：
+  `verify-all --with-browser` 前置生成 `.playwright/cli.config.json`（与 setup-cli-config / install
+  共用同一决策矩阵，手工配置不覆盖）；`selfcheck` 新增「CLI 浏览器通道配置」点名；全量 12 套件 454 断言。
 - **v1.2.0（2026-10-03）**：纯净发布包口径收紧（无 `node_modules`、无 `.` 前缀文件/目录，解压/拷贝即可部署，
   零 npm 依赖，文档全量改为「拷贝即部署」口径）；部署文档拆分为《部署说明.md》+《部署说明.详细版.md》；
   加固 H18 实跑 `distribute` 验纯净产物；纯净包实测补三处（加固 H10/H14 对 `.` 前缀文件改存在性守卫、

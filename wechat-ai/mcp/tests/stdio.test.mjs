@@ -49,7 +49,7 @@ t("initialize 带使用说明", typeof init.result?.instructions === "string" &&
 send({ jsonrpc: "2.0", method: "notifications/initialized" });
 send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
 const list = await waitFor(2);
-t("tools/list 返回 63 个工具", list.result?.tools?.length === 63, "count=" + (list.result?.tools?.length ?? 0));
+t("tools/list 返回 73 个工具", list.result?.tools?.length === 73, "count=" + (list.result?.tools?.length ?? 0));
 t("每个工具都有 inputSchema", (list.result?.tools ?? []).every((x) => x.inputSchema?.type === "object"));
 
 send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "wai_status", arguments: {} } });

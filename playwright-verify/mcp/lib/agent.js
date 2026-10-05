@@ -18,6 +18,7 @@ import path from 'node:path';
 
 import { runCli, ARTIFACT_DIRS } from './cli.js';
 import { verdictOf } from './nlplan.js';
+import { tryHealStep, isLikelyLocatorFailure, HEALABLE_ACTS, createHealLlmBudget, DEFAULT_HEAL_LLM_BUDGET } from './heal.js';
 
 /**
  * 危险意图拒绝清单。命中即拒绝，不做「可能只是比喻」的放行 ——
@@ -85,9 +86,9 @@ export function assertTargetAllowed(url, { confirmProd = false } = {}) {
   return { ok: true, confirmUsed: looksProd && confirmProd === true };
 }
 
-/** 步骤结果 → 人话摘要行。 */
+/** 步骤结果 → 人话摘要行。自愈过的步骤带上标记（报告口径：失效步骤被自动适配要可见）。 */
 function stepLine(s) {
-  const mark = s.ok ? 'PASS' : 'FAIL';
+  const mark = s.ok ? (s.healed ? 'PASS↻' : 'PASS') : 'FAIL';
   const what = [s.act, s.target, s.value].filter(Boolean).join(' ');
   return `  ${mark} ${what}${s.detail ? `　${s.detail}` : ''}${s.evidence ? `　证据: ${s.evidence}` : ''}`;
 }
@@ -100,25 +101,28 @@ function stepLine(s) {
  * @param {string} o.cwd             工作目录（证据落这里）
  * @param {string} o.session         CLI 会话名
  * @param {boolean} [o.headed]       调试用有头
+ * @param {number} [o.healLlmBudget] 自愈第二层 LLM 调用预算（整次运行共享，默认 2，0=不问 LLM）
  * @param {Function} [o.runStep]     测试注入点（默认走 runCli）
- * @returns {Promise<{steps:Array, stopped:boolean, reason?:string}>}
+ * @returns {Promise<{steps:Array, stopped:boolean, reason?:string, healLlm:{budget:number, used:number}}>}
  */
-export async function executePlan({ steps, cwd, session, headed = false, runStep } = {}) {
+export async function executePlan({ steps, cwd, session, headed = false, healLlmBudget, runStep } = {}) {
   const results = [];
   const exec = runStep || defaultRunStep;
+  // 一次运行一个预算实例：自愈成功执行会继续，没有总闸的话每步都能烧一次 LLM
+  const healBudget = createHealLlmBudget(healLlmBudget ?? DEFAULT_HEAL_LLM_BUDGET);
   for (const step of steps) {
-    const r = await exec({ step, cwd, session, headed });
+    const r = await exec({ step, cwd, session, headed, healBudget });
     results.push(r);
     if (!r.ok) {
       // fail fast：失败后继续执行只会把现场搅浑，且后续步骤的 ok 不再有语义
-      return { steps: results, stopped: true, reason: r.detail || `${step.act} 失败` };
+      return { steps: results, stopped: true, reason: r.detail || `${step.act} 失败`, healLlm: { budget: healBudget.limit, used: healBudget.used } };
     }
   }
-  return { steps: results, stopped: false };
+  return { steps: results, stopped: false, healLlm: { budget: healBudget.limit, used: healBudget.used } };
 }
 
 /** 默认步骤执行器：计划动作 → playwright-cli 会话动作（证据走既有落盘约定）。 */
-export async function defaultRunStep({ step, cwd, session, headed }) {
+export async function defaultRunStep({ step, cwd, session, headed, healBudget }) {
   const started = Date.now();
   const done = (extra) => ({
     act: step.act, target: step.target, value: step.value,
@@ -130,12 +134,30 @@ export async function defaultRunStep({ step, cwd, session, headed }) {
       const r = await runCli({ cwd, session, subcommand: 'open', args: [step.target], headed });
       return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
     }
-    case 'click': {
-      const r = await runCli({ cwd, session, subcommand: 'click', args: [step.target], headed });
-      return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
-    }
+    case 'click':
     case 'fill': {
-      const r = await runCli({ cwd, session, subcommand: 'fill', args: [step.target, step.value], headed });
+      const args = step.act === 'fill' ? [step.target, step.value] : [step.target];
+      const r = await runCli({ cwd, session, subcommand: step.act, args, headed });
+      if (r.ok) return done({ ok: true, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
+
+      // 自愈门（文章一的差异化能力）：只救「定位类失败」的动作步。
+      // 边界钉死：expect_* 断言永不进这道门（HEALABLE_ACTS 不含断言）——
+      // 自愈只解决「怎么找到它」，不改变「判定什么」；断言失败永远如实红。
+      if (HEALABLE_ACTS.has(step.act) && isLikelyLocatorFailure(`${r.summary || ''} ${r.stderrTail || ''}`)) {
+        const healed = await tryHealStep({ step, cwd, session, headed, llmBudget: healBudget });
+        if (healed.ok) {
+          return done({
+            ok: true, healed: true, healedFrom: healed.healedFrom, healedTo: healed.healedTo,
+            via: healed.via,
+            detail: healed.detail, evidence: healed.evidence,
+          });
+        }
+        return done({
+          ok: false, healTried: true, healWhy: healed.why,
+          detail: `${r.summary}（自愈未成功：${healed.detail}）`,
+          evidence: healed.evidence || r.logFiles?.stdout, exitCode: r.exitCode,
+        });
+      }
       return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
     }
     case 'press': {
@@ -169,15 +191,26 @@ export async function defaultRunStep({ step, cwd, session, headed }) {
 /**
  * 组装 JSON Pass/Fail 报告（CI 挂门禁就看 verdict）。
  * 字段口径固定：goal / url / source / verdict / steps / problems / generatedAt。
+ * healedCount / healedSteps 是自愈线的**增量字段**（旧消费方不受影响）——
+ * 文章报告口径要求「失效步骤被自动适配的情况」可核对，业务问题仍走 problems。
+ * healLlmBudget / healLlmUsed 同为增量字段：二级自愈烧了几次 LLM 要可审计。
  */
-export function buildReport({ goal, url, source, plan, stepResults = [], problems = [], startedAt }) {
+export function buildReport({ goal, url, source, plan, stepResults = [], problems = [], startedAt, healLlm, planCache } = {}) {
+  const healedSteps = stepResults.filter((s) => s.healed)
+    .map((s) => ({ act: s.act, healedFrom: s.healedFrom, healedTo: s.healedTo, via: s.via }));
   return {
     goal,
     url,
     source, // 'llm' | 'fallback'
+    // 计划缓存口径（增量字段，旧消费方不受影响）：'hit'=命中缓存（只省规划，执行仍全量真跑）、
+    // 'miss'=本次现场规划（llm 或 fallback）、'skip'=调用方指定 llm=off。
+    planCache: planCache || 'miss',
     verdict: verdictOf(stepResults),
     steps: stepResults,
     problems,
+    healedCount: healedSteps.length,
+    healedSteps,
+    ...(healLlm ? { healLlmBudget: healLlm.budget, healLlmUsed: healLlm.used } : {}),
     plan: plan ? plan.steps : [],
     startedAt: startedAt || null,
     generatedAt: new Date().toISOString(),

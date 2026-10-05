@@ -194,7 +194,7 @@ function runGate(target, sourceMode = false) {
       // 套件契约：selftest/tools/integration 都从 mcp/ 起跑（README 调用姿势：
       // node test\integration.mjs —— runner CLI 用例按 process.cwd() 找 mcp/runner.mjs）
       step('selftest 状态机自检', process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('tools 工具面 52 用例', process.execPath, [path.join(mcpDir, 'test', 'tools.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('tools 工具面 63 用例', process.execPath, [path.join(mcpDir, 'test', 'tools.mjs')], { cwd: mcpDir, env }, [0, 3]);
       step('integration 全链路', process.execPath, [path.join(mcpDir, 'test', 'integration.mjs')], { cwd: mcpDir, env, timeout: 900_000 }, [0, 3]);
     }
   } finally {

@@ -1034,6 +1034,7 @@ function normalizeFollowUp(value) {
 /**
  * 更新商机：stage/priority/next_action 写入即锁定，unlock* 解锁；
  * status 变化写 closed_at；notes 追加 "[时间] 备注"；没有可更新字段时抛错。
+ * follow_up 有两个入口名：对外参数 followUp（wai_opportunity_update）与内部名 nextFollowUp（triage 传入），都写同一列。
  */
 export function updateOpportunity(id, patch = {}) {
   ensureOpportunitySchema();
@@ -1077,8 +1078,11 @@ export function updateOpportunity(id, patch = {}) {
     set("next_action_locked", 1);
   } else if (patch.unlockNextAction) set("next_action_locked", 0);
 
+  // followUp（对外）/nextFollowUp（triage 内部）都要落到 follow_up；
+  // 此前只认 nextFollowUp，wai_opportunity_update 的 followUp 被静默丢弃，单独更新它还会误报「至少提供一项」
+  const followRaw = patch.nextFollowUp != null ? patch.nextFollowUp : patch.followUp;
   if (patch.clearFollowUp) set("follow_up", null);
-  else if (patch.nextFollowUp != null) set("follow_up", normalizeFollowUp(patch.nextFollowUp));
+  else if (followRaw != null && String(followRaw).trim() !== "") set("follow_up", normalizeFollowUp(followRaw));
 
   if (patch.note && String(patch.note).trim()) {
     const entry = "[" + fmtLocal(new Date(nowMs)) + "] " + String(patch.note).trim();

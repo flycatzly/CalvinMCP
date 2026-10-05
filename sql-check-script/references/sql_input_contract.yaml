@@ -1,4 +1,4 @@
-# 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
+# 版本 v1.4.28 · sql-check-script · 更新记录见 README.md「更新记录」
 # SQL 输入契约（用户填写）
 # 全链路检测前必填；缺了它 AI 只能瞎猜。
 
@@ -6,7 +6,7 @@ mode: check                     # check=模式A质量检测 / analysis=模式B�
 
 project_path: <项目根目录>   # 项目根目录（探查 SQL 用）
 datasource: 订单库                          # 数据源/库名（定位用）
-environment: production                     # TEST / PRE / UAT / DEV / PROD
+environment: TEST                          # TEST / PRE / UAT / DEV / PROD（枚举值，须命中白名单 environment_allowlist；PROD 默认禁止）
 source: <source_id>                         # calvin-db-mcp 的 source id（find_database 定位后填）
 
 sql: |

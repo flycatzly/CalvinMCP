@@ -1,4 +1,5 @@
 // mock Reader：内置虚构演示数据（不含任何真实聊天），用于零数据验证全链路
+import { minMax } from "../util.mjs";
 import { envelope, paginate, sortByTime, toReaderMessage } from "./common.mjs";
 
 const H = 3600_000;
@@ -98,10 +99,13 @@ export function createMockReader({ now = new Date() } = {}) {
     status: async () => envelope({ tool: A, command: "status", data: { state: "ready", reader: "mock", decrypted_dir: "(demo)", message_count: get().length, session_count: byChat().size, detail: "演示数据：完全虚构，不含真实聊天" } }),
     sessions: async ({ limit = 80, typeFilter } = {}) => {
       const kinds = typeFilter ? String(typeFilter).split(",").map((x) => x.trim()) : null;
-      const rows = [...byChat().entries()].map(([name, msgs]) => ({
-        name, kind: /群/.test(name) ? "group" : "private", message_count: msgs.length,
-        first_ts: Math.min(...msgs.map((m) => m.ts)), last_ts: Math.max(...msgs.map((m) => m.ts)),
-      })).filter((s) => !kinds || kinds.includes(s.kind)).sort((a, b) => b.last_ts - a.last_ts);
+      const rows = [...byChat().entries()].map(([name, msgs]) => {
+        const { min, max } = minMax(msgs.map((m) => m.ts));
+        return {
+          name, kind: /群/.test(name) ? "group" : "private", message_count: msgs.length,
+          first_ts: min, last_ts: max,
+        };
+      }).filter((s) => !kinds || kinds.includes(s.kind)).sort((a, b) => b.last_ts - a.last_ts);
       return envelope({ tool: A, command: "sessions", data: { sessions: rows.slice(0, limit) } });
     },
     resolveChat: async (name, { typeFilter } = {}) => {

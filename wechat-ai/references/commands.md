@@ -1,4 +1,4 @@
-# 命令参考：63 个 wai_ 工具
+# 命令参考：73 个 wai_ 工具
 
 本文件是 wechat-ai MCP 服务器的逐条参考。工具名、参数名与默认值以 mcp/server.mjs 为准；参数是一个 JSON 对象，写法示例：
 
@@ -325,17 +325,22 @@
 
 - 用途：批量采集——把多条选中内容作为一批登记，进入 pending → staging → ready → delivering → done 状态机。
 - 参数（items 必填）：items（[{title,chat,body}] 数组）、source（来源）、scene（场景）、target（目标）。
-- 返回与组合：批次 id、条目数与初始状态。 组合：wai_batch_create → wai_batch_status → wai_batch_deliver。
+- 返回与组合：批次 id、条目数与初始状态。 组合：wai_batch_create → wai_batch_stage → wai_batch_deliver。
 ### wai_batch_status
 
 - 用途：查看批次状态与逐条进度；失败的条目会保留原始载荷。
 - 参数：id（批次 id，缺省列出全部批次）。
-- 返回与组合：单批时给出状态与逐条进度；不给 id 时返回 batches 列表。 组合：投递后复查；失败条目重试回 pending 再投。
+- 返回与组合：单批时给出状态与逐条进度；不给 id 时返回 batches 列表。 组合：投递后复查；失败条目用 wai_batch_stage 重新暂存。
+### wai_batch_stage
+
+- 用途：暂存批次条目并标记可交付（→ staging → ready）：原始载荷写进 items/<index>.json 永不丢弃。
+- 参数（id 必填）：id、index（条目序号，省略=全部未交付条目）、text（条目正文，仅单条 index 时可用）、file（附件路径，仅单条 index 时可用）、ready（暂存后标记 ready，默认 true）。
+- 返回与组合：staged/ready/skipped 计数与逐条 details、批次计数。 组合：wai_batch_create → wai_batch_stage → wai_batch_deliver；失败条目重新 stage 即重试；ready:false 只暂存，人工核对后再 stage 一次标记。
 ### wai_batch_deliver
 
-- 用途：投递整个批次；支持重试失败项。
+- 用途：投递整个批次的 ready 条目；未暂存/失败条目先用 wai_batch_stage 处理（重试=重新暂存）。
 - 参数（id 必填）：id、target（目标 id）、dryRun（只预览）。
-- 返回与组合：批次投递结果与每条终态。 组合：先 dryRun 预览，再正式投递；部分失败时只重试失败项。
+- 返回与组合：批次投递结果与每条终态。 组合：先 dryRun 预览，再正式投递；部分失败时用 wai_batch_stage 重暂存失败条目再投。
 
 ## 九、只读 Reader 入口
 ### wai_reader
@@ -345,6 +350,64 @@
 - 返回：对应子命令的数据载荷 + source 标识；未知子命令返回错误与可用列表。
 - 常见子命令：resolve-chat（按名字核验会话）、timeline（按会话读时间线）、context（按 localId 读上下文）、search（检索）、members（群成员）、export（导出）、sql（只读查询）。
 - 组合：wai_reader { "command": "status" } 判断通道是否 ready → 再进入语义工具。
+
+## 十、聊天记录分析
+
+对应「微信聊天记录分析提示词全集」A–I 模块（提示词骨架见 references/analysis-prompts.md）。九个工具共用时间窗参数（hours / days / since / until / week / month，默认 30 天）与 source、allowDemo、out（输出目录：写出 `<kind>_report.md` + `<kind>.json`，落盘前脱敏，拒绝写入仓库内）。全部只读分析：不发送消息、不改微信；证据带 msg_id 且脱敏（手机号/身份证/卡号/验证码打码）；不做医疗/法律/投资定性。
+
+### wai_period_report
+
+- 用途：A 年度/月度聊天报告——消息量与类型分布、活跃时段（小时/星期/日/月）、Top 联系人与群、关键词/口头禅/表情、消息长度、回复间隔、连续聊天天数与最长静默、关系升温降温、5-10 条洞察。
+- 参数：top（排行条数，默认 20）、时间窗、source、allowDemo、out。
+- 返回与组合：period、total_messages、type_breakdown、active_hours/weekdays、top_contacts/groups、keywords、catchphrases、emojis、reply_interval、activity、relationship_trend、insights、caliber。 组合：年度报告用 days: 365；配合 wai_social_graph / wai_sentiment_trend 补充关系与氛围解读。
+
+### wai_social_graph
+
+- 用途：B 社交关系——谁主动联系我最多 / 我主动联系谁最多、回复间隔（中位）、双向互动比例、关系升温降温、群内核心与边缘成员、跨群桥梁（近似）、同群共现聚类、互动模式线索（只描述不评判）。
+- 参数：top（默认 15）、gapHours（对话段切分间隔小时，默认 4）、时间窗、source、allowDemo、out。
+- 返回与组合：overview、who_contacts_me_most、who_i_contact_most、reply_time、bidirectional、relationship_change、group_network、bridge_members、clusters、interaction_notes、caliber。 组合：wai_person 看单人细节；不做道德评判、不下「谁疏远你」的定性结论。
+
+### wai_sentiment_trend
+
+- 用途：C 情绪与心理趋势——积极/中性/消极比例、每日情绪得分、波动最大的日子、压力源话题、冲突/安慰词、夜间负面、需要关注的时段。文本情绪线索，**不是心理或医疗诊断**。
+- 参数：时间窗、source、allowDemo、out。
+- 返回与组合：daily_sentiment、positive/negative/neutral_ratio、avg_score、volatility_periods、stress_topics、conflict_words、comfort_words、night_negative_messages、high_risk_periods、limitations。 组合：深夜低落消息配合 wai_task_extract 看是否有积压事项；引用原文只保留脱敏短引。
+
+### wai_task_extract
+
+- 用途：D 时间与任务管理——抽取待办/约定/会议/提醒/生日/缴费/行程，给负责人（我答应别人 / 别人答应我）、截止、状态（待确认|已确认|已完成|逾期）、来源 msg_id 与置信度；可生成 ICS 日历片段。
+- 参数：includeIcs（是否附 ICS，默认 true）、时间窗、source、allowDemo、out。
+- 返回与组合：tasks、stats、ics。 组合：模糊时间标「需确认」，不臆造截止日；ICS 由用户导入自己的日历，服务器不做任何日历写入。
+
+### wai_finance
+
+- 用途：E 财务与消费记录——抽取转账/红包/AA/收付款/购物/账单流水，月度收支与净额、消费类别、高频交易对象、异常线索（大额/高频/未还）。**默认金额脱敏为区间**（showAmounts 才给精确值）；不提供任何投资/借贷/理财建议。
+- 参数：showAmounts（默认 false）、时间窗、source、allowDemo、out。
+- 返回与组合：entries、monthly、totals、top_counterparties、categories、suspicious。 组合：异常线索只是线索（needs_review），大额/未还项建议人工核实原消息（wai_chat_history）。
+
+### wai_memory
+
+- 用途：F 个人记忆与知识库——把重要事件/决策/经验/文件/照片/地点/链接整理成知识卡片与时间线（附 source_msg_ids）；给 query 时做检索式记忆问答（只引用命中，不编造）。
+- 参数：query（记忆问答查询，可选）、maxCards（卡片上限，默认 60）、时间窗、source、allowDemo、out。
+- 返回与组合：cards、timeline、stats、search_hint、answer（给 query 时）。 组合：先 wai_memory 建卡，之后「我们之前说的 XX」类问题用 query 直接问；查不到就说没找到，不臆测。
+
+### wai_content_analysis
+
+- 用途：G 内容分析——词频/口头禅/表情、话题聚类、意图识别（询问/约定/请求/抱怨/通知/安慰/冲突/确认/感谢/承诺）、实体抽取（时间/地点/人物/金额/组织/事件）、抽取式摘要、检索问答（给 query，附 msg_id）。
+- 参数：top（词频条数，默认 20）、query（检索问答查询，可选）、时间窗、source、allowDemo、out。
+- 返回与组合：lexical、topics、intents、entities、summary、qa（给 query 时）。 组合：wai_chat_search 定位 → wai_content_analysis 归纳 → wai_chat_history 取原文；摘要只用原文抽取，不生成原文没有的结论。
+
+### wai_team_review
+
+- 用途：H 工作/团队分析——沟通复盘（参与度/回复节奏）、决策追溯（谁在何时定了什么）、任务分配（负责人/截止/状态）、风险提醒（延期/阻塞/冲突/信息缺失）、客服质检线索、客户需求与异议、FAQ。企业场景需合规会话存档并告知员工；风险只提示不定性。
+- 参数：project（项目名称，可选）、时间窗、source、allowDemo、out。
+- 返回与组合：activity、decisions、assignments、risks、service_qc、sales、faq、scope_note。 组合：与 wai_task_extract 对齐分工与截止；与 wai_opportunity_sync 对齐客户需求线索（商机以商机管线为准）。
+
+### wai_risk_scan
+
+- 用途：I 安全/风控——诈骗话术（高回报/冒充/垫付/钓鱼）、敏感信息泄露（身份证/银行卡/手机号/验证码/密码/住址）、合规风险（收益承诺/回扣/内幕）、异常行为（线下转账/短链/删记录/频繁转账/深夜资金）。**只输出线索且 needs_review=true，必须人工复核**；未获数据主体授权不得运行。
+- 参数：goal（风控目标过滤，如 诈骗 / 合规 / 敏感信息泄露 / 异常，可选）、时间窗、source、allowDemo、out。
+- 返回与组合：risks（risk_id/type/level/evidence_msg_ids/脱敏 evidence_text/suggested_action/needs_review）、aggregates、stats、disclaimer。 组合：发布前另跑 wai_privacy_scan 做产物级门禁；线索不是违法/诈骗认定，标记误报后人工处置。
 
 ## 附：默认值与阈值
 

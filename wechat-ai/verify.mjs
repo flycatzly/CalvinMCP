@@ -30,8 +30,11 @@ const SUITES = [
   { name: "内容级口径（群聊矩阵/机会候选）", file: path.join(here, "mcp", "tests", "content2.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
   { name: "运维健壮性", file: path.join(here, "mcp", "tests", "robustness.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
   { name: "规模与增量语义", file: path.join(here, "mcp", "tests", "scale.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
+  { name: "分析引擎（A-I 九模块）", file: path.join(here, "mcp", "tests", "analytics.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
+  { name: "修复回归（BUG-1~6/8）", file: path.join(here, "mcp", "tests", "regression.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
+  { name: "契约面（outputSchema+record 信封）", file: path.join(here, "mcp", "tests", "contract.test.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ },
 ];
-if (!QUICK) SUITES.push({ name: "端到端验收（63 工具）", file: path.join(here, "mcp", "e2e.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ });
+if (!QUICK) SUITES.push({ name: "端到端验收（73 工具）", file: path.join(here, "mcp", "e2e.mjs"), parse: /=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/ });
 
 console.log("wechat-ai 验证\n" + "=".repeat(60));
 let bad = 0;

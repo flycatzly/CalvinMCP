@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "wechat-ai": {
+      "command": "node",
+      "args": [
+        "D:\\work\\MCP\\wechat-ai\\mcp\\server.mjs"
+      ]
+    }
+  }
+}

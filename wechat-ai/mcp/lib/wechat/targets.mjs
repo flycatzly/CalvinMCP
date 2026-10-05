@@ -486,24 +486,28 @@ export function deliver(payload, { target, scene = null, dryRun = false, entryId
     const ok = dryRun ? true : result.status === "ok";
     const fileList = result.files ?? [];
     const detail = String(result.detail ?? "");
-    const id = recordOperation({
-      action: dryRun ? "dry-run" : "forward",
-      target: t.id,
-      title: rendered.title,
-      chars: rendered.markdown.length,
-      files: fileList,
-      payload: {
-        target: { id: t.id, name: t.name, kind: t.kind },
-        scene: rendered.scene ? { id: rendered.scene.id, name: rendered.scene.name } : null,
+    // dryRun 契约：只预览不落盘 —— 不写 history/delivery 表（history.mjs 的留痕只属于真实执行）
+    let id = null;
+    if (!dryRun) {
+      id = recordOperation({
+        action: "forward",
+        target: t.id,
         title: rendered.title,
-        markdown: rendered.markdown,
-        prompt: rendered.prompt,
-        payload: p,
-      },
-      ok,
-      ts: at,
-    });
-    recordDelivery({ entryId, target: t.id, status: result.status, detail, path: result.path ?? null });
+        chars: rendered.markdown.length,
+        files: fileList,
+        payload: {
+          target: { id: t.id, name: t.name, kind: t.kind },
+          scene: rendered.scene ? { id: rendered.scene.id, name: rendered.scene.name } : null,
+          title: rendered.title,
+          markdown: rendered.markdown,
+          prompt: rendered.prompt,
+          payload: p,
+        },
+        ok,
+        ts: at,
+      });
+      recordDelivery({ entryId, target: t.id, status: result.status, detail, path: result.path ?? null });
+    }
     return {
       target: t.id,
       targetName: t.name,

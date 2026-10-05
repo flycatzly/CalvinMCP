@@ -133,6 +133,20 @@ if (!r.isError) {
 r = await call("export_data", { source: S, sql: "SELECT id, name, level FROM customers ORDER BY id", format: "json", filename: "customers.json" });
 check("export_data json: 3 customers, Alice in file (BigInt-safe serialization)", !r.isError && r.data.row_count === 3
   && fs.readFileSync(r.data.file, "utf8").includes("Alice"), r.text.slice(0, 100));
+// v1.6.3: export JSON 数据保真——长文本不得按响应面阈值（2000 字符）截断：导出文件是数据交接面，
+// 旧版 >2000 字符被截成 "<truncated N chars>" 属静默数据丢失（CSV 路径不截断，两条路径口径不一致）
+{
+  const longText = "x".repeat(3000);
+  r = await call("export_data", { source: S, sql: "SELECT '" + longText + "' AS note", format: "json", filename: "fidelity.json", overwrite: true });
+  if (!r.isError) {
+    const o = JSON.parse(fs.readFileSync(r.data.file, "utf8"));
+    check("export json 保真: 3000 字符长文本完整落盘（无截断标记）",
+      o.rows[0].note === longText && !fs.readFileSync(r.data.file, "utf8").includes("<truncated"),
+      "len=" + String(o.rows[0].note).length);
+  } else {
+    check("export json 保真: 3000 字符长文本完整落盘（无截断标记）", false, r.text.slice(0, 100));
+  }
+}
 r = await call("export_data", { source: S, sql: "SELECT 1", filename: "again.csv" });
 check("export_data first write of again.csv succeeds (覆盖场景构造)", r.isError === false, r.text.slice(0, 80)); // v1.4.1：旧断言恒真（|| true）属假绿，改为真实断言；覆盖拒绝由下一条钉住
 r = await call("export_data", { source: S, sql: "SELECT 1 AS x", format: "csv", filename: "customers.csv" });
@@ -142,8 +156,9 @@ check("export_data traversal filename cleaned into whitelist", !r.isError
   && r.data.file.replace(/\\/g, "/").includes("/exports/")   // 落点必须仍是白名单目录
   && fs.existsSync(r.data.file), r.data.file);                // 清洗后文件名（.._.._evil.csv）只是普通文件
 r = await call("export_data", { source: S, sql: "SELECT 1 AS x", format: "csv", filename: ".." });
-check("export_data '..' + ext becomes ordinary in-whitelist file", !r.isError
-  && r.data.file.replace(/\\/g, "/").includes("/exports/") && r.data.file.endsWith("..csv"), r.data.file);
+// v1.6.13：病态名（清洗后为空）显式拒绝——旧版静默拼出 "...csv" 垃圾文件名（与 selftest ". "/"..." 钉同语义）
+check("export_data degenerate '..' name rejected (no ...csv garbage)", r.isError
+  && /清洗后为空/.test(r.text), r.text.slice(0, 120));
 r = await call("export_data", { source: S, sql: "DELETE FROM customers" });
 check("export_data refuses write SQL (read-only guard)", r.isError, r.text.slice(0, 80));
 
@@ -270,6 +285,75 @@ r = await call("column_stats", { source: S, table: "hist_check", column: "v", hi
 const hgW = !r.isError && r.data.histogram ? r.data.histogram : [];
 const hgWSum = hgW.reduce((a, b) => a + Number(b.row_count), 0);
 check("histogram + where: 仅 a 行入桶（合计 50）", !r.isError && hgWSum === 50, r.text.slice(0, 120));
+
+// ⑩i v1.6.19: 文本列画像语义锚定（跨方言 avg 差异逐库钉住——sqlite/MySQL 非数值强转 0、PG 类型门控 NULL；
+// 同名断言存在于三套件，改任何一库的语义都会在对应真库套件上炸出来）
+r = await call("column_stats", { source: S, table: "hist_check", column: "tag" });
+const tgs = !r.isError ? r.data.stats : {};
+check("column_stats 文本列语义锚定: min/max 字典序 a/c + avg 非数值强转 0（sqlite）",
+  !r.isError && Number(tgs.row_count) === 100 && Number(tgs.non_null) === 100 && Number(tgs.distinct_values) === 3
+    && tgs.min_value === "a" && tgs.max_value === "c" && Number(tgs.avg_value) === 0,
+  r.text.slice(0, 160));
+
+// ⑩j v1.6.20: 直方图退化边界语义锚定（三库实测一致后逐库钉住）——hi=lo 防除零单桶、两值稀疏桶 +
+// 末桶封顶、文本列空数组收口（v1.6.20 修复前 mysql/sqlite 是 null 索引脏桶、PG 42883 硬错误）
+r = await call("column_stats", { source: S, table: "hist_check", column: "v", histogram: { buckets: 10 }, where: "v = 7" });
+const hgS = !r.isError && r.data.histogram ? r.data.histogram : [];
+check("histogram 退化锚定: min=max 单桶 [7,8)×1（hi=lo 宽 1.0 防除零）",
+  !r.isError && hgS.length === 1 && Number(hgS[0].bucket_index) === 0 && Number(hgS[0].row_count) === 1
+    && Number(hgS[0].bucket_lower) === 7 && Number(hgS[0].bucket_upper) === 8,
+  JSON.stringify(hgS));
+r = await call("column_stats", { source: S, table: "hist_check", column: "v", histogram: { buckets: 3 }, where: "v = 0 OR v = 99" });
+const hg2 = !r.isError && r.data.histogram ? r.data.histogram : [];
+check("histogram 退化锚定: 两值三桶稀疏（0→桶0、99→末桶封顶桶2，桶1 空缺不产行）",
+  !r.isError && hg2.length === 2 && Number(hg2[0].bucket_index) === 0 && Number(hg2[0].row_count) === 1
+    && Number(hg2[0].bucket_lower) === 0 && Number(hg2[0].bucket_upper) === 33
+    && Number(hg2[1].bucket_index) === 2 && Number(hg2[1].bucket_upper) === 99,
+  JSON.stringify(hg2));
+r = await call("column_stats", { source: S, table: "hist_check", column: "tag", histogram: { buckets: 4 } });
+const hgT = !r.isError && r.data.histogram ? r.data.histogram : null;
+check("histogram 文本列锚定: 非数值列空数组收口（不炸不脏，三库统一）",
+  !r.isError && Array.isArray(hgT) && hgT.length === 0,
+  r.text.slice(0, 160));
+
+// ⑩k v1.6.21: 全 NULL 列 / 单行列边界锚定（三库探针实测一致后钉住）——全 NULL 域 rng lo/hi=NULL
+// → 宽 NULL → 桶号 NULL → 空数组收口（min/max/avg=NULL 不除零不崩）；单行域 hi=lo → 宽 1.0 防除零
+// 单桶 [v,v+1)。空表同 NULL-rng 路径由 ⑩l（v1.6.22）锚定。
+await call("create_table", { source: S, sql: "CREATE TABLE hgnull_check (id INTEGER PRIMARY KEY, vg INTEGER, tg TEXT)" });
+await call("create_table", { source: S, sql: "CREATE TABLE hgsingle_check (id INTEGER PRIMARY KEY, v INTEGER)" });
+await call("execute", { source: S, sql: "INSERT INTO hgnull_check (id, vg, tg) VALUES (1, NULL, NULL), (2, NULL, NULL), (3, NULL, NULL)" });
+await call("execute", { source: S, sql: "INSERT INTO hgsingle_check (id, v) VALUES (1, 7)" });
+const gn1 = await call("column_stats", { source: S, table: "hgnull_check", column: "vg", histogram: { buckets: 4 } });
+const gt1 = await call("column_stats", { source: S, table: "hgnull_check", column: "tg", histogram: { buckets: 4 } });
+const gs1 = await call("column_stats", { source: S, table: "hgsingle_check", column: "v", histogram: { buckets: 4 } });
+const gnH = gn1.data?.histogram, gnS = gn1.data?.stats || {};
+const gtH = gt1.data?.histogram;
+const gsH = gs1.data?.histogram, gsS = gs1.data?.stats || {};
+check("histogram 边界锚定: 全 NULL 列空数组收口（min/max/avg=NULL 不除零）+ 单行列单桶 [7,8)×1",
+  !gn1.isError && Array.isArray(gnH) && gnH.length === 0
+    && Number(gnS.row_count) === 3 && Number(gnS.non_null) === 0 && Number(gnS.distinct_values) === 0
+    && gnS.min_value == null && gnS.max_value == null && gnS.avg_value == null
+    && !gt1.isError && Array.isArray(gtH) && gtH.length === 0
+    && !gs1.isError && Array.isArray(gsH) && gsH.length === 1 && Number(gsH[0].bucket_index) === 0
+    && Number(gsH[0].row_count) === 1 && Number(gsH[0].bucket_lower) === 7 && Number(gsH[0].bucket_upper) === 8
+    && Number(gsS.min_value) === 7 && Number(gsS.max_value) === 7,
+  (gn1.isError ? gn1.text : gt1.isError ? gt1.text : gs1.text).slice(0, 160));
+
+// ⑩l v1.6.22: 空表（0 行）histogram/stats 边界锚定（探针 12 项三库实测一致后钉住）——0 行域
+// MIN/MAX=NULL → 同全 NULL 列 NULL-rng 路径 → 空数组收口；row_count=0/non_null=0/distinct=0、
+// min/max/avg=NULL 不除零，top_values 空数组。建表不插行即空表，探针表随 tmp 目录清理。
+await call("create_table", { source: S, sql: "CREATE TABLE hgempty_check (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)" });
+const ge1 = await call("column_stats", { source: S, table: "hgempty_check", column: "v", histogram: { buckets: 4 }, top_values: { limit: 3 } });
+const ge2 = await call("column_stats", { source: S, table: "hgempty_check", column: "s", histogram: { buckets: 4 } });
+const geS = ge1.data?.stats || {};
+check("histogram/stats 空表锚定: 0 行表空数组收口（row_count=0、min/max/avg=NULL 不除零）+ top_values 空数组",
+  !ge1.isError && Array.isArray(ge1.data?.histogram) && ge1.data.histogram.length === 0
+    && Array.isArray(ge1.data?.top_values) && ge1.data.top_values.length === 0
+    && Number(geS.row_count) === 0 && Number(geS.non_null) === 0 && Number(geS.distinct_values) === 0
+    && geS.min_value == null && geS.max_value == null && geS.avg_value == null
+    && !ge2.isError && Array.isArray(ge2.data?.histogram) && ge2.data.histogram.length === 0
+    && Number(ge2.data?.stats?.row_count) === 0 && Number(ge2.data?.stats?.non_null) === 0,
+  (ge1.isError ? ge1.text : ge2.isError ? ge2.text : JSON.stringify({ v: ge1.data, s: ge2.data })).slice(0, 160));
 
 // ⑪ 清理
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ }

@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boolArg, numArg, arrayArg } from '../lib/args.js';
+import { boolArg, numArg, intArg, arrayArg } from '../lib/args.js';
 import { resolvePlaywrightRunner, resolveCliRunner } from '../lib/runner.js';
 import { handleMessage } from '../server.mjs';
 
@@ -75,6 +75,13 @@ check('numArg undefined → 默认', numArg(undefined, 'x', 42) === 42);
 throws('numArg 非数字字符串报错', () => numArg('abc', 'x'), /应为数字/);
 throws('numArg NaN 报错', () => numArg(NaN, 'x'), /应为数字/);
 throws('numArg 空字符串报错', () => numArg('', 'x'), /应为数字/);
+// intArg：下标/计数参数专用 —— 浮点绝不静默取整（keyIndex=1.5 → 静默零行误报「站点没数据」，实测踩过）
+check('intArg 整数/数字字符串/3.0 放行，负整数也放行（夹取归调用方）',
+  intArg(5, 'x') === 5 && intArg('30000', 'x') === 30000 && intArg(3.0, 'x') === 3
+  && intArg(undefined, 'x', 7) === 7 && intArg(-2, 'x') === -2);
+throws('intArg 数字浮点报错（不静默取整）', () => intArg(1.5, 'x'), /应为整数/);
+throws('intArg 字符串小数同样报错', () => intArg('2.5', 'x'), /应为整数/);
+throws('intArg 非数字仍报「应为数字」（下层语义不丢）', () => intArg('abc', 'x'), /应为数字/);
 check('arrayArg 数组', JSON.stringify(arrayArg(['a', 'b'], 'x')) === '["a","b"]');
 check('arrayArg 单字符串 → 单元素数组', JSON.stringify(arrayArg('a', 'x')) === '["a"]');
 check('arrayArg undefined → 空数组', arrayArg(undefined, 'x').length === 0);
@@ -173,6 +180,62 @@ if (!resolveCliRunner(ROOT)) {
 
   // 清理本次产物
   for (const f of files) { try { fs.unlinkSync(f); } catch { /* 忽略 */ } }
+}
+
+/* ================= D) 浏览器通道优先级：显式 --browser > 配置文件 channel ================= */
+/*
+ * 钉的是「显式参数 > 配置文件 > CLI 默认」这条优先级链（docs: cli-mode.md 通道配置节）。
+ * 为什么值得钉：配置文件 channel 与命令行 --browser 同时存在时，谁生效是第三方 CLI 的
+ * 语义 —— 如果哪天反过来（配置压过显式参数），症状是「命令行指了浏览器却打开了另一个」，
+ * 不报错、只是行为与说好的不一样，最难查的那类。
+ *
+ * 实测方法（不依赖本机装了什么浏览器，也与 daemon 冷热无关）：临时目录里放一份
+ * channel 指向「不存在的通道名」的配置，用 --config 显式指给 CLI（每次调用都生效，
+ * 实测过预热 daemon 也照样认），看失败信息点名谁 ——
+ *   · 不带 --browser → 失败必须点名配置里的假通道名（配置生效；实测报
+ *     `Unsupported chromium channel "..."`）；
+ *   · 带 --browser X → 结果里**不得**再出现假通道名（显式参数覆盖配置；
+ *     X 能真打开就成功，打不开则失败信息点名 X 或缺可执行文件 —— 与配置无关）。
+ * 两问都不看「成功与否」，只看「谁的名字被点名」—— 无浏览器的机器同样可判，
+ * 断言数因此与机器无关（CORE 判据不用为环境加项）。
+ */
+log('');
+log('=== D) 浏览器通道优先级（显式 --browser 覆盖配置文件 channel） ===');
+{
+  const BOGUS = 'nonexistent-channel-xyz';
+  if (!resolveCliRunner(ROOT)) {
+    log('SKIP  D) 浏览器通道优先级（缺可选依赖 @playwright/cli：纯净包口径 —— 可选依赖由被测项目/本机提供）');
+  } else {
+    const { runCli } = await import('../lib/cli.js');
+    const { pickChannel } = await import('../../skill/playwright-verify/scripts/cli-config.mjs');
+    const { channel } = pickChannel({ platform: process.platform });
+    const flagVal = channel || 'chromium';   // 只是个「要试的名字」：打不开也会点它，而不是配置的假名字
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-prio-'));
+    try {
+      const cfgPath = path.join(tmp, 'cli.config.json');
+      fs.writeFileSync(cfgPath, JSON.stringify({
+        _说明: 'args-check D) 优先级探针：channel 指向不存在的通道，看失败点名谁就是谁生效',
+        _平台: `${process.platform} (probe)`,
+        browser: { browserName: 'chromium', launchOptions: { channel: BOGUS } },
+      }, null, 2));
+      const PAGE = 'data:text/html,' + encodeURIComponent('<h1>prio</h1>');
+      const session = `prio-${Date.now().toString(36)}`;
+
+      const viaCfg = await runCli({ cwd: ROOT, session, subcommand: 'open', args: [PAGE, '--config', cfgPath] });
+      const cfgText = `${viaCfg.summary || ''} ${viaCfg.stderrTail || ''}`;
+      check('无 --browser 时配置文件 channel 生效（失败点名配置的通道，不静默换别的）',
+        !viaCfg.ok && cfgText.includes(BOGUS), cfgText.slice(0, 120));
+
+      const viaFlag = await runCli({ cwd: ROOT, session, subcommand: 'open', args: [PAGE, '--config', cfgPath, '--browser', flagVal] });
+      const flagText = `${viaFlag.summary || ''} ${viaFlag.stderrTail || ''}`;
+      check('显式 --browser 覆盖配置文件 channel（结果不再点名配置的假通道）',
+        !flagText.includes(BOGUS), flagText.slice(0, 120));
+
+      await runCli({ cwd: ROOT, session, subcommand: 'close', args: [] });
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 临时目录残留无害 */ }
+    }
+  }
 }
 
 log('');

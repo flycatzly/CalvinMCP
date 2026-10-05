@@ -1,7 +1,7 @@
 // web-rpa-mcp — 回放引擎：执行步骤 / 结果校验 / 自愈学习 / 证据截图 / 运行报告
 import fs from 'node:fs';
 import path from 'node:path';
-import { DIRS, ensureDirs, readConfig, logger, stampId, maskSecret, nowIso } from './core.mjs';
+import { DIRS, ensureDirs, readConfig, logger, stampId, maskSecret, maskingEnabled, redactKeyList, nowIso, resolveRunBudget } from './core.mjs';
 import { launchContext, closeContext, closeAll } from './browser.mjs';
 import {
   acquireLock, releaseLock, releaseAllLocks, lockInfo,
@@ -9,7 +9,7 @@ import {
 } from './ops.mjs';
 import { locate, probe, installHelpers, buildLocator, frameSelectorsToCss } from './locators.mjs';
 import { resolveParams, resolveDeep } from './vars.mjs';
-import { saveRun, stepLabel, backupFlow } from './store.mjs';
+import { saveRun, stepLabel, backupFlow, runDir } from './store.mjs';
 import { lintFlow } from './lint.mjs';
 import { sendNotify, composeRunMessage, shouldNotify } from './notify.mjs';
 
@@ -43,6 +43,23 @@ function isRetryable(step) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+/** 距运行级总超时（run.maxDurationMs）还剩多少毫秒；未启用时为 Infinity */
+function remainingMs(ctx) {
+  if (!ctx || !ctx.deadline) return Infinity;
+  return Math.max(0, ctx.deadline - Date.now());
+}
+
+/** 总超时专用错误：信息里说清楚"卡在哪、跑了多久"，便于无人值守时定位 */
+function runTimeoutError(ctx) {
+  const e = new Error(
+    '总超时：本次运行超过 maxDurationMs=' + (ctx.maxDurationMs || 0) + 'ms（已运行 ' +
+    Math.round((Date.now() - (ctx.t0 || Date.now())) / 1000) + 's，共 ' + (ctx.steps || []).length +
+    ' 步，停在第 ' + (ctx.currentStep || 0) + ' 步），已中断执行并优雅收尾（留证截图、写报告、发告警、释放锁）'
+  );
+  e.code = 'RUN_TIMEOUT';
+  return e;
+}
+
 /* ---------------- 无人值守：崩溃收尾 / 弹窗 / 截图脱敏 ---------------- */
 
 let _crashHandlersInstalled = false;
@@ -62,13 +79,29 @@ function installCrashHandlers() {
 
 const MASK_CSS = 'input[type="password"],[data-rpa-mask]{filter:blur(6px) !important}';
 
+/* evaluate/title 这类原语没有超时参数：页面卡在"永不完成的导航"上时会无限等
+   （goto 超时只中止等待方，请求本身还挂在浏览器里）。失败收尾被它拖死时，
+   流程锁和 running 标记会被永久占住——凡是没有超时参数的等待都必须走这里，
+   超时按"没做到"降级返回 fallback，绝不让收尾路径无限挂起。 */
+function withTimeout(promise, ms, fallback) {
+  let timer = null;
+  const p = Promise.resolve(promise).catch(() => fallback);
+  return Promise.race([
+    p,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+      if (timer.unref) timer.unref();
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 /** 截图前把密码框等敏感字段打码（只在确实存在敏感字段时才动 DOM） */
 async function maskSensitive(page, cfg) {
   try {
     if (cfg.security && cfg.security.maskFieldsInScreenshots === false) return false;
-    const n = await page.evaluate(() => document.querySelectorAll('input[type="password"],[data-rpa-mask]').length);
+    const n = await withTimeout(page.evaluate(() => document.querySelectorAll('input[type="password"],[data-rpa-mask]').length), 3000, 0);
     if (!n) return false;
-    await page.evaluate((css) => {
+    const applied = await withTimeout(page.evaluate((css) => {
       let s = document.getElementById('__rpa_mask_style');
       if (!s) {
         s = document.createElement('style');
@@ -76,20 +109,21 @@ async function maskSensitive(page, cfg) {
         (document.head || document.documentElement).appendChild(s);
       }
       s.textContent = css;
-    }, MASK_CSS);
-    return true;
+      return true;
+    }, MASK_CSS), 3000, false);
+    return applied === true;
   } catch { return false; }
 }
 
 async function unmaskSensitive(page) {
-  try { await page.evaluate(() => { const s = document.getElementById('__rpa_mask_style'); if (s) s.remove(); }); }
+  try { await withTimeout(page.evaluate(() => { const s = document.getElementById('__rpa_mask_style'); if (s) s.remove(); }), 2000, null); }
   catch { /* ignore */ }
 }
 
 /** 统一截图入口：先打码，再截图，最后还原 */
 async function capture(page, cfg, file, fullPage) {
   const masked = await maskSensitive(page, cfg);
-  try { await page.screenshot({ path: file, fullPage: !!fullPage }); }
+  try { await page.screenshot({ path: file, fullPage: !!fullPage, timeout: 8000 }); }
   finally { if (masked) await unmaskSensitive(page); }
   return masked;
 }
@@ -362,7 +396,9 @@ function activePage(context, prev) {
 
 async function runStep(page, step, ctx) {
   const cfg = ctx.config;
-  const timeout = Number(step.timeoutMs || cfg.run.stepTimeoutMs);
+  // 步骤超时与运行总超时取小者：总时限快到时，把在跑步骤的等待窗口一起收紧，看门狗才能真的按时收尾
+  const timeout = Math.min(Number(step.timeoutMs || cfg.run.stepTimeoutMs), remainingMs(ctx) === Infinity ? Infinity : Math.max(1, remainingMs(ctx)));
+  const navTimeout = Math.min(Number(step.navTimeoutMs || cfg.run.navTimeoutMs), remainingMs(ctx) === Infinity ? Infinity : Math.max(1, remainingMs(ctx)));
 
   switch (step.op) {
     case 'goto': {
@@ -372,13 +408,20 @@ async function runStep(page, step, ctx) {
         await installHelpers(ctx.context);
         await target.addInitScript({ content: 'window.__rpaRecordActive = false;' });
       }
-      await target.goto(step.url, { waitUntil: step.waitUntil || 'domcontentloaded', timeout: Number(step.navTimeoutMs || cfg.run.navTimeoutMs) });
+      await target.goto(step.url, { waitUntil: step.waitUntil || 'domcontentloaded', timeout: navTimeout });
       ctx.page = target;
       return { page: target, detail: '已打开 ' + step.url };
     }
-    case 'sleep':
-      await sleep(Number(step.ms) || 1000);
+    case 'sleep': {
+      const want = Number(step.ms) || 1000;
+      const wait = Math.min(want, remainingMs(ctx));
+      await sleep(wait);
+      // 睡眠被总时限裁剪 = 本次运行注定超时，直接走统一超时收尾。
+      // 不能"裁剪后继续跑下一步"：Windows 定时器可能提前几毫秒醒，下一步的看门狗判定会擦边放行，
+      // 于是明明裁剪过等待的运行却以 pass 收尾——超时判定必须确定性，不能赌定时器精度。
+      if (wait < want && ctx.deadline) throw runTimeoutError(ctx);
       return { page, detail: '等待 ' + (step.ms || 1000) + 'ms' };
+    }
     case 'scrollTo': {
       // 滚动加载型列表（无限滚动）必须显式滚动，Playwright 的自动滚动只在"要点击时"发生
       if (step.locators && step.locators.length) {
@@ -397,7 +440,11 @@ async function runStep(page, step, ctx) {
             window.scrollTo(0, y);
           } catch (e) { /* ignore */ }
         }, { to, i });
-        await sleep(Number(step.waitMs) || 500);
+        const want = Number(step.waitMs) || 500;
+        const wait = Math.min(want, remainingMs(ctx));
+        await sleep(wait);
+        // 滚动间隔被总时限裁剪 = 本次运行注定超时，与 sleep 步骤同口径直接收尾，不赌定时器精度
+        if (wait < want && ctx.deadline) throw runTimeoutError(ctx);
       }
       return { page, detail: '已滚动到' + (to === 'top' ? '顶部' : '底部') + (times > 1 ? ' x' + times : '') };
     }
@@ -423,7 +470,7 @@ async function runStep(page, step, ctx) {
       else if (wantsDownload) {
         const dlDir = ctx.downloadsDir;
         const [dl] = await Promise.all([
-          page.waitForEvent('download', { timeout: Number(step.downloadTimeoutMs || 60000) }),
+          page.waitForEvent('download', { timeout: Math.min(Number(step.downloadTimeoutMs || 60000), remainingMs(ctx) === Infinity ? Infinity : Math.max(1, remainingMs(ctx))) }),
           r.locator.click({ timeout, button: step.button || 'left' }),
         ]);
         const name = step.saveAs ? path.basename(step.saveAs) : dl.suggestedFilename();
@@ -465,7 +512,7 @@ async function runStep(page, step, ctx) {
     case 'press': {
       const r = await locate(page, step, { timeoutMs: timeout, minScore: cfg.run.healMinScore });
       await r.locator.press(step.key || 'Enter', { timeout });
-      if (step.waitForNav) await page.waitForLoadState('load', { timeout: Number(step.navTimeoutMs || cfg.run.navTimeoutMs) }).catch(() => {});
+      if (step.waitForNav) await page.waitForLoadState('load', { timeout: navTimeout }).catch(() => {});
       return { page, locate: r, detail: '已按键 ' + (step.key || 'Enter') };
     }
     case 'setInputFiles': {
@@ -484,7 +531,7 @@ async function runStep(page, step, ctx) {
       return { page, locate: r, detail: '等到元素 ' + r.strategy };
     }
     case 'waitForText': {
-      await page.getByText(step.text).first().waitFor({ state: step.state || 'visible', timeout: Number(step.timeoutMs || 30000) });
+      await page.getByText(step.text).first().waitFor({ state: step.state || 'visible', timeout: Math.min(Number(step.timeoutMs || 30000), remainingMs(ctx) === Infinity ? Infinity : Math.max(1, remainingMs(ctx))) });
       return { page, detail: '等到文字「' + step.text + '」' };
     }
     case 'humanHandoff': {
@@ -492,24 +539,40 @@ async function runStep(page, step, ctx) {
       if (cfg.browser.headless && !ctx.headed) {
         throw new Error('步骤需要人工接管（' + (step.reason || '验证码/登录') + '），但当前是无头模式。请改用 headed 运行。');
       }
-      const deadline = Date.now() + ms;
-      ctx.notes.push('等待人工接管：' + (step.reason || '验证码/登录'));
-      while (Date.now() < deadline) {
-        if (step.resumeWhenTextGone) {
-          const n = await page.getByText(step.resumeWhenTextGone).count().catch(() => 0);
-          if (n === 0) return { page, detail: '人工接管完成（「' + step.resumeWhenTextGone + '」已消失）' };
-        } else if (step.resumeWhenText) {
-          const n = await page.getByText(step.resumeWhenText).count().catch(() => 0);
-          if (n > 0) return { page, detail: '人工接管完成（出现「' + step.resumeWhenText + '」）' };
-        } else if (step.resumeUrlContains) {
-          if (page.url().indexOf(step.resumeUrlContains) >= 0) return { page, detail: '人工接管完成（URL 已变化）' };
-        } else {
-          await sleep(Math.min(3000, ms));
-          return { page, detail: '人工接管等待结束（无恢复条件，按固定时长放行）' };
+      // 人工接管的等待窗口也受运行总时限约束：不然一次接管能占住锁到天荒地老
+      const deadline = Math.min(Date.now() + ms, ctx.deadline ? ctx.deadline : Infinity);
+      const reason = step.reason || '验证码/登录';
+      ctx.notes.push('等待人工接管：' + reason);
+      // 等待窗口可能长达数分钟："在等人工"写进运行标记，否则 status_report 看到的
+      // 只是一场"卡住的运行"，与页面卡死无法区分
+      markWaitingHuman(ctx, { reason, until: new Date(deadline).toISOString() });
+      try {
+        while (Date.now() < deadline) {
+          if (step.resumeWhenTextGone) {
+            const n = await page.getByText(step.resumeWhenTextGone).count().catch(() => 0);
+            if (n === 0) return { page, detail: '人工接管完成（「' + step.resumeWhenTextGone + '」已消失）' };
+          } else if (step.resumeWhenText) {
+            const n = await page.getByText(step.resumeWhenText).count().catch(() => 0);
+            if (n > 0) return { page, detail: '人工接管完成（出现「' + step.resumeWhenText + '」）' };
+          } else if (step.resumeUrlContains) {
+            if (page.url().indexOf(step.resumeUrlContains) >= 0) return { page, detail: '人工接管完成（URL 已变化）' };
+          } else {
+            const want = Math.min(3000, ms);
+            const wait = Math.min(want, remainingMs(ctx));
+            await sleep(wait);
+            // 固定放行的等待同样受总时限约束：裁剪即注定超时，直接走统一收尾。
+            // 不能睡满固定时长把运行推过预算还返回成功——它若是最后一步，整场会误报 pass。
+            if (wait < want && ctx.deadline) throw runTimeoutError(ctx);
+            return { page, detail: '人工接管等待结束（无恢复条件，按固定时长放行）' };
+          }
+          // 轮询掐着自己的截止点醒，不靠循环条件兜最多 1s 的滞后
+          await sleep(Math.max(0, Math.min(1000, deadline - Date.now())));
         }
-        await sleep(1000);
+        if (ctx.deadline && Date.now() >= ctx.deadline) throw runTimeoutError(ctx);
+        throw new Error('人工接管超时（' + Math.round(ms / 1000) + 's）：' + (step.reason || ''));
+      } finally {
+        clearWaitingHuman(ctx);
       }
-      throw new Error('人工接管超时（' + Math.round(ms / 1000) + 's）：' + (step.reason || ''));
     }
     case 'screenshot': {
       const file = path.join(ctx.shotsDir, String(ctx.currentStep).padStart(2, '0') + '-' + (step.name || 'shot') + '.png');
@@ -549,12 +612,17 @@ async function runStep(page, step, ctx) {
     }
     case 'chain': {
       const { runChain } = await import('./chain.mjs');
+      // 子流程继承父流程的剩余总时长：否则父看门狗拦不住在子流程里跑飞的时间
+      const rem = remainingMs(ctx);
       const out = await runChain([{ flow: step.flow, params: step.params || {} }], {
         config: ctx.config,
         headed: ctx.headed,
         trigger: 'chain:' + ctx.flowId,
         chainContext: ctx.chainOut,
         notify: false,
+        // 父流程"允许带 lint 问题运行"的口径同样适用于链进来的子流程（与 chain_run 工具一致）
+        allowLintErrors: ctx.allowLintErrors,
+        ...(rem !== Infinity ? { maxDurationMs: Math.max(1, Math.ceil(rem)) } : {}),
       });
       ctx.chainResults.push({ flow: step.flow, status: out.status });
       if (out.status !== 'pass' && !step.continueOnError) {
@@ -575,6 +643,22 @@ async function runStep(page, step, ctx) {
 
 /* ---------------- 主流程 ---------------- */
 
+/* 人工接管等待期的可观测性：把"在等人工"写进运行标记（结束后清除）。
+   没有它，status_report/lock_status 只能看到"一场卡住的运行"，与页面卡死无法区分。 */
+function markWaitingHuman(ctx, info) {
+  if (!ctx || !ctx.flowId || !ctx.stamp || !ctx.markerInfo) return;
+  try {
+    writeRunningMarker(ctx.flowId, ctx.stamp, Object.assign({}, ctx.markerInfo, {
+      waitingHuman: Object.assign({ startedAt: nowIso() }, info),
+    }));
+  } catch { /* 可观测性增强失败不阻断接管 */ }
+}
+
+function clearWaitingHuman(ctx) {
+  if (!ctx || !ctx.flowId || !ctx.stamp || !ctx.markerInfo) return;
+  try { writeRunningMarker(ctx.flowId, ctx.stamp, ctx.markerInfo); } catch { /* ignore */ }
+}
+
 /**
  * 回放一个流程。
  * @param {object} flow 流程定义
@@ -584,15 +668,22 @@ export async function runFlow(flow, opts = {}) {
   const cfg = readConfig();
   const trigger = opts.trigger || 'manual';
   const stamp = stampId();
-  const dir = path.join(DIRS.runs, flow.id, stamp);
+  const dir = runDir(flow.id, stamp); // 走 store 的安全闸（flowId/stamp 不得穿越出 runs/）
   const shotsDir = path.join(dir, 'screenshots');
   const dlDir = path.join(dir, 'downloads');
+  const videoDir = path.join(dir, 'videos');
   ensureDirs();
   fs.mkdirSync(shotsDir, { recursive: true });
   fs.mkdirSync(dlDir, { recursive: true });
 
   const startedAt = nowIso();
   const t0 = Date.now();
+
+  // 运行级总超时：步骤多、反复人工接管、页面卡死时，单步超时摞起来能跑几小时，长期占住流程锁和 profile 锁
+  // 预算优先级：显式参数 > 配置 > 无人值守（schedule）默认上限
+  const budget = resolveRunBudget(opts.maxDurationMs, cfg.run, trigger);
+  const maxDurationMs = budget.maxDurationMs;
+  const deadline = maxDurationMs > 0 ? t0 + maxDurationMs : 0;
 
   const report = {
     flowId: flow.id,
@@ -617,6 +708,8 @@ export async function runFlow(flow, opts = {}) {
     error: null,
     notifications: [],
     reportPath: null,
+    maxDurationMs: maxDurationMs || null,
+    videos: [],
   };
 
   // 并发锁：定时任务与手工运行撞在一起会导致重复提交业务数据，必须挡住第二次
@@ -632,7 +725,8 @@ export async function runFlow(flow, opts = {}) {
     return report;
   }
   installCrashHandlers();
-  writeRunningMarker(flow.id, stamp, { trigger, headed: !!opts.headed, flowName: flow.name });
+  const markerInfo = { trigger, headed: !!opts.headed, flowName: flow.name };
+  writeRunningMarker(flow.id, stamp, markerInfo);
 
   // 结果校验前置检查（文章：缺了结果校验这一步，回去补）
   const lint = lintFlow(flow, cfg);
@@ -658,26 +752,64 @@ export async function runFlow(flow, opts = {}) {
     return report;
   }
   const safeParams = {};
+  const rk = redactKeyList(cfg);
+  const unmaskParams = !maskingEnabled(cfg);
+  const keyHitValues = [];
   for (const p of flow.params || []) {
     const v = values[p.name];
-    safeParams[p.name] = p.secret ? maskSecret(v) : (typeof v === 'string' && v.length > 200 ? v.slice(0, 200) + '…' : v);
+    // secret 凭据永远打码；键名命中 redactKeys 的替换为 *** 并把原值并入全文清除名单
+    //（明文口令会经 ${参数} 渗进步骤 URL/明细/告警文案）；maskSecrets=false 只放开其余参数值便于调试
+    if (p.secret) {
+      safeParams[p.name] = maskSecret(v);
+    } else if (rk.has(String(p.name).toLowerCase()) && !unmaskParams) {
+      safeParams[p.name] = '***';
+      if (typeof v === 'string' && v.length >= 4) keyHitValues.push(v);
+    } else {
+      safeParams[p.name] = (typeof v === 'string' && v.length > 200 && !unmaskParams) ? v.slice(0, 200) + '…' : v;
+    }
   }
   report.params = safeParams;
   if (notices.length) report.notes = notices;
+  if (budget.cappedBy) {
+    report.notes = report.notes || [];
+    report.notes.push('无人值守（trigger=schedule）启用默认总超时 ' + Math.round(maxDurationMs / 60000) + ' 分钟（run.unattendedMaxDurationMs，设 0 可取消，或用 maxDurationMs 参数显式指定）');
+    report.budgetSource = budget.cappedBy;
+  }
 
   const resolvedSteps = resolveDeep(flow.steps || [], { values });
   const resolvedAssertions = resolveDeep(flow.assertions || [], { values });
 
   let handle = null;
+  // 失败录像证据：截图只定格一瞬，录像才能回看"点了什么、卡在哪一步"
+  const videoOn = String(opts.videoOn || cfg.run.videoOn || 'failure');
+  const wantVideoRaw = opts.saveVideo !== undefined ? !!opts.saveVideo : !!cfg.run.saveVideo;
+  // 截图能给密码框打码，录像不能——流程含敏感输入时宁可不录，也不把密码明文录进 webm
+  const hasSensitiveInput = resolvedSteps.some((s) => s && s.sensitive) || (flow.params || []).some((p) => p && p.secret);
+  const wantVideo = wantVideoRaw && !hasSensitiveInput;
   const ctx = {
     config: cfg, context: null, page: null, downloads: [], screenshots: [], extracted: {},
     notes: [], steps: resolvedSteps, shotsDir, downloadsDir: dlDir, flowId: flow.id,
     headed: !!opts.headed, chainResults: [], chainOut: Object.assign({}, opts.chainContext || {}),
     dialogs: [], dialogPolicy: null, currentStep: 0, evidenceMasked: false,
+    deadline, maxDurationMs, t0, allowLintErrors: !!opts.allowLintErrors,
+    stamp, markerInfo,
   };
 
   try {
-    handle = await launchContext({ headed: !!opts.headed || !cfg.browser.headless, downloadsDir: dlDir });
+    handle = await launchContext({
+      headed: !!opts.headed || !cfg.browser.headless,
+      downloadsDir: dlDir,
+      ...(wantVideo ? {
+        extraContext: {
+          recordVideo: {
+            dir: videoDir,
+            size: (cfg.browser.recordViewport && cfg.browser.recordViewport.width)
+              ? { width: cfg.browser.recordViewport.width, height: cfg.browser.recordViewport.height }
+              : (cfg.browser.viewport && cfg.browser.viewport.width ? { width: cfg.browser.viewport.width, height: cfg.browser.viewport.height } : undefined),
+          },
+        },
+      } : {}),
+    });
     ctx.context = handle.context;
     // 浏览器弹窗：默认"取消"，但记录下来。confirm 被静默取消 = 操作没生效却看起来成功
     const onDialog = async (d) => {
@@ -702,6 +834,12 @@ export async function runFlow(flow, opts = {}) {
     for (let i = 0; i < resolvedSteps.length; i++) {
       const step = resolvedSteps[i];
       ctx.currentStep = i + 1;
+      // 看门狗：总时限已到就不再开新步骤，走统一的失败收尾（截图+报告+告警+释放锁）
+      if (deadline && Date.now() >= deadline) {
+        report.failedStep = i + 1;
+        report.timedOut = true;
+        throw runTimeoutError(ctx);
+      }
       page = activePage(handle.context, page);
       const stepRec = { index: i + 1, op: step.op, label: stepLabel(step), status: 'pass', ms: 0, detail: null, error: null, healed: null, screenshot: null };
       const s0 = Date.now();
@@ -742,7 +880,8 @@ export async function runFlow(flow, opts = {}) {
           done = true;
         } catch (e) {
           lastErr = e;
-          if (attempt < attempts) { await sleep(Number(cfg.run.retryDelayMs) || 800); continue; }
+          // 总时限到了就别再重试了：重试窗口也计入总时长
+          if (attempt < attempts && !(deadline && Date.now() >= deadline)) { await sleep(Number(cfg.run.retryDelayMs) || 800); continue; }
         }
       }
 
@@ -750,6 +889,10 @@ export async function runFlow(flow, opts = {}) {
       if (!done) {
         stepRec.status = 'fail';
         stepRec.error = String(lastErr && lastErr.message ? lastErr.message : lastErr);
+        if (deadline && Date.now() >= deadline) {
+          report.timedOut = true;
+          stepRec.error += '  —— ' + runTimeoutError(ctx).message;
+        }
         report.failedStep = i + 1;
         report.error = stepRec.error;
         try {
@@ -762,6 +905,12 @@ export async function runFlow(flow, opts = {}) {
         throw lastErr;
       }
       report.steps.push(stepRec);
+      // 步骤成功也可能压线/越过总时限：若它就是最后一步，看门狗再没机会判定，
+      // 超预算的运行会以 pass 收尾。成功路径同样要收尾判定，超时必须确定性地报出来。
+      if (deadline && Date.now() >= deadline) {
+        report.timedOut = true;
+        throw runTimeoutError(ctx);
+      }
     }
 
     // 流程内联断言已在步骤里执行；这里执行流程级断言
@@ -806,6 +955,8 @@ export async function runFlow(flow, opts = {}) {
       report.error = '结果校验未通过 [' + failedAssert.kind + '] ' + (failedAssert.message || '') + ' — ' + failedAssert.detail;
       report.status = 'fail';
     } else {
+      // 断言与收尾检查的耗时也计入总时长：pass 的前提是"在预算内完成"，越线一律按超时收尾
+      if (deadline && Date.now() >= deadline) throw runTimeoutError(ctx);
       report.status = 'pass';
     }
 
@@ -817,9 +968,10 @@ export async function runFlow(flow, opts = {}) {
       if (fs.existsSync(shot)) report.screenshots.push(shot);
     }
     report.finalUrl = page.url();
-    report.finalTitle = await page.title().catch(() => null);
+    report.finalTitle = await withTimeout(page.title(), 5000, null);
   } catch (e) {
     report.status = 'fail';
+    if (e && e.code === 'RUN_TIMEOUT') report.timedOut = true;
     if (!report.error) report.error = String(e && e.message ? e.message : e);
     const ev = opts.evidenceOn || cfg.run.evidenceOn;
     if (cfg.run.saveEvidence && ev !== 'never' && ctx.page && !ctx.page.isClosed()) {
@@ -830,6 +982,26 @@ export async function runFlow(flow, opts = {}) {
     report.finalUrl = ctx.page && !ctx.page.isClosed() ? ctx.page.url() : null;
   } finally {
     await closeContext(handle);
+  }
+
+  // 录像收集：视频文件在 context.close() 之后才算写完，所以放在 finally 之后处理
+  if (wantVideoRaw) {
+    report.notes = report.notes || [];
+    const skipNote = wantVideo ? '' :
+      '流程含敏感输入（sensitive 步骤或 secret 参数），为避免录像泄露敏感画面已跳过录像（截图仍按 security.maskFieldsInScreenshots 打码留证）';
+    const note = (handle && handle.videoNote) || skipNote;
+    if (note) {
+      report.videoNote = note;
+      report.notes.push(note);
+    } else if (fs.existsSync(videoDir)) {
+      const vids = fs.readdirSync(videoDir).filter((f) => /\.webm$/i.test(f)).map((f) => path.join(videoDir, f)).sort();
+      if (report.status === 'pass' && videoOn === 'failure') {
+        for (const v of vids) { try { fs.rmSync(v); } catch { /* ignore */ } }
+        if (vids.length) report.notes.push('本次执行成功，按 videoOn=failure 已删除 ' + vids.length + ' 段录像（要看全程可设 videoOn=always）');
+      } else {
+        report.videos = vids;
+      }
+    }
   }
 
   report.downloads = ctx.downloads;
@@ -860,28 +1032,49 @@ export async function runFlow(flow, opts = {}) {
     }
   }
 
-  await finalize(report, cfg, opts, secretValues, flow.id);
+  await finalize(report, cfg, opts, secretValues, flow.id, keyHitValues);
   return report;
 }
 
-/** 敏感参数的值在报告里一律替换掉（步骤说明、URL、断言明细、错误信息都可能带上它） */
-function deepRedact(value, secrets) {
-  if (!secrets || !secrets.length) return value;
+/** 敏感参数的值在报告里一律替换掉（步骤说明、URL、断言明细、错误信息都可能带上它）；
+ *  命中 redactKeys 的键值也替换为 ***（keysOn 由 security.maskSecrets 控制，secret 值脱敏不受开关影响），
+ *  并把原值并入 keyHits 全文清除名单——没标 secret 的「password」类参数不能靠明文渗进报告/告警。
+ *  extracted 子树是数据通道（flow: 链式取值按名查这里，用户也从这里读产出）：
+ *  不脱键名、不清除键值，否则链式传参会把 *** 传给下一个流程；secret 值例外——
+ *  密钥绝不回显，即使出现在 extracted 里也清除（红线，不受 maskSecrets 开关影响） */
+function deepRedact(value, secrets, keyHits, keys, keysOn, inData) {
   if (typeof value === 'string') {
     let out = value;
-    for (const s of secrets) {
+    for (const s of secrets || []) {
       if (!s) continue;
       out = out.split(s).join('***');
       try { const enc = encodeURIComponent(s); if (enc !== s) out = out.split(enc).join('***'); } catch { /* ignore */ }
     }
+    if (!inData) {
+      for (const s of keyHits || []) {
+        if (!s) continue;
+        out = out.split(s).join('***');
+        try { const enc = encodeURIComponent(s); if (enc !== s) out = out.split(enc).join('***'); } catch { /* ignore */ }
+      }
+    }
     return out;
   }
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = deepRedact(value[i], secrets);
+    for (let i = 0; i < value.length; i++) value[i] = deepRedact(value[i], secrets, keyHits, keys, keysOn, inData);
     return value;
   }
   if (value && typeof value === 'object') {
-    for (const k of Object.keys(value)) value[k] = deepRedact(value[k], secrets);
+    for (const k of Object.keys(value)) {
+      const data = inData || k === 'extracted';
+      const hit = !data && keysOn && keys && typeof keys.has === 'function' && keys.has(String(k).toLowerCase());
+      if (hit) {
+        const raw = value[k];
+        if (keyHits && typeof raw === 'string' && raw.length >= 4 && raw !== '***') keyHits.push(raw);
+        value[k] = '***';
+      } else {
+        value[k] = deepRedact(value[k], secrets, keyHits, keys, keysOn, data);
+      }
+    }
     return value;
   }
   return value;
@@ -894,22 +1087,24 @@ function secretValuesOf(flow, values) {
 }
 
 /** 脱敏 -> 清中断标记 -> 落盘报告 -> 留存清理 -> 发告警 -> 释放并发锁 */
-async function finalize(report, cfg, opts, secrets, flowId) {
-  deepRedact(report, secrets || []);
+async function finalize(report, cfg, opts, secrets, flowId, keyHits = []) {
+  const rk = redactKeyList(cfg);
+  const keysOn = maskingEnabled(cfg);
+  deepRedact(report, secrets || [], keyHits || [], rk, keysOn, false);
   if (flowId) clearRunningMarker(flowId, report.stamp);
   report.reportPath = saveRun(report);
   if (flowId) {
     try {
       const pr = pruneRuns(flowId, {});
       if (pr && pr.removed && pr.removed.length) {
-        report.retention = { removedRuns: pr.removed.length, kept: pr.kept, keepCount: pr.keepCount, keepRunDays: pr.keepDays };
+        report.retention = { removedRuns: pr.removed.length, kept: pr.kept, keepCount: pr.keepCount, keepDays: pr.keepDays };
         report.reportPath = saveRun(report);
       }
     } catch (e) { L.warn('运行记录清理失败', { err: String(e && e.message ? e.message : e) }); }
   }
   await maybeNotify(report, cfg, opts);
   if ((report.notifications || []).length) {
-    deepRedact(report, secrets || []);
+    deepRedact(report, secrets || [], keyHits || [], rk, keysOn, false);
     report.reportPath = saveRun(report);
   }
   if (flowId) releaseLock(flowId);

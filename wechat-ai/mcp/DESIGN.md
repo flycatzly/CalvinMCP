@@ -11,6 +11,8 @@ wechat-ai/mcp/
   lib/
     paths.mjs util.mjs timewin.mjs duedate.mjs store.mjs config.mjs profile.mjs
     parse.mjs inbox.mjs ingest.mjs signals.mjs opportunities.mjs views.mjs
+    analytics/ core.mjs report.mjs content.mjs social.mjs sentiment.mjs tasks.mjs
+               finance.mjs memory.mjs team.mjs risk.mjs render.mjs
     report/md.mjs report/html.mjs report/security.mjs report/bundle.mjs
     wechat/ scenes.mjs targets.mjs obsidian.mjs skills-catalog.mjs delivery.mjs history.mjs batch.mjs
     security.mjs access.mjs replystyle.mjs
@@ -78,7 +80,7 @@ wechat-ai/mcp/
 `pickReadyReader({allowDemo})` → `{reader,sourceId,status,tried}`, `cliReaders(cfg)`, `vaultDirs(cfg)`, `clearReaderCache()`。
 Reader 实例接口（全部 async，返回信封 `{ok,tool,command,data,warnings,protocol}`）：
 `version(), status(), sessions({limit,typeFilter,keyword}), contacts({limit,keyword,friendsOnly,groupsOnly}), labels(), resolveChat(name,{typeFilter}), timeline(talker,{limit,offset,displayOrder,since,before,keyword,sender,typeFilter}), context({talker,localId,beforeCount,afterCount}), members(chat,{limit}), announcements(chat,{limit}), favorites({limit,after,before}), snsFeed({keyword,limit}), snsSearch(kw,{limit}), search(kw,{limit,offset,maxTextChars,inChat,after,before}), media({chat,kind,limit}), redPackets({limit}), transfers({limit}), forwardHistory({limit}), unread({limit}), stats(), sql({query,limit}), exportMessages({chat,format,limit,since,before}), describe()`
-数据源 id：`local`（本地索引）、`vault[:path]`、`sqlite[:path]`（指向 db_storage）、`cli:<id>`（外部只读 CLI）、`mock`（虚构演示）。`reader/wcdb.mjs` 的 `createWcdbReader({roots,selfUsername,resourceRoots})` 即 sqlite 实现；`sqlite:` 源在 index.mjs 中已接好。
+数据源 id：`local`（本地索引）、`vault[:path]`、`sqlite[:path]`（指向 db_storage，实现为 `reader/sqlite.mjs`，识别 3.x MSG 与 4.x message/Name2Id 两套 schema）、`wcdb[:path]`（`reader/wcdb.mjs` 的 `createWcdbReader({roots,selfUsername,resourceRoots})`，微信 4.x db_storage 六类库全量实现：session/contact/message/favorite/sns/hardlink）、`cli:<id>`（外部只读 CLI）、`mock`（虚构演示）。两者的 `sql` 错误形状不同（sqlite 为字符串、wcdb 为 `{code,message}`），wai_reader 工具层统一归一为 `error` 字符串 + `error_code`。
 
 ### signals.mjs（情报引擎）
 `analyze({messages, sinceMs, untilMs, now, extraExclusions})` → 
@@ -97,6 +99,22 @@ Reader 实例接口（全部 async，返回信封 `{ok,tool,command,data,warning
 
 ### duedate.mjs
 `nextWeekday(dow,which,ref)`, `parseDueDate(text,ref)`, `dayOfWeekCn(d)`, `DOW_CN`, `DOW_NAME`, `fmtDateCn(d)`。
+
+### analytics/*（聊天记录分析引擎，对应提示词全集 A-I）
+全部为纯函数（输入 messages 行数组 + 选项，输出 JSON 可序列化对象），不做 I/O；落盘只走 `render.mjs`。
+统一线程：不臆测（证据不足标 `confidence`/`需确认`）、输出脱敏（`maskPii`）、金额默认打码（`showAmounts:false` 只给区间）、风控只出线索（`needs_review:true`）。
+
+- `core.mjs` 共享原语：`classifyMessage(m)`→`text|image|voice|file|transfer|redpacket|link|location`、`typeBreakdown`、`termFreq`（2-4 字滑窗 n-gram 分词）、`catchphrases`、`emojiTop`、`hourBuckets/weekdayBuckets/dayBuckets/monthBuckets`、`activityStreaks`、`replyIntervals`、`groupByChat`、`countBy`、`topEntries`、`median`、`round`、`maskPii(text)`、`evidence(m)`→`{msg_id,time,sender,chat,text}`。
+- `report.mjs`（A 年度/月度报告）：`periodReport(messages,{sinceMs,untilMs,top,now,minSample})` → period/total/type_breakdown/active_hours/keywords/catchphrases/emojis/reply_interval/relationship_trend/insights[5-10]/caliber。
+- `social.mjs`（B 社交关系）：`socialGraph(messages,{top,gapMs,...})` → who_contacts_me_most/who_i_contact_most/reply_time/bidirectional/relationship_change/group_network(core/edge)/bridge_members/clusters(标签传播)/caliber。
+- `sentiment.mjs`（C 情绪趋势）：`sentimentTrend(...)` → daily_sentiment/stress_topics/conflict_words/night_negative_messages/high_risk_periods + `limitations`（必须含"不是心理或医疗诊断"）。
+- `tasks.mjs`（D 时间任务）：`taskExtract(messages,{now,includeIcs})` → tasks[{kind,title,owner,direction,status,due_ts,source_msg_id,confidence}] + `toIcs(tasks)`。
+- `finance.mjs`（E 财务记录）：`financeLedger(messages,{now,showAmounts})` → entries/monthly/top_counterparties/categories/suspicious；默认 `amount_band` 打码，无投资建议。
+- `memory.mjs`（F 记忆库）：`memoryCards(messages,{maxCards})` → cards/timeline/stats + `memoryAnswer(messages,query)`（仅检索，不编造）。
+- `content.mjs`（G 内容分析）：`contentAnalysis` → topicClusters/intentDistribution/entityTable/extractiveSummary/lexicalStats + `answerQuestion(messages,query)`（引用 msg_id）。
+- `team.mjs`（H 团队分析）：`teamReview(messages,{projectName,now})` → decisions/assignments/risks/service_qc/sales/faq。
+- `risk.mjs`（I 风控）：`riskScan(messages,{goal,now})` → risks[{risk_id,type,level,evidence_msg_ids,evidence_text(masked),suggested_action,needs_review}] + 免责声明。
+- `render.mjs`：`renderAnalytics(kind,result,{outDir,title})` → 写 `<kind>_report.md` + `<kind>.json`，RENDERERS 覆盖 9 类。
 
 ## 约定
 

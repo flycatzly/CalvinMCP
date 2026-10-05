@@ -1,5 +1,5 @@
 # SQL 八步分析工作流（证据版）
-> 版本 v1.4.3 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.28 · sql-check-script · 更新记录见 README.md「更新记录」
 
 每条 SQL 按此执行，**禁止跳步**。证据来自 calvin-db-mcp；取不到证据就标注「待补充」，禁止猜根因。
 
@@ -16,6 +16,7 @@
 1. **定位 source**：`find_database`（库名/环境）或 `list_sources` 拿到 source id
 2. **结构**：`describe_table` 取真实列 / 主键 / 索引 / 注释 / 预估行数
 3. **执行计划**：`query` 跑 `EXPLAIN <sql>` 取真实 type / key / rows / Extra
+   - 双方言计划形态实证见 `references/sql_risk_signals.md`「方言实测注记」（MySQL 字段 vs PG cost=/Seq Scan/Sort/Index Scan 形态）
 4. **数据量 / 区分度**：`query` + `GROUP BY` 取 WHERE 字段取值分布；`count_rows` 取总行数与精确单值计数
 5. **质量**：`sample_data` 抽查脏数据 / 异常值 / 缺失值（敏感列按白名单配置脱敏后展示）
 
@@ -84,4 +85,4 @@ ALTER TABLE order_info ADD INDEX idx_status_create_time (status, create_time);
 
 ## 证据不足时
 
-MCP 未就绪（init_required）/ 表不存在 / EXPLAIN 失败：输出「待补充信息」清单，结论标注「待验证」，禁止猜根因。
+MCP 未就绪（init_required）/ 表不存在 / EXPLAIN 失败：输出「待补充信息」清单，结论标注「待验证」，禁止猜根因。工具报错带全码 `Error: [E_CODE:retry] 消息` → 按错误码反查 `references/故障处理.md`「五、错误类矩阵实测表」（触发条件/实测文案/重试语义/排障方向）。

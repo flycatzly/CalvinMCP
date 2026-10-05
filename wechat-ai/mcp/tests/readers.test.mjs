@@ -102,6 +102,12 @@ await t("vault 缓存：二次加载命中缓存", async () => {
 await t("vault 不提供 sql 时明确报错", async () => {
   eq((await vault.sql({ query: "SELECT 1" })).ok, false);
 });
+await t("vault stats 返回统计信封", async () => {
+  const d = (await vault.stats()).data;
+  eq(d.reader, "vault");
+  ok(d.total_messages >= 8, "total_messages=" + d.total_messages);
+  ok(d.top_chats.length >= 1 && d.top_chats[0].messages >= 1, JSON.stringify(d.top_chats));
+});
 
 // =====================================================================================
 console.log("\n2) cli Reader（外部只读 CLI 子进程）");
@@ -215,6 +221,12 @@ await t("local sql 只读守卫", async () => {
   eq((await local.sql({ query: "DELETE FROM messages" })).ok, false);
   ok((await local.sql({ query: "SELECT COUNT(*) n FROM messages" })).data.rows.length === 1);
 });
+await t("local stats 返回统计信封", async () => {
+  const d = (await local.stats()).data;
+  eq(d.reader, "local");
+  ok(d.total_messages >= 2, "total_messages=" + d.total_messages);
+  ok(d.top_chats.length >= 1, JSON.stringify(d.top_chats));
+});
 
 // =====================================================================================
 console.log("\n4) mock Reader（演示数据）");
@@ -237,6 +249,101 @@ await t("mock stats", async () => {
   ok(d.sessions >= 5 && d.total_messages >= 30, JSON.stringify({ s: d.sessions, m: d.total_messages }));
 });
 await t("mock 不提供 sql", async () => eq((await mock.sql({ query: "SELECT 1" })).ok, false));
+
+// =====================================================================================
+console.log("\n5) wcdb 源接入 registry + 工具层错误形状（轮9修复）");
+{
+  const { DatabaseSync } = await import("node:sqlite");
+  const { getSource, listSources, clearReaderCache } = await import(new URL("../lib/reader/index.mjs", import.meta.url).href);
+  const { md5hex } = await import(new URL("../lib/reader/wcdb.mjs", import.meta.url).href);
+
+  const ACC = path.join(ROOT, "wcdb_acc");
+  const CH = "轮9回归会话";
+  fs.mkdirSync(path.join(ACC, "db_storage", "message"), { recursive: true });
+  const db = new DatabaseSync(path.join(ACC, "db_storage", "message", "message_0.db"));
+  db.exec("CREATE TABLE Name2Id(rowid INTEGER PRIMARY KEY, user_name TEXT, is_session INTEGER)");
+  db.prepare("INSERT INTO Name2Id VALUES(?,?,?)").run(1, "wxid_me_test", 0);
+  db.prepare("INSERT INTO Name2Id VALUES(?,?,?)").run(2, CH, 0);
+  db.exec(`CREATE TABLE "Msg_${md5hex(CH)}"(local_id INTEGER PRIMARY KEY, server_id INTEGER,
+    local_type INTEGER, sort_seq INTEGER, real_sender_id INTEGER, create_time INTEGER, status INTEGER,
+    message_content BLOB, compress_content BLOB, WCDB_CT_message_content INTEGER)`);
+  const ins = db.prepare(`INSERT INTO "Msg_${md5hex(CH)}" VALUES(?,?,?,?,?,?,?,?,?,?)`);
+  ins.run(1, 101, 1, 1, 2, 1782819900, 0, "轮9回归消息一", null, null);
+  ins.run(2, 102, 1, 2, 1, 1782819960, 0, "轮9回归消息二", null, null);
+  db.close();
+  fs.writeFileSync(path.join(ACC, "db_storage", "message", "message_enc.db"), Buffer.concat([Buffer.from("SECRETSALT0123456"), Buffer.alloc(32, 7)]));
+
+  clearReaderCache();
+  await t("getSource(wcdb:path) 可解析且 id=wcdb", async () => {
+    const r = getSource(`wcdb:${ACC}`);
+    ok(r, "getSource 返回 null");
+    eq(r.id, "wcdb");
+  });
+  await t("wcdb 源对明文库 state=ready 且加密库计数", async () => {
+    const st = (await getSource(`wcdb:${ACC}`).status()).data;
+    eq(st.state, "ready");
+    eq(st.live_database_read_ok, true);
+    ok(st.encrypted_databases >= 1, "encrypted_databases=" + st.encrypted_databases);
+  });
+  await t("wcdb 源 timeline 读出明文消息", async () => {
+    const tl = (await getSource(`wcdb:${ACC}`).timeline(CH, { limit: 10 })).data;
+    eq(tl.messages.length, 2);
+  });
+  await t("wcdb 源空目录 → needs_database_location", async () => {
+    const emptyDir = path.join(ROOT, "wcdb_empty");
+    fs.mkdirSync(emptyDir, { recursive: true });
+    eq((await getSource(`wcdb:${emptyDir}`).status()).data.state, "needs_database_location");
+  });
+  await t("listSources 含 kind=wcdb 行（配置了 sqliteSources 时）", async () => {
+    fs.writeFileSync(path.join(process.env.WECHAT_AI_HOME, "config.json"), JSON.stringify({ sqliteSources: [{ path: ACC }] }), "utf8");
+    clearReaderCache();
+    const rows = listSources({});
+    ok(rows.some((s) => s.kind === "wcdb" && s.id === `wcdb:${ACC}`), JSON.stringify(rows.map((s) => s.kind)));
+    ok(rows.some((s) => s.kind === "sqlite"), "sqlite 行仍在（不破坏既有列表）");
+    fs.rmSync(path.join(process.env.WECHAT_AI_HOME, "config.json"), { force: true });
+    clearReaderCache();
+  });
+  await t("工具层 sql 错误形状统一：error 字符串 + error_code", async () => {
+    const srv = await import(new URL("../server.mjs", import.meta.url).href + "?wcdbshape=1");
+    const r = await srv.handleRpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "wai_reader", arguments: { command: "sql", source: `wcdb:${ACC}`, query: "DELETE FROM contact" } } });
+    const p = JSON.parse(r.result?.content?.[0]?.text ?? "{}");
+    eq(typeof p.error, "string");
+    eq(p.error_code, "read_only_required");
+    ok(p.error.length > 0, "error 文案为空");
+  });
+  await t("工具层 wcdb status 可达（不再「没有可用的数据源」）", async () => {
+    const srv = await import(new URL("../server.mjs", import.meta.url).href + "?wcdbshape=1");
+    const r = await srv.handleRpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "wai_reader", arguments: { command: "status", source: `wcdb:${ACC}` } } });
+    const p = JSON.parse(r.result?.content?.[0]?.text ?? "{}");
+    eq(p.state, "ready");
+    eq(p.source, `wcdb:${ACC}`);
+  });
+}
+
+// =====================================================================================
+console.log("\n6) wai_reader stats 回归（真机测试暴露：缺失方法抛 TypeError）");
+{
+  const { clearReaderCache } = await import(new URL("../lib/reader/index.mjs", import.meta.url).href);
+  const srv = await import(new URL("../server.mjs", import.meta.url).href + "?statsreg=1");
+  fs.writeFileSync(path.join(process.env.WECHAT_AI_HOME, "config.json"), JSON.stringify({ readers: [{ id: "stub", command: process.execPath, args: [RION] }] }), "utf8");
+  clearReaderCache();
+  await t("stats 对无 stats 方法的数据源返回 note 而非 TypeError", async () => {
+    const r = await srv.handleRpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "wai_reader", arguments: { command: "stats", source: "cli:stub" } } });
+    ok(!r.result?.isError, "不应报错：" + JSON.stringify(r).slice(0, 200));
+    const p = JSON.parse(r.result?.content?.[0]?.text ?? "{}");
+    ok(typeof p.note === "string" && p.note.includes("stats"), "note=" + JSON.stringify(p.note));
+    eq(p.source, "cli:stub");
+  });
+  await t("stats 在 local 源上给出统计（真机 TypeError 回归）", async () => {
+    const r = await srv.handleRpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "wai_reader", arguments: { command: "stats", source: "local" } } });
+    ok(!r.result?.isError, "不应报错");
+    const p = JSON.parse(r.result?.content?.[0]?.text ?? "{}");
+    ok(p.total_messages >= 2, JSON.stringify(p).slice(0, 200));
+    eq(p.source, "local");
+  });
+  fs.rmSync(path.join(process.env.WECHAT_AI_HOME, "config.json"), { force: true });
+  clearReaderCache();
+}
 
 console.log("\n" + "=".repeat(50));
 if (fails.length) {

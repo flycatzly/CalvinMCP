@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DIRS, MCP_DIR, ROOT, ensureDirs, readConfig, readJson, writeJson, logger, formatDate } from './core.mjs';
+import { DIRS, MCP_DIR, ROOT, ensureDirs, readConfig, readJson, writeJson, logger, formatDate, assertSafeId } from './core.mjs';
 
 const execFileAsync = promisify(execFile);
 const L = logger('schedule');
@@ -14,12 +14,20 @@ function loadIndex() { return readJson(INDEX_FILE(), {}) || {}; }
 function saveIndex(o) { writeJson(INDEX_FILE(), o); }
 
 export function taskPrefix() { return (readConfig().schedule && readConfig().schedule.taskPrefix) || 'WebRPA'; }
-export function taskName(flowId) { return taskPrefix() + '\\' + flowId; }
-export function wrapperPath(flowId) { return path.join(DIRS.work, 'sched', flowId + '.cmd'); }
-export function paramsPath(flowId) { return path.join(DIRS.work, 'sched', flowId + '.params.json'); }
+export function taskName(flowId) { return taskPrefix() + '\\' + assertSafeId(flowId, '流程 id'); }
+
+/** sched/ 下的文件名都由 flowId 拼出，统一过安全闸并复核落在 sched/ 内（防路径穿越） */
+function schedFile(flowId, suffix) {
+  const p = path.join(DIRS.work, 'sched', assertSafeId(flowId, '流程 id') + suffix);
+  if (!path.resolve(p).startsWith(path.resolve(path.join(DIRS.work, 'sched')) + path.sep)) throw new Error('流程 id 不合法（越出定时目录）: ' + String(flowId).slice(0, 40));
+  return p;
+}
+export function wrapperPath(flowId) { return schedFile(flowId, '.cmd'); }
+export function paramsPath(flowId) { return schedFile(flowId, '.params.json'); }
 
 /** 生成任务计划调用的 .cmd 包装器（避免命令行引号地狱） */
 export function writeWrapper(flowId, opts = {}) {
+  flowId = assertSafeId(flowId, '流程 id'); // 日志名也用 flowId 拼接，入口先闸一次
   const dir = path.dirname(wrapperPath(flowId));
   fs.mkdirSync(dir, { recursive: true });
   const logFile = path.join(DIRS.logs, 'schedule-' + flowId + '.log');

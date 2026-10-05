@@ -1,0 +1,75 @@
+# 全链路 CI —— 三态判据全跑（与《部署说明.详细版》§15.3 同一口径）：
+#   zero-dep     : mode 1 + mode 2，故意**不装** npm 依赖 —— 纯净发布包口径就是零依赖可跑，
+#                  执行层缺失要诚实 SKIP，不能假绿假红（判据会校验 SKIP 语义）。
+#   full         : mode 3 全量态（ubuntu + windows 双平台：通道决策矩阵是平台相关的，
+#                  Windows 默认 msedge、其余回落自带 chromium —— 跨平台正是 H13 钉的漂移面）。
+#   release-gate : 发版门禁（distribute 收尾自动「一次性副本 verify-all --mode 2 + 终态哈希终查」）。
+#
+# 浏览器两处都要装（版本不同，不能互相替代）：
+#   · npx playwright install chromium          → @playwright/test 1.63（真实回归矩阵，chromium-1243）
+#   · playwright-cli install-browser chromium  → CLI 自带 playwright-core（chromium-1247）
+# Windows 上 CLI 走 msedge 通道（runner 自带），install-browser chromium 照装即可兜底。
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  zero-dep:
+    name: 判据 mode 1 + 2（零依赖态，Node ${{ matrix.node }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 零依赖裸跑便宜，跨 Node 大版本跑一遍：运行时兼容性（spawn/ESM/内置模块）
+        # 的漂移只有真跑才现形 —— 开发机在 24、CI 常驻 22，两边都得是绿的
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 故意不跑 npm ci：零依赖裸跑才是本 job 要验的形态
+      - name: 判据 mode 1（零依赖裸跑 12 套）
+        run: node mcp/test/verify-all.mjs --mode 1
+      - name: 判据 mode 2（零依赖 + 浏览器面诚实 SKIP）
+        run: node mcp/test/verify-all.mjs --mode 2
+
+  full:
+    name: 判据 mode 3（全量态，${{ matrix.os }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 装可选依赖
+        run: npm ci
+      - name: 装 @playwright/test 浏览器（真实回归矩阵用）
+        run: npx playwright install --with-deps chromium
+      - name: 装 CLI 浏览器（通道回落自带 chromium 时用）
+        run: node node_modules/@playwright/cli/playwright-cli.js install-browser chromium --with-deps
+      # 通道配置由 verify-all 前置自愈按平台生成（Windows 默认 msedge，其余 chromium），
+      # 与 install.mjs / setup-cli-config.mjs 共用同一决策源（cli-config.mjs）。
+      - name: 判据 mode 3（可选依赖必须就位，矩阵真跑 2/6/1 → 4 签名）
+        run: node mcp/test/verify-all.mjs --mode 3
+
+  release-gate:
+    name: 发版门禁（纯净副本验收 + 终态哈希终查）
+    runs-on: ubuntu-latest
+    needs: [zero-dep, full]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 不装依赖：门禁里的嵌套 verify-all --mode 2 跑在无 node_modules 的一次性副本上，
+      # 副本验后即删；门禁失败退出码 3 = 发布包不可交付。
+      - name: distribute（自动跑发版门禁）
+        run: node skill/playwright-verify/scripts/distribute.mjs

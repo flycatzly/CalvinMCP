@@ -279,7 +279,8 @@ export function recalcSessionCounts(db, ids = null) {
   }
   const list = [...new Set(ids)].filter(Boolean);
   if (!list.length) return;
-  cached(db, `${base} AND sessions.id IN (${list.map(() => "?").join(",")})`).run(...list);
+  // json_each 传一个 JSON 数组参数：语句形状固定（可复用缓存），也没有 32766 个绑定参数的上限
+  cached(db, `${base} AND sessions.id IN (SELECT value FROM json_each(?))`).run(JSON.stringify(list));
 }
 
 export function listSessions({ kind, sinceMs, untilMs, limit = 200, minMessages = 1, order = "last" } = {}) {
@@ -290,7 +291,8 @@ export function listSessions({ kind, sinceMs, untilMs, limit = 200, minMessages 
     if (kinds.length) { where.push(`kind IN (${kinds.map(() => "?").join(",")})`); args.push(...kinds); }
   }
   if (sinceMs) { where.push("COALESCE(last_ts,0) >= ?"); args.push(sinceMs); }
-  if (untilMs) { where.push("COALESCE(first_ts,0) <= ? OR first_ts IS NULL"); args.push(untilMs); }
+  // 注意括号：OR 条件不加括号会被 AND 优先级架空，first_ts IS NULL 的会话绕过其余过滤
+  if (untilMs) { where.push("(COALESCE(first_ts,0) <= ? OR first_ts IS NULL)"); args.push(untilMs); }
   if (minMessages > 1) { where.push("msg_count >= ?"); args.push(minMessages); }
   const sql = `SELECT * FROM sessions ${where.length ? "WHERE " + where.join(" AND ") : ""}
     ORDER BY ${order === "name" ? "name ASC" : "COALESCE(last_ts,0) DESC"} LIMIT ?`;
@@ -389,17 +391,62 @@ export function insertMessages(db, msgs, opts = {}) {
   return out;
 }
 
+// 兜底共享冻结空数组：语义与逐行 [] 一致（全库对消息行 links/attachments 零变更点，已审计），
+// 冻结让未来误改快速失败而非静默串数据；省 20 万行 × 2 次分配。
+const EMPTY = Object.freeze([]);
+// _indexed 挂原型（不可枚举）：库行的 links 列在索引期已完整提取（rowToCanonical），
+// 空数组即「无链接」，分析路径不必再对正文跑提取正则。手写消息（无此原型）不受影响；
+// spread 拷贝丢标记的行为与旧「不可枚举自有属性」完全一致（测试锁定）。
+const INDEXED_PROTO = {};
+Object.defineProperty(INDEXED_PROTO, "_indexed", { value: true, enumerable: false });
+
 export function rowToMessage(r) {
-  const out = { ...r, is_owner: !!r.is_owner, links: pj(r.links, []), attachments: pj(r.attachments, []) };
-  // 不可枚举标记：库行的 links 列在索引期已完整提取（rowToCanonical），
-  // 空数组即「无链接」，分析路径不必再对正文跑提取正则。手写消息（测试固件显式 links: []）不受影响。
-  Object.defineProperty(out, "_indexed", { value: true, enumerable: false });
+  // 不用 {...r} 展开：node:sqlite 行是 null 原型对象，V8 对它展开走慢路径
+  // （20 万行实测 205ms，同内容的纯 JS 对象整套映射才 41ms）；逐键拷贝语义等价：
+  // 键面与键序（行键原序 + attachments 补尾）、JSON 序列化、spread 丢失行为均不变。
+  const out = Object.create(INDEXED_PROTO);
+  for (const k of Object.keys(r)) out[k] = k === "is_owner" ? !!r[k] : r[k];
+  out.links = pj(r.links, EMPTY);
+  out.attachments = pj(r.attachments, EMPTY);
   return out;
 }
 
-/** 轻量行：不解析 links/attachments JSON，供只读文本/时间戳的分析路径使用 */
+/** 轻量行：不解析 links/attachments JSON，供只读文本/时间戳的分析路径使用。
+ *  不带 _indexed（links 未解析，messageLinks 需回退正文提取语义）。 */
 function rowToMessageLight(r) {
-  return { ...r, is_owner: !!r.is_owner, links: [], attachments: [] };
+  const out = {};
+  for (const k of Object.keys(r)) out[k] = k === "is_owner" ? !!r[k] : r[k];
+  out.links = EMPTY;
+  out.attachments = EMPTY;
+  return out;
+}
+
+/** 窗口行（非轻量）的消费列（下标映射的唯一事实源，SQL 拼接与 rowFromWindowTuple 共用）：
+ *  analyze 用 session_name/sender/is_owner/ts/content/links，buildCandidates/normMessage 另需
+ *  id/session_kind/sender_id/source，contactDailyRows 同覆盖。session_id/day/attachments/run_id
+ *  在消费链路（signals/views/reportMd/opportunities/server）零读取，跳过可省列读取与
+ *  attachments 的 JSON 解析；映射兜底让行上仍带 attachments: [] 键。 */
+const WINDOW_COLS = ["id", "session_name", "session_kind", "sender", "sender_id", "is_owner", "ts", "content", "links", "source"];
+const WINDOW_LIGHT_COLS = "id,session_id,session_name,session_kind,sender,sender_id,is_owner,ts,day,content";
+
+/** 窗口行 数组行 → 消息行（下标取列，列序由 WINDOW_COLS 固定，取数前用 stmt.columns() 校验）。
+ *  与 rowToMessage 的对象路径 JSON 逐行等价（键序、_indexed 原型、is_owner 布尔化、脏 links 回退）；
+ *  links 列恰为 '[]' 时返回共享冻结空数组（见 rowFromTuple 注释）。 */
+export function rowFromWindowTuple(r) {
+  const out = Object.create(INDEXED_PROTO);
+  out.id = r[0];
+  out.session_name = r[1];
+  out.session_kind = r[2];
+  out.sender = r[3];
+  out.sender_id = r[4];
+  out.is_owner = !!r[5];
+  out.ts = r[6];
+  out.content = r[7];
+  const lk = r[8];
+  out.links = lk === "[]" ? EMPTY : pj(lk, EMPTY);
+  out.source = r[9];
+  out.attachments = EMPTY;
+  return out;
 }
 
 export function messagesInWindow({ sinceMs, untilMs, sessionIds, limit = 100000, order = "asc", light = false } = {}) {
@@ -409,10 +456,97 @@ export function messagesInWindow({ sinceMs, untilMs, sessionIds, limit = 100000,
     where.push(`session_id IN (${sessionIds.map(() => "?").join(",")})`);
     args.push(...sessionIds);
   }
-  const cols = light ? "id,session_id,session_name,session_kind,sender,sender_id,is_owner,ts,day,content" : "*";
+  const cols = light ? WINDOW_LIGHT_COLS : WINDOW_COLS.join(", ");
   const sql = `SELECT ${cols} FROM messages WHERE ${where.join(" AND ")} ORDER BY ts ${order === "desc" ? "DESC" : "ASC"} LIMIT ?`;
   args.push(limit);
-  return cached(store(),sql).all(...args).map(light ? rowToMessageLight : rowToMessage);
+  const stmt = cached(store(), sql);
+  // 非轻量行走数组行模式（同 messagesForAnalyze：物化 301→237ms/20 万行，整链 408→235ms）；
+  // 轻量行保持 rowToMessageLight（无调用方走 light:true，暂不动）。旧 Node 回退对象路径。
+  if (!light && typeof stmt.setReturnArrays === "function") {
+    const names = stmt.columns().map((c) => c.name);
+    if (names.length !== WINDOW_COLS.length || names.some((n, i) => n !== WINDOW_COLS[i])) {
+      throw new Error("messagesInWindow 列序与下标映射器不一致：" + names.join(","));
+    }
+    stmt.setReturnArrays(true);
+    return stmt.all(...args).map(rowFromWindowTuple);
+  }
+  return stmt.all(...args).map(light ? rowToMessageLight : rowToMessage);
+}
+
+/** 裸行取数：只取 5 列且跳过 rowToMessage 映射，供只需要文本/时间戳/发送者的分析路径（复联）。
+ *  行结构 { session_name, sender, is_owner, ts, content }，按 ts 升序（复联按会话分组前不需再取 links）。
+ *  数组行模式（轮12）：裸行本无旧映射可省，取数级收益即物化差（POC 20 万行 5 列：对象行 ~220ms / 数组+映射 ~185ms，-12~-18%）；
+ *  链路级更大（reactivation 400d 同版本 A/B 358→229/240ms，-34%）：{} 映射让行成为快隐藏类普通对象，
+ *  下游逐行属性访问快于 null 原型行（rowFromRawTuple 用 {} 而非 Object.create(null)，实测再快 5-15%）。
+ *  is_owner 保持裸值（0/1），
+ *  行值/键序与旧「裸行直返」逐行 JSON 等价（对拍锁定）；行原型为普通对象（与 rowToMessage 行同型），
+ *  旧 Node 回退返回 null 原型裸行——原型不作契约承诺。 */
+const RAW_COLS = ["session_name", "sender", "is_owner", "ts", "content"];
+export function rowFromRawTuple(r) {
+  const out = {};
+  out.session_name = r[0];
+  out.sender = r[1];
+  out.is_owner = r[2];
+  out.ts = r[3];
+  out.content = r[4];
+  return out;
+}
+export function messagesRaw({ sinceMs, untilMs, limit = 500000 } = {}) {
+  const stmt = cached(store(), `SELECT ${RAW_COLS.join(", ")} FROM messages WHERE ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?`);
+  if (typeof stmt.setReturnArrays === "function") {
+    const names = stmt.columns().map((c) => c.name);
+    if (names.length !== RAW_COLS.length || names.some((n, i) => n !== RAW_COLS[i])) {
+      throw new Error("messagesRaw 列序与下标映射器不一致：" + names.join(","));
+    }
+    stmt.setReturnArrays(true);
+    return stmt.all(sinceMs ?? 0, untilMs ?? Date.now(), limit).map(rowFromRawTuple);
+  }
+  return stmt.all(sinceMs ?? 0, untilMs ?? Date.now(), limit);
+}
+
+/** analyze 专用行：只取分析实际消费的 6 列（跳过 id/session_id/session_kind/sender_id/day/attachments），
+ *  links 列照常解析并打 _indexed 标记，messageLinks 不会对正文重跑 URL 提取。
+ *  行结构兼容 analyze 的输入约定；attachments 恒为空数组。
+ *  取数走数组行模式（Node 23.4+ 的 setReturnArrays）：跳过行对象物化与逐行 Object.keys，
+ *  20 万行实测 .all() 对象 210ms / 数组 132ms、整链 311→152ms；旧 Node 无此 API 时
+ *  回退对象行 + rowToMessage（与数组路径逐行 JSON 等价，测试锁定）。 */
+const ANALYZE_COLS = ["session_name", "sender", "is_owner", "ts", "content", "links"];
+
+/** 数组行 → 消息行（下标取列，列序由 ANALYZE_COLS 固定，取数前用 stmt.columns() 校验）。
+ *  与 rowToMessage 的对象路径 JSON 逐行等价：键序同为 session_name…links + attachments 补尾、
+ *  _indexed 同挂原型、is_owner 同布尔化、脏 links 同回退空数组。唯一差异：links 列恰为 '[]' 时
+ *  返回共享冻结空数组而非新数组（JSON 形状一致；消息行 links 全库零变更点已审计，冻结使误改快速失败）。 */
+export function rowFromTuple(r) {
+  const out = Object.create(INDEXED_PROTO);
+  out.session_name = r[0];
+  out.sender = r[1];
+  out.is_owner = !!r[2];
+  out.ts = r[3];
+  out.content = r[4];
+  const lk = r[5];
+  out.links = lk === "[]" ? EMPTY : pj(lk, EMPTY);
+  out.attachments = EMPTY;
+  return out;
+}
+
+export function messagesForAnalyze({ sinceMs, untilMs, sessionIds, limit = 100000 } = {}) {
+  const where = ["ts >= ?", "ts <= ?"];
+  const args = [sinceMs ?? 0, untilMs ?? Date.now()];
+  if (sessionIds && sessionIds.length) {
+    where.push(`session_id IN (${sessionIds.map(() => "?").join(",")})`);
+    args.push(...sessionIds);
+  }
+  args.push(limit);
+  const stmt = cached(store(), `SELECT ${ANALYZE_COLS.join(", ")} FROM messages WHERE ${where.join(" AND ")} ORDER BY ts ASC LIMIT ?`);
+  if (typeof stmt.setReturnArrays === "function") {
+    const names = stmt.columns().map((c) => c.name);
+    if (names.length !== ANALYZE_COLS.length || names.some((n, i) => n !== ANALYZE_COLS[i])) {
+      throw new Error("messagesForAnalyze 列序与下标映射器不一致：" + names.join(","));
+    }
+    stmt.setReturnArrays(true);
+    return stmt.all(...args).map(rowFromTuple);
+  }
+  return stmt.all(...args).map(rowToMessage);
 }
 
 export function searchMessages({ keyword, keywords, chat, sender, sinceMs, untilMs, limit = 50, ownerOnly = false, excludeOwner = false } = {}) {
@@ -494,12 +628,6 @@ export function contactsByLabels(labels) {
     .all(...labels);
 }
 
-export function syncContactsFromMessages(db) {
-  db.exec(`INSERT INTO contacts(id,name,last_ts,first_ts,msg_count,is_owner)
-    SELECT LOWER(HEX(RANDOMBLOB(8))), sender, MAX(ts), MIN(ts), COUNT(*), MAX(is_owner)
-    FROM messages WHERE sender IS NOT NULL AND sender <> '' GROUP BY sender
-    ON CONFLICT(id) DO NOTHING`);
-}
 /**
  * 重算联系人统计。
  * 传入 senders 时只重算这些发送者（增量索引路径），否则全量重建。

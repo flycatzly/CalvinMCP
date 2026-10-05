@@ -231,6 +231,25 @@ function errorTextOf(result) {
  * @param {object} opts { file }
  */
 export function summarize(json, opts = {}) {
+  // ---- 输入校验：解析失败/不像报告必须报错，绝不静默给「全部通过（0 条）」 ----
+  // 把解析失败说成没有失败，是「不报错但结论错」的典型：调用方拿到全零会当成真绿。
+  // 工具面 args.json 是原始字符串（旧实现根本不解析，直接全零）；文件路径先经
+  // summarizeFile 解析再进来。错误形状与 summarizeFile 一致（.error 通道），
+  // 上层：工具 fail(..., 'REPORT_ERROR')、CLI finish(2) —— 两边判定口径同源。
+  const bad = (msg) => ({ tool: 'summarize_report', version: 1, source: opts.file || '(inline)', error: msg });
+  if (typeof json === 'string') {
+    try {
+      json = JSON.parse(json);
+    } catch (e) {
+      return bad(`报告 JSON 解析失败: ${e.message}`);
+    }
+  }
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    return bad('报告不是 JSON 对象');
+  }
+  if (json.suites === undefined && json.stats === undefined) {
+    return bad('不是 Playwright JSON 报告（缺 suites/stats 字段）');
+  }
   const specs = walkSuites(json.suites || [], [], []);
   const stats = {
     expected: json.stats?.expected ?? 0,
@@ -373,6 +392,176 @@ export function summarizeFile(file) {
   return summarize(json, { file });
 }
 
+/* ------------------------------------------------------------------ *
+ * 多报告趋势（v1.8.7）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 跨 N 份**已归因**报告（summarize() 的输出）做趋势：通过率曲线 + 签名漂移。
+ *
+ * 口径：
+ *   - 顺序 = 传入顺序（目录展开由上层按 mtime 升序排好；谁排的谁负责时间语义）；
+ *   - 签名沿用 summarize 的同一 signature()（单一源，不另造归一化 ——
+ *     另造一套必然与单报告口径漂移，「上周的它」和「这周的它」就永远对不上）；
+ *   - 漂移以「末份 vs 之前所有」计算：新签名 = 末份有而之前全无（回归信号）；
+ *     消除 = 之前有而末份无（修复成效）；持续 = 两边都有（存量，附 prev→last 计数）。
+ *
+ * @param {object[]} reports summarize() 输出数组（含 .error 的报告由上层拦下，这里不吞）
+ */
+export function summarizeTrend(reports) {
+  const runs = reports.map((r, i) => ({
+    index: i + 1,
+    source: r.source,
+    passed: r.totals.passed,
+    failed: r.totals.failed,
+    flaky: r.totals.flaky,
+    skipped: r.totals.skipped,
+    durationSec: r.totals.durationSec,
+    passRate: r.totals.tests ? Math.round((r.totals.passed / r.totals.tests) * 1000) / 10 : 0,
+    signatureCount: r.clusters.length,
+  }));
+
+  // 签名 × 份数的计数矩阵（对齐数组，缺位为 0）。
+  // 计数加的是簇的 count —— 一个签名在同一份报告里可能聚了多条失败（钉抓过：
+  // 写成 ++ 会把「3 条同源」记成 1，持续签名的 prev→last 全部失真）。
+  const series = new Map();
+  reports.forEach((r, i) => {
+    for (const c of r.clusters) {
+      if (!series.has(c.signature)) {
+        series.set(c.signature, {
+          category: c.category,
+          categoryLabel: c.categoryLabel,
+          counts: reports.map(() => 0),
+          sample: c.sample,
+        });
+      }
+      series.get(c.signature).counts[i] += c.count;
+    }
+  });
+
+  const last = reports.length - 1;
+  const newSignatures = [];
+  const resolvedSignatures = [];
+  const persisting = [];
+  for (const [sig, info] of series) {
+    const before = info.counts.slice(0, last);
+    const lastCount = info.counts[last];
+    const entry = { signature: sig, category: info.category, categoryLabel: info.categoryLabel, lastCount };
+    if (lastCount > 0 && before.every((n) => n === 0)) newSignatures.push(entry);
+    else if (lastCount === 0 && before.some((n) => n > 0)) resolvedSignatures.push(entry);
+    else persisting.push({ ...entry, prevCount: before[before.length - 1] ?? 0 });
+  }
+  const byWeight = (a, b) => b.lastCount - a.lastCount;
+  newSignatures.sort(byWeight);
+  resolvedSignatures.sort(byWeight);
+  persisting.sort(byWeight);
+
+  const first = runs[0];
+  const lastRun = runs[runs.length - 1];
+  const failedDelta = lastRun.failed - first.failed;
+  return {
+    tool: 'summarize_report',
+    version: 1,
+    mode: 'trend',
+    runCount: runs.length,
+    runs,
+    headline: `${runs.length} 份报告：失败 ${first.failed} → ${lastRun.failed}`
+      + `（${failedDelta >= 0 ? '+' : ''}${failedDelta}），通过率 ${first.passRate}% → ${lastRun.passRate}%，`
+      + `新签名 ${newSignatures.length} / 消除 ${resolvedSignatures.length} / 持续 ${persisting.length}`,
+    signatureSeries: [...series.entries()]
+      .map(([signature, info]) => ({ signature, ...info }))
+      .sort((a, b) => b.counts[last] - a.counts[last] || Math.max(...b.counts) - Math.max(...a.counts)),
+    newSignatures,
+    resolvedSignatures,
+    persisting,
+  };
+}
+
+/**
+ * 趋势 md 各列表的渲染行上限：签名爆炸时 md 只展示权重最高的前 50 条 + 诚实「还有 N 条」计数。
+ * v1.8.11 起该上限同时管 md 与 structuredContent 两个面（单一源 —— 两处各写一个 50，漂移只是
+ * 时间问题）：全量数据以工具面落盘的趋势 JSON 文件为准，md/上下文都只截展示。
+ */
+export const TREND_MD_MAX_ROWS = 50;
+
+function capMdRows(rows) {
+  if (rows.length <= TREND_MD_MAX_ROWS) return { rows, note: null };
+  return {
+    rows: rows.slice(0, TREND_MD_MAX_ROWS),
+    note: `…（该列表还有 ${rows.length - TREND_MD_MAX_ROWS} 条未展示，共 ${rows.length} 条；完整数据在趋势落盘的同名 JSON 文件 —— md 只截展示不截数据）`,
+  };
+}
+
+/**
+ * 趋势的上下文有界版（v1.8.11）：structuredContent 是回灌模型的负载，签名爆炸时随签名数
+ * 线性膨胀（实测 130 签名 × 5 份 = 50.9KB），与「长产物一律落盘不灌上下文」红线相悖。
+ * 口径（四条，缺一不可）：
+ *   - 全量趋势 JSON 由工具面落盘（trend-*.json），CI 对账与 join-back 以落盘为准，一行不缺；
+ *   - 四个列表（序列/新/消除/持续）各截前 TREND_MD_MAX_ROWS 条 —— 与 md 同一常量单一源；
+ *   - 条目去 sample（证据文本全量在落盘 JSON，不必逐条回灌）；签名串/计数矩阵逐字段不动；
+ *   - 每列表带 *Total 诚实计数 + contextTruncated 标记，version 升 2 如实标记形状变更
+ *     （落盘 JSON 保持 version 1 的全量原形）。
+ */
+export function slimTrendForContext(trend) {
+  const cap = (list) => list.slice(0, TREND_MD_MAX_ROWS);
+  return {
+    ...trend,
+    version: 2,
+    signatureSeries: cap(trend.signatureSeries.map(({ sample, ...rest }) => rest)),
+    newSignatures: cap(trend.newSignatures),
+    resolvedSignatures: cap(trend.resolvedSignatures),
+    persisting: cap(trend.persisting),
+    signatureSeriesTotal: trend.signatureSeries.length,
+    newSignaturesTotal: trend.newSignatures.length,
+    resolvedSignaturesTotal: trend.resolvedSignatures.length,
+    persistingTotal: trend.persisting.length,
+    contextTruncated: trend.signatureSeries.length > TREND_MD_MAX_ROWS
+      || trend.newSignatures.length > TREND_MD_MAX_ROWS
+      || trend.resolvedSignatures.length > TREND_MD_MAX_ROWS
+      || trend.persisting.length > TREND_MD_MAX_ROWS,
+  };
+}
+
+/** 趋势的人读版（落盘 md 用；签名截 130 字符与单报告 formatText 同口径）。 */
+export function formatTrendText(trend) {
+  const out = [];
+  out.push(`# 回归趋势（${trend.runCount} 份报告）`);
+  out.push('');
+  out.push(trend.headline);
+  out.push('');
+  out.push('| # | 报告 | 通过/总数 | 通过率 | 失败 | 偶发 | 耗时s | 签名数 |');
+  out.push('|---|---|---|---|---|---|---|---|');
+  for (const r of trend.runs) {
+    out.push(`| ${r.index} | ${r.source} | ${r.passed}/${r.passed + r.failed + r.flaky + r.skipped} | ${r.passRate}% | ${r.failed} | ${r.flaky} | ${r.durationSec} | ${r.signatureCount} |`);
+  }
+  out.push('');
+  out.push('## 签名漂移（末份 vs 之前所有）');
+  out.push('');
+  // 三个漂移列表共用同一渲染骨架：标题带总数（原序：前缀 N 个（说明）），行超上限截断 + 诚实计数行。
+  const renderList = (prefix, suffix, list, fmt) => {
+    out.push(`### ${prefix} ${list.length} 个${suffix}`);
+    const { rows, note } = capMdRows(list);
+    for (const s of rows) out.push(fmt(s));
+    if (note) out.push(note);
+    else if (!list.length) out.push('- （无）');
+  };
+  renderList('新签名', '（回归信号，末份新出现）', trend.newSignatures,
+    (s) => `- [${s.category}] ${s.signature.slice(0, 130)}（${s.lastCount} 条）`);
+  out.push('');
+  renderList('消除', '（修复成效，末份已无）', trend.resolvedSignatures,
+    (s) => `- [${s.category}] ${s.signature.slice(0, 130)}`);
+  out.push('');
+  renderList('持续', '（存量，上份 → 末份计数）', trend.persisting,
+    (s) => `- [${s.category}] ${s.signature.slice(0, 130)}（${s.prevCount} → ${s.lastCount}）`);
+  out.push('');
+  out.push('## 签名计数序列（按份）');
+  out.push('');
+  const { rows: seriesRows, note: seriesNote } = capMdRows(trend.signatureSeries);
+  for (const s of seriesRows) out.push(`- [${s.category}] ${s.signature.slice(0, 130)}：${s.counts.join(' → ')}`);
+  if (seriesNote) out.push(seriesNote);
+  return out.join('\n');
+}
+
 /** 人读版渲染：结论 + 证据 + 下一步。 */
 export function formatText(report) {
   if (report.error) return `summarize_report 失败：${report.error}`;
@@ -403,4 +592,7 @@ export function formatText(report) {
   return out.join('\n');
 }
 
-export default { clean, classify, signature, summarize, summarizeFile, formatText, cleanIsIdempotent, CATEGORIES, CLASSIFIERS };
+export default {
+  clean, classify, signature, summarize, summarizeFile, formatText, cleanIsIdempotent,
+  CATEGORIES, CLASSIFIERS, summarizeTrend, formatTrendText, slimTrendForContext,
+};

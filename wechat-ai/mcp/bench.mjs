@@ -4,7 +4,8 @@
  *
  *   node bench.mjs                 # 默认 20 万条消息 / 600 个会话
  *   node bench.mjs --n 500000 --sessions 1200
- *   node bench.mjs --json          # 只输出机器可读结果
+ *   node bench.mjs --runs 1        # 单跑模式（不取中位）
+ *   node bench.mjs --json          # 只输出机器可读结果（每行 3 跑取中位，带 spreadMs 极差）
  *
  * 数据全部合成，写入临时数据根，不影响 ~/.wechat-ai。
  */
@@ -19,18 +20,56 @@ const num = (flag, dflt) => {
 };
 const N = num("--n", 200_000);
 const SESSIONS = num("--sessions", 600);
+const RUNS = Math.max(1, num("--runs", 3));
 const JSON_ONLY = argv.includes("--json");
+
+// 跨跑自污染防护（轮13）：同进程连跑同一 fn 时，跑 1 的 20 万行垃圾会让跑 2/3 计算行变慢 ~2×
+// （机制=GC 压力；--runs 1 立即回基线可证）。3 跑中位要求每次测量前强制 GC，需 --expose-gc；
+// 未带时自动以 --expose-gc 重启自身（一次性，WAI_BENCH_REEXEC 防环），GC 不计入计时。
+if (RUNS > 1 && typeof global.gc !== "function" && !process.env.WAI_BENCH_REEXEC) {
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync(process.execPath, ["--expose-gc", ...process.argv.slice(1)], {
+    stdio: "inherit",
+    env: { ...process.env, WAI_BENCH_REEXEC: "1" },
+  });
+  process.exit(r.status ?? 1);
+}
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "wai-bench-"));
 process.env.WECHAT_AI_HOME = ROOT;
 
 const results = [];
-const time = async (name, fn) => {
+// 稳态化（轮13）：除语料写入外每行 3 跑取中位，极差 >15% 时随行输出 [N 跑 a/b/c]——单跑会被
+// 同机噪声误读（写路径行曾现 448-704ms 双峰）。重复跑必须做 GC 隔离（见 time() 与启动自重启），
+// 否则跑 1 的垃圾让跑 2/3 计算行慢 ~2×（跨跑自污染）。可重复性前提：写路径行 fn() 内部自带
+// snapshot() 同起点库副本（每次跑独立重建），工具行时间窗按调用时刻毫秒级解析（analysisCache
+// 键必不同，各跑均走冷路径），读行只读。语料写入行是 setup 行（INSERT OR IGNORE，重跑变空插入），单跑。
+const timeOnce = async (name, fn) => {
   const t0 = process.hrtime.bigint();
   const out = await fn();
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  results.push({ name, ms, note: typeof out === "string" ? out : "" });
+  results.push({ name, ms, spreadMs: 0, note: typeof out === "string" ? out : "" });
   if (!JSON_ONLY) console.log("  " + name.padEnd(38, " ") + ms.toFixed(0).padStart(7) + " ms  " + (typeof out === "string" ? out : ""));
+  return out;
+};
+const time = async (name, fn) => {
+  const runs = [];
+  let out;
+  for (let i = 0; i < RUNS; i++) {
+    // 每次测量前强制 GC（含首跑）：清掉上一跑/上一行的垃圾，跑与跑、行与行同起点。
+    global.gc?.();
+    const t0 = process.hrtime.bigint();
+    out = await fn();
+    runs.push(Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  runs.sort((a, b) => a - b);
+  const ms = runs[Math.floor(runs.length / 2)];
+  const spreadMs = runs[runs.length - 1] - runs[0];
+  results.push({ name, ms, spreadMs: Math.round(spreadMs), note: typeof out === "string" ? out : "" });
+  if (!JSON_ONLY) {
+    const flag = RUNS > 1 && ms > 0 && spreadMs / ms > 0.15 ? "  [" + RUNS + " 跑 " + runs.map((r) => r.toFixed(0)).join("/") + "]" : "";
+    console.log("  " + name.padEnd(38, " ") + ms.toFixed(0).padStart(7) + " ms  " + (typeof out === "string" ? out : "") + flag);
+  }
   return out;
 };
 
@@ -65,7 +104,7 @@ for (let s = 0; s < SESSIONS; s++) {
 }
 
 console.log("合成数据：" + N.toLocaleString() + " 条消息 / " + SESSIONS + " 个会话 / 覆盖 " + spanDays + " 天");
-await time("写入 " + N.toLocaleString() + " 条消息", () => {
+await timeOnce("写入 " + N.toLocaleString() + " 条消息", () => {
   const stmt = db.prepare(`INSERT OR IGNORE INTO messages
     (id,session_id,session_name,session_kind,sender,sender_id,is_owner,ts,day,content,links,attachments,source,run_id)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -103,7 +142,7 @@ await time("写入 " + N.toLocaleString() + " 条消息", () => {
 
 db.exec("ANALYZE");
 
-const { searchMessages, messagesInWindow, listSessions, storeStats } = await import(new URL("./lib/store.mjs", import.meta.url).href);
+const { searchMessages, messagesInWindow, messagesRaw, messagesForAnalyze, listSessions, storeStats } = await import(new URL("./lib/store.mjs", import.meta.url).href);
 const { analyze, reactivation } = await import(new URL("./lib/signals.mjs", import.meta.url).href);
 const { freshness } = await import(new URL("./lib/ingest.mjs", import.meta.url).href);
 
@@ -126,19 +165,20 @@ await time("messagesInWindow 24h", () => messagesInWindow({ ...w24, limit: 50000
 await time("messagesInWindow 7d", () => messagesInWindow({ ...w7, limit: 500000 }).length + " 条");
 await time("messagesInWindow 400d（全量）", () => messagesInWindow({ ...w365, limit: 500000 }).length + " 条");
 await time("analyze 24h", () => {
-  const a = analyze({ messages: messagesInWindow({ ...w24, limit: 500000 }), ...w24 });
+  const a = analyze({ messages: messagesForAnalyze({ ...w24, limit: 500000 }), ...w24 });
   return a.coverage.messages + " 条 / " + a.coverage.sessions + " 会话";
 });
 await time("analyze 7d", () => {
-  const a = analyze({ messages: messagesInWindow({ ...w7, limit: 500000 }), ...w7 });
+  const a = analyze({ messages: messagesForAnalyze({ ...w7, limit: 500000 }), ...w7 });
   return a.coverage.messages + " 条";
 });
 await time("analyze 400d（复联路径）", () => {
-  const a = analyze({ messages: messagesInWindow({ ...w365, limit: 500000 }), ...w365 });
+  const a = analyze({ messages: messagesForAnalyze({ ...w365, limit: 500000 }), ...w365 });
   return a.coverage.messages.toLocaleString() + " 条";
 });
 await time("reactivation 400d", () => {
-  const r = reactivation({ messages: messagesInWindow({ ...w365, limit: 500000 }), inactiveDays: 21 });
+  // 与 wai_reactivation 工具同路径：5 列裸行取数（跳过 rowToMessage 映射）
+  const r = reactivation({ messages: messagesRaw({ ...w365, limit: 500000 }), inactiveDays: 21 });
   return r.all.length + " 个候选";
 });
 await time("freshness", () => {
@@ -189,37 +229,51 @@ await time("工具 wai_today", async () => {
 });
 
 // ---------------- 增量索引路径（曾经是 O(会话数 x 消息数)） ----------------
-const { ingestMessages } = await import(new URL("./lib/ingest.mjs", import.meta.url).href);
-await time("逐会话增量索引 " + SESSIONS + " 个会话", () => {
-  for (let s = 0; s < SESSIONS; s++) {
-    const msgs = [];
-    for (let i = 0; i < 50; i++) {
-      msgs.push({ session_name: `增量会话${s}`, session_kind: "group", sender: "甲", ts: now - i * 1000, content: "增量内容 " + i });
-    }
-    ingestMessages(db, msgs, { source: "bench-ink" });
-  }
-  return (SESSIONS * 50).toLocaleString() + " 条 / " + SESSIONS + " 次调用";
-});
+// 三条路径各跑在「同一起点」的库副本上：此前串行跑同一个库时，越晚的路径背着越大的库
+// （20 万 → 29 万行，事务提交成本随库变大超线性增长），看起来「deferStats 更慢」是测量混淆而非实现差异。
+const { ingestMessages, flushIngestStats, ingestSessionBatches } = await import(new URL("./lib/ingest.mjs", import.meta.url).href);
 
-// 对比：逐个会话各提交一次事务 vs 攒起来一次性收尾
-const { flushIngestStats } = await import(new URL("./lib/ingest.mjs", import.meta.url).href);
-await time("逐会话索引（每次立即重算统计）", () => {
-  for (let s = 0; s < SESSIONS; s++) {
-    const msgs = [];
-    for (let i = 0; i < 50; i++) msgs.push({ session_name: `即时会话${s}`, session_kind: "group", sender: "乙", ts: now - i * 1000, content: "内容 " + i });
-    ingestMessages(db, msgs, { source: "bench-a" });
-  }
+const snapshot = (name) => {
+  const file = path.join(ROOT, `bench-snap-${name}.db`);
+  try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
+  db.exec("VACUUM INTO '" + file.replace(/\\/g, "/").replace(/'/g, "''") + "'");
+  return openStore(file);
+};
+const makeMsgs = (prefix, s, sender) => {
+  const msgs = [];
+  for (let i = 0; i < 50; i++) msgs.push({ session_name: `${prefix}${s}`, session_kind: "group", sender, ts: now - i * 1000, content: "内容 " + i });
+  return msgs;
+};
+
+await time("整批写入（单事务对照，" + SESSIONS + " 会话）", () => {
+  const db1 = snapshot("one");
+  const all = [];
+  for (let s = 0; s < SESSIONS; s++) all.push(...makeMsgs("单批会话", s, "甲"));
+  ingestMessages(db1, all, { source: "bench-one" });
+  db1.close();
+  return (SESSIONS * 50).toLocaleString() + " 条 / 1 次调用";
+});
+await time("逐会话索引（每会话一事务 + 即时统计）", () => {
+  const db2 = snapshot("per");
+  for (let s = 0; s < SESSIONS; s++) ingestMessages(db2, makeMsgs("即时会话", s, "乙"), { source: "bench-a" });
+  db2.close();
   return (SESSIONS * 50).toLocaleString() + " 条 / " + SESSIONS + " 次调用";
 });
-await time("逐会话索引（批量收尾，deferStats）", () => {
+await time("逐会话索引（deferStats + 攒批收尾）", () => {
+  const db3 = snapshot("defer");
   const pending = [];
-  for (let s = 0; s < SESSIONS; s++) {
-    const msgs = [];
-    for (let i = 0; i < 50; i++) msgs.push({ session_name: `批量会话${s}`, session_kind: "group", sender: "丙", ts: now - i * 1000, content: "内容 " + i });
-    pending.push(ingestMessages(db, msgs, { source: "bench-b", deferStats: true }));
-  }
-  const st = flushIngestStats(db, pending);
+  for (let s = 0; s < SESSIONS; s++) pending.push(ingestMessages(db3, makeMsgs("批量会话", s, "丙"), { source: "bench-b", deferStats: true }));
+  const st = flushIngestStats(db3, pending);
+  db3.close();
   return (SESSIONS * 50).toLocaleString() + " 条 / 收尾 " + st.sessions + " 会话 " + st.senders + " 发送者";
+});
+await time("逐会话索引（每 100 会话一事务 + 攒批统计，wai_vault_scan 形态）", () => {
+  const db4 = snapshot("chunk");
+  const batches = [];
+  for (let s = 0; s < SESSIONS; s++) batches.push(makeMsgs("攒批会话", s, "丁"));
+  const w = ingestSessionBatches(db4, batches, { source: "bench-c" });
+  db4.close();
+  return (SESSIONS * 50).toLocaleString() + " 条 / " + w.chunks + " 批提交 / 插入 " + w.inserted;
 });
 
 const total = results.reduce((a, b) => a + b.ms, 0);

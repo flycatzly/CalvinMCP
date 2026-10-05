@@ -143,6 +143,11 @@ async function main() {
     isError: false,
     check: CHECK((res, d) => d && d.loggedIn === true && d.profile && d.profile.enabled === true, 'profile_login 未保存登录态'),
   });
+  // successText 判定路径：页面上出现目标文字即算登录成功（/form 的「提交工单」按钮常驻）
+  await T('profile_login', { url: DEMO + '/form', successText: '提交工单', timeoutMs: 60000 }, {
+    isError: false,
+    check: CHECK((res, d) => d && d.loggedIn === true && d.url, 'successText 命中应判定登录成功'),
+  });
 
   console.log('\n[流程管理与校验]');
   const mainFlow = {
@@ -201,6 +206,12 @@ async function main() {
     });
   }
   await T('flow_restore', { flowId: '__没有备份的流程__' }, { isError: true });
+
+  // flow_assertion_add 的 regex 字段必须原样落到断言上（url 断言正则匹配的行为由集成套锁住）
+  await T('flow_assertion_add', { flowId: 't-tool-mut', kind: 'url', regex: '/form$', message: '地址应匹配正则' }, {
+    isError: false,
+    check: CHECK((res, d) => d && d.added && d.added.regex === '/form$' && (d.assertions || []).some((x) => x.regex === '/form$'), 'regex 字段未原样落到断言上'),
+  });
 
   console.log('\n[回放 / 预检 / 报告 / 串联]');
   await T('flow_preflight', { flowId: 't-tool-main' }, { isError: false, check: CHECK((res, d) => d && Array.isArray(d.steps)) });

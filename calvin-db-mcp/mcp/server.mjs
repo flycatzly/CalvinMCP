@@ -17,6 +17,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
 import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
 import { selfCheck as cryptoSelfCheck } from "./crypt.mjs";
@@ -27,12 +28,14 @@ import { decryptAny, isEnc2, masterKeyBound } from "./crypt2.mjs";
 //         对外 API 面（selftest 经 server.mjs 导入）保持不变。
 import {
   sanitizeSql, stripComments, stripLeadingComments, guardReadOnly, guardWrite, extractWriteTarget,
-  enforceLimit, checkWhereFragment, createTableGuard, createTableName,
+  enforceLimit, checkWhereFragment, createTableGuard, createTableName, ToolError,
 } from "./guard.mjs";
 import { createPoolManager } from "./pool.mjs";
+// v1.6.9 观测面打点（可选）：DBMCP_ERR_LOG 未设置时零行为，写失败静默，契约零侵入
+import { setScrub, logToolCall } from "./observe.mjs";
 export {
   sanitizeSql, stripComments, guardReadOnly, guardWrite, extractWriteTarget,
-  whereHasColumn, exprHasColumn, extractWhereClause,
+  whereHasColumn, exprHasColumn, extractWhereClause, ToolError,
   enforceLimit, checkWhereFragment, createTableGuard, createTableName,
 } from "./guard.mjs";
 
@@ -44,7 +47,7 @@ function pkgVersion(fallback) {
     return JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8")).version || fallback;
   } catch { return fallback; }
 }
-export const VERSION = pkgVersion("1.6.2");
+export const VERSION = pkgVersion("1.6.25");
 
 /* ------------------------- v1.2.0 SQLite 支持（助手） ------------------------- */
 
@@ -123,9 +126,9 @@ export function intArg(v, name, min, max, dflt) {
   if (v === undefined || v === null || v === "") return dflt;
   const n = typeof v === "number" ? v : Number(String(v).trim());
   if (!Number.isFinite(n) || !Number.isInteger(n)) {
-    throw new Error(`Invalid '${name}': expected an integer, got ${JSON.stringify(v)}.`);
+    throw new ToolError("E_PARAM", `Invalid '${name}': expected an integer, got ${JSON.stringify(v)}.`);
   }
-  if (n < min) throw new Error(`Invalid '${name}': must be >= ${min}, got ${n}.`);
+  if (n < min) throw new ToolError("E_PARAM", `Invalid '${name}': must be >= ${min}, got ${n}.`);
   return Math.min(max, n);
 }
 
@@ -215,6 +218,8 @@ export function getConfiguredSecrets() {
 export function scrub(text) {
   return scrubWith(text, SECRET_LIST);
 }
+// v1.6.9：观测日志的脱敏复用同一 scrub（单一真相源，防清洗规则漂移）
+setScrub(scrub);
 
 // 2) 启动门禁：含明文凭据的配置文件不允许被 git 跟踪、必须被 .gitignore 忽略（防随仓库外发）。
 function guardConfigNotExportable() {
@@ -249,32 +254,40 @@ const INIT_HINT =
   "尚未初始化连接配置：请执行 node import-dbeaver.mjs <DBeaver导出的.dbp文件> 生成 dbmcp.config.json，然后重启 MCP server。";
 
 function getSource(id) {
-  if (cfg.__initRequired) throw new Error(INIT_HINT);
+  if (cfg.__initRequired) throw new ToolError("E_CONFIG", INIT_HINT);
   const s = cfg.sources[id];
-  if (!s || !s.url) {
+  if (!s) {
     const names = Object.keys(cfg.sources).join(", ") || "(none)";
-    throw new Error(`Unknown source '${id}'. Available sources: ${names}`);
+    throw new ToolError("E_NOT_FOUND", `Unknown source '${id}'. Available sources: ${names}`);
+  }
+  // v1.6.8 真实测试修复：sqlite 源支持 url（sqlite://path）与 file 两种形态（sqliteFilePath/列表层早已双认），
+  // 旧版此处只认 s.url——file 形态的源能被列出却在所有数据工具报 "Unknown source"（错误码/文案双误导）。
+  if (!s.url && !s.file) {
+    throw new ToolError("E_CONFIG", `Source '${id}' 缺少连接信息（url 或 file），请检查 dbmcp.config.json。`);
   }
   // v1.0.1: 类型归一化移至加载期，工具调用期不再改写共享配置对象
   if (s.type !== "mysql" && s.type !== "postgres" && s.type !== "sqlite") {
-    throw new Error(`Source '${id}' has unsupported type '${s.type}' (mysql | postgres | oceanbase-as-mysql | sqlite).`);
+    throw new ToolError("E_CONFIG", `Source '${id}' has unsupported type '${s.type}' (mysql | postgres | oceanbase-as-mysql | sqlite).`);
   }
   return s;
 }
 
 // v1.4.0: 连接层拆分至 pool.mjs（依赖注入 cfg/getSource/clampInt/sqliteFilePath），此处构造单例
 // v1.5.3: 注入 scrub（慢查询日志的 SQL 预览同过输出清洗）+ 解构 withTransaction（import atomic）
-const { getPool, runQuery, withTransaction } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub });
+// v1.6.21: runCopyIn（import_data 的 PG COPY FROM STDIN 批路径）
+const { getPool, runQuery, runCopyIn, withTransaction } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub });
 
 /* ------------------------------ identifier utils ---------------------------- */
 
-function splitIdent(table) {
+export function splitIdent(table) {
   const parts = String(table).split(".");
-  if (parts.length > 2) throw new Error(`Invalid table name: ${table}`);
+  if (parts.length > 2) throw new ToolError("E_PARAM", `Invalid table name: ${table}`);
   const [t, s] = [parts[parts.length - 1], parts.length === 2 ? parts[0] : null];
   for (const p of [t, s].filter(Boolean)) {
-    if (!/^[A-Za-z_][\w$]*$/.test(p)) {
-      throw new Error(`Invalid identifier '${p}'. Pass plain names; use the schema parameter instead of qualified names.`);
+    // v1.6.8 真实测试修复：Unicode 感知——旧版纯 ASCII 正则把中文表名/列名判为
+    // "Invalid identifier"（国内库常态名称全被拒）。注入字符（引号/分号/空格等）依旧拒绝。
+    if (!/^[_\p{L}][\p{L}\p{N}$_]*$/u.test(p)) {
+      throw new ToolError("E_PARAM", `Invalid identifier '${p}'. Pass plain names; use the schema parameter instead of qualified names.`);
     }
   }
   return { table: t, schema: s };
@@ -330,9 +343,18 @@ export function countTruncatedCells(rows) {
   return n;
 }
 
-export function stringify(v) {
+/**
+ * v1.6.3: opts.export=true 为落盘导出模式（export_data 的 JSON 路径专用）——
+ *  1) 不做单元格截断：响应面的 2000 字符截断是为省上下文，但导出文件是"交接数据给用户/下游工具"，
+ *     旧版把 >2000 字符的 TEXT 截成 "… <truncated N chars>" 属静默数据丢失（CSV 路径不截断，
+ *     两条路径口径不一致，往返对比会对不上）；文件大小由 20MB 导出上限兜底。
+ *  2) Buffer 输出完整十六进制（与 csvCell 同口径，往返可还原），不再用 <binary …> 预览标记。
+ * 工具响应面行为不变（截断 + 8 字节预览）。口令清洗两条路径都在出口统一做（scrub）。
+ */
+export function stringify(v, opts = {}) {
+  const exportMode = opts.export === true;
   const pretty = process.env.DBMCP_PRETTY === "1";
-  const max = maxCellChars();
+  const max = exportMode ? Infinity : maxCellChars();
   return JSON.stringify(
     v,
     (k, x) => {
@@ -342,7 +364,17 @@ export function stringify(v) {
         // 超长文本先清洗口令再截断，避免口令被截成前缀后清洗失效
         return x.length > max ? truncateCell(scrub(x), max) : x;
       }
+      // v1.6.16: live 字节视图（Uint8Array/Buffer/DataView）统一十六进制口径——node:sqlite 的
+      // BLOB 返回 Uint8Array（无 toJSON），旧版只认 {type:"Buffer"} 形状，Uint8Array 被 JSON
+      // 序列化成 {"0":..} 键值垃圾（对抗测试台实测抓获）；mysql2/pg 的 Buffer 实例同走此分支
+      if (x && typeof x === "object" && ArrayBuffer.isView(x)) {
+        const buf = Buffer.from(x.buffer, x.byteOffset, x.byteLength);
+        if (exportMode) return buf.toString("hex");
+        const hex = buf.subarray(0, 8).toString("hex");
+        return buf.length > 8 ? `<binary ${buf.length} bytes: ${hex}…>` : `<binary ${buf.length} bytes: ${hex}>`;
+      }
       if (x && typeof x === "object" && x.type === "Buffer" && Array.isArray(x.data)) {
+        if (exportMode) return Buffer.from(x.data).toString("hex");
         // v1.0.2: 附带前 8 字节十六进制预览——二进制主键/UUID 场景下，只有 <binary N bytes> 无法辨认行
         const hex = Buffer.from(x.data).subarray(0, 8).toString("hex");
         return x.data.length > 8 ? `<binary ${x.data.length} bytes: ${hex}…>` : `<binary ${x.data.length} bytes: ${hex}>`;
@@ -358,168 +390,179 @@ export function stringify(v) {
 const TOOLS = [
   {
     name: "list_sources",
+    title: "List Sources",
     description:
-      "List configured database connections (MySQL/PostgreSQL/SQLite) with type/host/port/database (SQLite shows the local file path). Call this first to see what you can query.",
+      "List configured database connections (MySQL/PostgreSQL/SQLite) with type/host/port/database (SQLite shows the local file path). Call this first to see what you can query. Example: {}.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "list_tables",
+    title: "List Tables",
     description:
-      "List tables/views of a source with estimated row counts and comments. Use comments and names to locate the right table before querying.",
+      "List tables/views of a source with estimated row counts and comments. Use comments and names to locate the right table before querying. Example: {\"source\": \"demo\", \"name_like\": \"notice\"}.",
     inputSchema: {
       type: "object",
       properties: {
         source: { type: "string", description: "Source id from list_sources." },
         schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
         name_like: { type: "string", description: "Optional case-insensitive substring filter on table/view name (e.g. \"notice\")." },
-        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Max tables returned (default 500)." },
+        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Max tables returned (default 500). Values above the max are clamped to the max, not rejected." },
       },
       required: ["source"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "describe_table",
+    title: "Describe Table",
     description:
-      "Show columns (name/type/nullable/default/PK/comment), indexes, table comment and approximate row count. Call before writing SQL against an unfamiliar table.",
+      "Show columns (name/type/nullable/default/PK/comment), indexes, table comment and approximate row count. Call before writing SQL against an unfamiliar table. Example: {\"source\": \"demo\", \"table\": \"notice_msg\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
-        schema: { type: "string" },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
       },
       required: ["source", "table"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "find_tables_by_column",
+    title: "Find Tables by Column",
     description:
       "Find tables that contain a column matching a keyword (case-insensitive substring). " +
       "Returns column name/type/PK/comment per match and the distinct table list. " +
-      "Use it when you know a column name (e.g. 'order_no') but not which table holds it.",
+      "Use it when you know a column name (e.g. 'order_no') but not which table holds it. Example: {\"source\": \"demo\", \"column\": \"order_no\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         column: { type: "string", description: "Column name or keyword (case-insensitive substring)." },
         schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
-        limit: { type: "integer", minimum: 1, maximum: 500, description: "Max column matches returned (default 100)." },
+        limit: { type: "integer", minimum: 1, maximum: 500, description: "Max column matches returned (default 100). Values above the max are clamped to the max, not rejected." },
       },
       required: ["source", "column"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "fk_relationships",
+    title: "Foreign Key Relationships",
     description:
       "List foreign-key relationships (table.column -> referenced_table.column) for one table or the whole schema (default limit 200). " +
-      "Use it to build correct JOINs and understand referential integrity before writing cross-table queries.",
+      "Use it to build correct JOINs and understand referential integrity before writing cross-table queries. Example: {\"source\": \"demo\", \"table\": \"notice_msg\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         table: { type: "string", description: "Optional table name. Omit to list all FKs of the schema." },
         schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
-        limit: { type: "integer", minimum: 1, maximum: 1000, description: "Max relationships returned (default 200)." },
+        limit: { type: "integer", minimum: 1, maximum: 1000, description: "Max relationships returned (default 200). Values above the max are clamped to the max, not rejected." },
       },
       required: ["source"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "query",
+    title: "Run Read-Only Query",
     description:
-      "Run a READ-ONLY SQL statement: SELECT / WITH...SELECT / SHOW / DESCRIBE / EXPLAIN. Writes, DDL, multi-statements and row locks are blocked. A LIMIT is enforced automatically (default 200 rows). Results: columns, rows (JSON objects), row_count, truncated. For row-count checks use count_rows.",
+      "Run a READ-ONLY SQL statement: SELECT / WITH...SELECT / SHOW / DESCRIBE / EXPLAIN. Writes, DDL, multi-statements and row locks are blocked. A LIMIT is enforced automatically (default 200 rows). Results: columns, rows (JSON objects), row_count, truncated. For row-count checks use count_rows. Example: {\"source\": \"demo\", \"sql\": \"SELECT id, title FROM notice_msg ORDER BY id DESC LIMIT 20\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single read-only statement. Prefer an explicit LIMIT for large tables." },
-        max_rows: { type: "integer", minimum: 1, maximum: 5000, description: "Max rows returned (default from config, usually 200)." },
+        max_rows: { type: "integer", minimum: 1, maximum: 5000, description: "Max rows returned (default from config, usually 200). Values above the max are clamped to the max, not rejected." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "query_plan",
+    title: "Explain Query Plan",
     description:
       "Run EXPLAIN on a single SELECT / WITH...SELECT statement and return the execution plan (format: 'text' default, or 'json'). " +
       "Read-only: the statement itself is never executed (ANALYZE is not supported). " +
-      "Use it to check index usage and row estimates before running an expensive query.",
+      "Use it to check index usage and row estimates before running an expensive query. Example: {\"source\": \"demo\", \"sql\": \"SELECT * FROM notice_msg WHERE status = 'SENT'\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single SELECT / WITH...SELECT statement." },
         format: { type: "string", enum: ["text", "json"], description: "Plan format (default 'text')." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "sample_data",
+    title: "Sample Rows",
     description:
-      "Peek at the first N rows of a table (SELECT * ... LIMIT, default 10, max 50). Optionally filter with a WHERE condition and/or order by a column, e.g. where: \"status = 'SENT'\", order_by: \"created_at DESC\". Quick way to see real data shape and verify content.",
+      "Peek at the first N rows of a table (SELECT * ... LIMIT, default 10, max 50). Optionally filter with a WHERE condition and/or order by a column, e.g. where: \"status = 'SENT'\", order_by: \"created_at DESC\". Quick way to see real data shape and verify content. Example: {\"source\": \"demo\", \"table\": \"notice_msg\", \"where\": \"status = 'SENT'\", \"order_by\": \"created_at DESC\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
-        table: { type: "string" },
-        schema: { type: "string" },
-        limit: { type: "integer", minimum: 1, maximum: 50 },
+        source: { type: "string", description: "Source id from list_sources." },
+        table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
+        limit: { type: "integer", minimum: 1, maximum: 50, description: "Max rows to sample (default 10). Values above the max are clamped to the max, not rejected." },
         where: { type: "string", description: "Optional WHERE condition (boolean expression, without the WHERE keyword)." },
         order_by: { type: "string", description: "\"column\" or \"column ASC|DESC\" (e.g. created_at DESC). Defaults to ascending." },
       },
       required: ["source", "table"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "distinct_values",
+    title: "Distinct Values",
     description:
       "Top-N value distribution of a column: GROUP BY column ORDER BY count DESC (default 20, max 200), plus the exact distinct total. " +
       "Great for enum/status columns and data verification (compare observed values vs expected set). NULL is one group. Optional where filter. " +
-      "Note: counting scans matching rows; prefer a where filter on very large tables.",
+      "Note: counting scans matching rows; prefer a where filter on very large tables. Example: {\"source\": \"demo\", \"table\": \"notice_msg\", \"column\": \"status\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
-        table: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
+        table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
         column: { type: "string", description: "Plain column name (no qualification)." },
-        schema: { type: "string" },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
         where: { type: "string", description: "Optional WHERE condition (boolean expression, without the WHERE keyword)." },
-        limit: { type: "integer", minimum: 1, maximum: 200, description: "Max distinct values returned (default 20)." },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Max distinct values returned (default 20). Values above the max are clamped to the max, not rejected." },
       },
       required: ["source", "table", "column"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "column_stats",
+    title: "Column Statistics",
     description:
-      "Statistical profile of one column in a single aggregate query: row_count, non_null, distinct_values, min/max (lexicographic for text), avg (numeric). " +
-      "Optional where filter; optional histogram (equal-width buckets for numeric columns) and top_values (most frequent values). " +
-      "Use for data sanity checks: null rate, value ranges, cardinality, distribution shape. Note: COUNT(DISTINCT) scans matching rows on large tables.",
+      "Statistical profile of one column in a single aggregate query, returned in a stats object: row_count, non_null, distinct_values, min_value, max_value (lexicographic for text), avg_value (numeric; null for non-numeric columns on PostgreSQL). " +
+      "Avg dialect semantics: MySQL/SQLite coerce non-numeric text to 0 in AVG, PostgreSQL type-gates to NULL for non-numeric columns. " +
+      "Optional where filter; optional histogram (equal-width buckets for numeric columns; non-numeric columns yield an empty array) and top_values (most frequent values). " +
+      "Use for data sanity checks: null rate, value ranges, cardinality, distribution shape. Note: COUNT(DISTINCT) scans matching rows on large tables. Example: {\"source\": \"demo\", \"table\": \"notice_msg\", \"column\": \"created_at\", \"histogram\": {\"buckets\": 10}}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
-        table: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
+        table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
         column: { type: "string", description: "Plain column name (no qualification)." },
-        schema: { type: "string" },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
         where: { type: "string", description: "Optional WHERE condition (boolean expression, without the WHERE keyword)." },
         histogram: {
           type: "object",
@@ -535,65 +578,69 @@ const TOOLS = [
       required: ["source", "table", "column"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "count_rows",
+    title: "Count Rows",
     description:
-      "Exact row count of a table, optionally with a WHERE condition (e.g. status = 'SENT' AND created_at >= '2025-01-01'). Use it to verify data: compare counts before/after, assert expected totals, check for duplicates (count vs distinct).",
+      "Exact row count of a table, optionally with a WHERE condition (e.g. status = 'SENT' AND created_at >= '2025-01-01'). Use it to verify data: compare counts before/after, assert expected totals, check for duplicates (count vs distinct). Example: {\"source\": \"demo\", \"table\": \"notice_msg\", \"where\": \"status = 'SENT'\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
-        table: { type: "string" },
-        schema: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
+        table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
         where: { type: "string", description: "Optional WHERE condition (boolean expression, without the WHERE keyword)." },
       },
       required: ["source", "table"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "execute",
+    title: "Execute Write Statement",
     description:
       "Execute a single INSERT/UPDATE/DELETE (only when allowWrites=true in config; disabled by default). " +
       "SECURITY RED LINE: UPDATE/DELETE without a WHERE clause and TRUNCATE TABLE are ALWAYS refused - " +
       "even if the user explicitly requests full-table changes; direct the user to perform such operations manually via other channels (e.g. DBeaver) with DBA approval. " +
-      "DDL is never allowed. Returns affected row count for verification.",
+      "DDL is never allowed. Returns affected row count for verification. Example: {\"source\": \"demo\", \"sql\": \"UPDATE notice_msg SET status = 'SENT' WHERE id = 123\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single INSERT/UPDATE/DELETE statement with explicit WHERE for UPDATE/DELETE." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "create_table",
+    title: "Create Table",
     description:
       "Create a new table (single CREATE TABLE statement). " +
       "Requires allowCreateTable=true in the config. DROP/TRUNCATE/ALTER and data-changing statements are never allowed. " +
-      "OceanBase sources must be MySQL-mode. SQLite: CREATE TABLE without AUTOINCREMENT (use INTEGER PRIMARY KEY for rowid alias). Returns the executed DDL for verification.",
+      "OceanBase sources must be MySQL-mode. SQLite: CREATE TABLE without AUTOINCREMENT (use INTEGER PRIMARY KEY for rowid alias). Returns the executed DDL for verification. Example: {\"source\": \"demo\", \"sql\": \"CREATE TABLE t_check (id INT PRIMARY KEY, note VARCHAR(64))\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single CREATE TABLE statement (MySQL or PostgreSQL dialect matching the source type)." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "find_database",
+    title: "Find Database",
     description:
       "Find configured sources by database name, source id or environment (e.g. 'za_data_notice', 'test', 'TEST', 'pre', 'uat'). " +
-      "Returns matching source ids to use as 'source' in other tools. Optionally probes TCP reachability.",
+      "Returns matching source ids to use as 'source' in other tools. Optionally probes TCP reachability. Example: {\"name\": \"za_data_notice\", \"env\": \"TEST\"}.",
     inputSchema: {
       type: "object",
       properties: {
@@ -604,45 +651,47 @@ const TOOLS = [
       required: ["name"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "export_data",
+    title: "Export Query Result",
     description:
       "Export the result of a single read-only SELECT to a CSV or JSON file on the MCP server host. " +
       "Requires DBMCP_EXPORT_DIR (server-side allowlist directory); filenames are sanitized and cannot escape it; refuses to overwrite unless overwrite:true; 20MB size cap. " +
-      "Row limit defaults to 5000 (max 100000). Use for handing data to the user or feeding other tools.",
+      "Row limit defaults to 5000 (max 100000). Use for handing data to the user or feeding other tools. Example: {\"source\": \"demo\", \"sql\": \"SELECT id, title FROM notice_msg\", \"format\": \"csv\", \"filename\": \"notice.csv\"}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single read-only SELECT / WITH statement." },
         format: { type: "string", enum: ["csv", "json"], description: "Output format (default csv)." },
         filename: { type: "string", description: "Optional file name (sanitized; auto-generated when omitted). Must stay inside DBMCP_EXPORT_DIR." },
-        limit: { type: "integer", minimum: 1, maximum: 100000, description: "Max rows to export (default 5000)." },
+        limit: { type: "integer", minimum: 1, maximum: 100000, description: "Max rows to export (default 5000). Values above the max are clamped to the max, not rejected." },
         overwrite: { type: "boolean", description: "Overwrite existing file (default false)." },
         raw_formulas: { type: "boolean", description: "CSV only: disable formula-injection neutralization (default false — string cells starting with = + - @ TAB CR get a ' prefix so spreadsheet apps don't execute them)." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "import_data",
+    title: "Import CSV Rows",
     description:
-      "Import rows from a CSV file on the MCP server host into a table (INSERT, row-by-row parameterized). " +
+      "Import rows from a CSV file on the MCP server host into a table (batched parameterized INSERTs on MySQL/SQLite, COPY FROM STDIN on PostgreSQL). " +
       "First CSV line must be plain column names. Requires allowWrites and DBMCP_IMPORT_DIR (or DBMCP_EXPORT_DIR) allowlist directory; " +
       "filenames are sanitized; caps: 10000 rows / 20MB; emptyAsNull maps empty cells to NULL; strip_neutralization reverses " +
       "export_data's formula neutralization (round-trip); atomic wraps the whole file in one transaction (all-or-nothing). " +
-      "Aborts on width mismatch or row error.",
+      "Aborts on width mismatch or row error. Example: {\"source\": \"demo\", \"table\": \"notice_msg\", \"filename\": \"notice.csv\", \"emptyAsNull\": true}.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string" },
-        table: { type: "string" },
+        source: { type: "string", description: "Source id from list_sources." },
+        table: { type: "string", description: "Table name (plain). Use schema param for another schema." },
         filename: { type: "string", description: "CSV file name inside the import allowlist directory (first line = column names)." },
-        schema: { type: "string" },
+        schema: { type: "string", description: "Optional schema/database name. Defaults to the connection database (MySQL) or 'public' (PostgreSQL)." },
         emptyAsNull: { type: "boolean", description: "Treat empty cells as NULL (default false = empty string)." },
         strip_neutralization: { type: "boolean", description: "Reverse export_data's formula neutralization: strip the leading ' from cells like '=1+1 (exact inverse; default false keeps file content as-is)." },
         atomic: { type: "boolean", description: "Wrap the whole file in ONE transaction (all-or-nothing: any error rolls back everything). Default false = per-batch atomicity with row-wise fallback that locates the bad row but keeps earlier rows." },
@@ -650,7 +699,7 @@ const TOOLS = [
       required: ["source", "table", "filename"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
 ];
 
@@ -660,12 +709,17 @@ const INSTRUCTIONS =
   "query/sample_data/distinct_values/column_stats/count_rows (query_plan to check a plan before expensive queries) -> " +
   "execute (INSERT/UPDATE/DELETE when allowWrites=true) / create_table (when allowCreateTable=true). " +
   "export_data writes a read-only query result to a CSV/JSON file (requires DBMCP_EXPORT_DIR on the server host); " +
-  "import_data loads a CSV from the import allowlist into a table (parameterized INSERTs, requires allowWrites). " +
+  "import_data loads a CSV from the import allowlist into a table (batched parameterized INSERTs on MySQL/SQLite, COPY FROM STDIN on PostgreSQL; requires allowWrites). " +
   "'query' is strictly read-only (single statement, auto LIMIT, timeout). SECURITY RED LINES: UPDATE/DELETE without WHERE, " +
   "TRUNCATE, and any WHERE that does not reference a real column (1=1, true, 2>1, 'a'='a') are ALWAYS refused even if the user insists. " +
   "UPDATE/DELETE are pre-counted with the same WHERE and refused when they would exceed maxAffectedRows. " +
   "Use find_database to locate a database by name or environment; same-instance cross-database reads work with db.table qualified names. " +
-  "Verify affected row counts with count_rows after writes." +
+  "Verify affected row counts with count_rows after writes. " +
+  "ERROR SEMANTICS: tool errors start with 'Error: [E_CODE:retry]': E_SAFETY=guard/red-line refusal (never retry the same call); " +
+  "E_PARAM=bad arguments or statement shape (fix then retry); E_NOT_FOUND=source/table/column/file missing; " +
+  "E_CONFIG=deployment/config state (init or permissions, needs operator action); E_LIMIT=over a limit (narrow scope, then retry); " +
+  "E_DB=database error (the retry tag says whether a same-args retry may work); E_INTERNAL=unclassified (do not retry unchanged). " +
+  "The retry tag is one of retryable | conditional | no-retry. " +
   (cfg.__initRequired
     ? " INIT REQUIRED: config file missing - ask the user to run 'node import-dbeaver.mjs <dbeaver-export.dbp>' in the server directory, then restart."
     : "");
@@ -810,7 +864,7 @@ async function describeTable(args) {
         [schema, table]
       ),
     ]);
-    if (!cols.rows.length) throw new Error(`Table '${table}' not found in schema '${schema || "(connection database)"}'.`);
+    if (!cols.rows.length) throw new ToolError("E_NOT_FOUND", `Table '${table}' not found in schema '${schema || "(connection database)"}'.`);
     return {
       source: args.source, table, schema: schema || "(connection database)",
       approx_rows: meta.rows[0]?.approx_rows ?? null,
@@ -827,7 +881,7 @@ async function describeTable(args) {
     // v1.2.0: sqlite 元数据——PRAGMA table_info（列）+ index_list/index_info（索引）。
     // SQLite 无表注释/行数估算（approx_rows 返回精确 COUNT，本地文件成本低，失败不阻断）。
     const cols = (await runQuery(args.source, `PRAGMA table_info(${quoteIdent("sqlite", table)})`)).rows;
-    if (!cols.length) throw new Error(`Table '${table}' not found (sqlite file).`);
+    if (!cols.length) throw new ToolError("E_NOT_FOUND", `Table '${table}' not found (sqlite file).`);
     const pkCols = cols.filter((c) => Number(c.pk) > 0).sort((a, b) => a.pk - b.pk);
     const idxList = (await runQuery(args.source, `PRAGMA index_list(${quoteIdent("sqlite", table)})`)).rows;
     const indexes = [];
@@ -886,7 +940,7 @@ async function describeTable(args) {
       [schema, table]
     ),
   ]);
-  if (!cols.rows.length) throw new Error(`Table '${table}' not found in schema '${schema || "public"}'.`);
+  if (!cols.rows.length) throw new ToolError("E_NOT_FOUND", `Table '${table}' not found in schema '${schema || "public"}'.`);
   return {
     source: args.source, table, schema: schema || "public",
     approx_rows: meta.rows[0]?.approx_rows ?? null,
@@ -919,7 +973,7 @@ async function doQuery(args) {
     // v1.0.3: 自动 LIMIT 的外层派生表要求列名唯一——未加别名的重名列（如 SELECT a.name, b.name）
     // 在 MySQL 上报 ER_DUP_FIELDNAME，透传原生错误会让用户以为 SQL 本身写错。给出可操作的提示。
     if (e?.code === "ER_DUP_FIELDNAME") {
-      throw new Error(
+      throw new ToolError("E_PARAM", 
         "自动 LIMIT 生成的派生表要求列名唯一：请为重名列添加别名（如 SELECT u.name AS user_name, o.name AS order_name）后重试。" +
         `（原始错误: ${e.message}）`
       );
@@ -958,8 +1012,8 @@ export function sampleSql(dbType, ref, { where, orderBy, limit } = {}) {
   }
   let o = "";
   if (orderBy) {
-    const m = /^([A-Za-z0-9_$]+)\s*(?:(ASC|DESC))?$/i.exec(String(orderBy).trim());
-    if (!m) throw new Error("Invalid order_by: use \"column\" or \"column ASC|DESC\" (e.g. created_at DESC).");
+    const m = /^([\p{L}\p{N}$_]+)\s*(?:(ASC|DESC))?$/iu.exec(String(orderBy).trim());
+    if (!m) throw new ToolError("E_PARAM", "Invalid order_by: use \"column\" or \"column ASC|DESC\" (e.g. created_at DESC).");
     o = ` ORDER BY ${quoteIdent(dbType, m[1])}${m[2] ? " " + m[2].toUpperCase() : ""}`;
   }
   return `SELECT * FROM ${ref}${w}${o} LIMIT ${limit}`;
@@ -1134,7 +1188,7 @@ export function findColumnsSql(dbType, { schema, column, limit }) {
 async function findTablesByColumn(args) {
   const src = getSource(args.source);
   const column = String(args.column || "").trim();
-  if (!column) throw new Error("Provide a column name or keyword, e.g. 'order_no'.");
+  if (!column) throw new ToolError("E_PARAM", "Provide a column name or keyword, e.g. 'order_no'.");
   const schema = args.schema || null;
   const limit = intArg(args.limit, "limit", 1, 500, 100);
   let rows, ms;
@@ -1189,7 +1243,7 @@ export function explainSql(dbType, sql, format) {
   // v1.2.0: sqlite 掩码走 postgres 语义（字符串无反斜杠转义）
   const first = sanitizeSql(inner, maskDialect(dbType)).text.trim().split(/\s+/)[0] || "";
   if (!/^(select|with)$/i.test(first)) {
-    throw new Error("query_plan only accepts a single SELECT / WITH ... SELECT statement.");
+    throw new ToolError("E_PARAM", "query_plan only accepts a single SELECT / WITH ... SELECT statement.");
   }
   if (dbType === "sqlite") {
     // sqlite 无 FORMAT 选项，两种 format 都用 EXPLAIN QUERY PLAN（输出 id/parent/detail 树）
@@ -1237,7 +1291,17 @@ export function columnStatsSql(dbType, ref, column, { where } = {}) {
   const q = quoteIdent(dbType, column);
   const w = where ? ` WHERE ${where}` : "";
   const cnt = dbType === "mysql" || dbType === "sqlite" ? "COUNT(*)" : "COUNT(*)::bigint";
-  return `SELECT ${cnt} AS row_count, COUNT(${q}) AS non_null, COUNT(DISTINCT ${q}) AS distinct_values, MIN(${q}) AS min_value, MAX(${q}) AS max_value, AVG(${q}) AS avg_value FROM ${ref}${w}`;
+  // v1.6.18 真实库实测：PG 的 AVG(varchar) 是硬错误（42883 undefined_function），文本列整条
+  // 画像语句失败——top_values 的主用例（tag 之类低基数文本列）在 PG 上完全跑不通（MySQL 靠
+  // 隐式强转侥幸通过）。按类型门控：仅数值类型求均值，文本列 avg 为 NULL（min/max 文本仍按
+  // 字典序，契约不变）；mysql/sqlite 保持原生 AVG 语义。CASE 短路保证 THEN 的 cast 不在文本行求值。
+  // 补洞（真实库时间列抓获）：CASE 短路只挡运行时——timestamp/date/uuid 等没有 →numeric 注册
+  // cast 的类型，裸 )::numeric 在计划期就报 42846（cannot cast）整条画像失败；走 ::text::numeric
+  //（text→numeric 是显式 cast，计划期任意类型合法），运行时仍由 CASE 类型门控保证非数值列不进 THEN。
+  const avg = dbType === "postgres"
+    ? `AVG(CASE WHEN pg_typeof(${q}) IN ('smallint'::regtype, 'integer'::regtype, 'bigint'::regtype, 'numeric'::regtype, 'real'::regtype, 'double precision'::regtype) THEN (${q})::text::numeric END)`
+    : `AVG(${q})`;
+  return `SELECT ${cnt} AS row_count, COUNT(${q}) AS non_null, COUNT(DISTINCT ${q}) AS distinct_values, MIN(${q}) AS min_value, MAX(${q}) AS max_value, ${avg} AS avg_value FROM ${ref}${w}`;
 }
 
 /**
@@ -1259,11 +1323,35 @@ export function histogramStatsSql(dbType, ref, column, { buckets, where } = {}) 
   // v1.6.1 真实库实测修正：MySQL 的 CAST 目标没有 INTEGER（语法错误），只能 SIGNED/UNSIGNED；
   // pg/sqlite 用 INTEGER。方言差异此前被 sqlite 单库验证漏掉，mysql-validate 套件抓获。
   const cast = dbType === "mysql" ? "SIGNED" : "INTEGER";
-  return `WITH rng AS (SELECT MIN(${q}) AS lo, MAX(${q}) AS hi FROM ${ref}${where ? ` WHERE (${where})` : ""}), ` +
+  // v1.6.20 真实库实测：文本列直方图三库三种坏法——PG 的 (hi-lo)/(val-lo) 是 text-text 减法，
+  // 42883 硬错误整条失败（与 v1.6.18 AVG(varchar) 同族）；mysql 把字符串算术得 NULL 宽、sqlite
+  // 强转 0 得 0 宽再除出 NULL 桶号，外层 GROUP BY 各产出一行 bucket_index=null 的脏桶。修复：
+  // PG 按类型门控做减法（非数值列恒 NULL），三库统一在 GROUP BY 前过滤 bi IS NOT NULL——
+  // 非数值列直方图语义收口为「空数组」（不炸不脏）；mysql/sqlite 对数字样文本的强转 GIGO
+  // 与 avg 契约哲学一致，不在 SQL 层强拉平。
+  const numv = (expr) => dbType === "postgres"
+    ? `(CASE WHEN pg_typeof(${expr}) IN ('smallint'::regtype, 'integer'::regtype, 'bigint'::regtype, 'numeric'::regtype, 'real'::regtype, 'double precision'::regtype) THEN (${expr})::text::numeric END)`
+    : dbType === "mysql"
+      // 残洞（真实库第 25 轮抓获）：DATETIME/DATE 隐式转数是「读数字头」（'2024-01-01 00:00:05'
+      // → 20240101000005），桶界产出 20240101000000.00000 伪数值脏桶，破上文「非数值列 → 空数组
+      // （不炸不脏）」承诺——PG 类型门控、sqlite 0 宽除 NULL 均已收口，唯 mysql 时间列漏网。按值
+      // 形状门控：仅数值形状（可带小数/指数）参与减法；数值样文本照旧强转 GIGO（「数字样文本」
+      // 注记不变），时间列/纯文本 → 桶号 NULL → 外层过滤 → 空数组。字符类 [.] 免 SQL 字面量
+      // 反斜杠转义歧义（\x60 陷阱同族）。
+      ? `(CASE WHEN ${expr} REGEXP '^[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$' THEN ${expr} END)`
+      : expr;
+  const biRaw = `CAST(FLOOR((${numv(`t.${q}`)} - b.lo) / b.width) AS ${cast})`;
+  // v1.6.20 续修（探针复跑抓获）：PG 的 LEAST 忽略 NULL 参数——LEAST(NULL, n-1) 得 n-1，
+  // 非数值行的 NULL 桶号会被顶成末桶号漏过过滤；mysql 的 LEAST 与 sqlite 的 MIN 都是 NULL 透传。
+  // PG 用 CASE 显式透传 NULL，钳位语义三库对齐：非数值行 bi=NULL → 外层过滤 → 空数组。
+  const bi = dbType === "postgres"
+    ? `CASE WHEN ${biRaw} IS NULL THEN NULL ELSE LEAST(${biRaw}, ${n - 1}) END`
+    : `${clampFn}(${biRaw}, ${n - 1})`;
+  return `WITH rng AS (SELECT MIN(${numv(q)}) AS lo, MAX(${numv(q)}) AS hi FROM ${ref}${where ? ` WHERE (${where})` : ""}), ` +
     `buckets AS (SELECT lo, hi, CASE WHEN hi = lo THEN 1.0 ELSE (hi - lo) * 1.0 / ${n} END AS width FROM rng), ` +
-    `s AS (SELECT ${clampFn}(CAST(FLOOR((t.${q} - b.lo) / b.width) AS ${cast}), ${n - 1}) AS bi ${inner}) ` +
+    `s AS (SELECT ${bi} AS bi ${inner}) ` +
     `SELECT s.bi AS bucket_index, ${cnt} AS row_count, ${lo} AS bucket_lower, b.lo + (s.bi + 1) * b.width AS bucket_upper ` +
-    `FROM s CROSS JOIN buckets b GROUP BY s.bi, b.lo, b.width ORDER BY s.bi`;
+    `FROM s CROSS JOIN buckets b WHERE s.bi IS NOT NULL GROUP BY s.bi, b.lo, b.width ORDER BY s.bi`;
 }
 
 /** v1.6.0: column_stats TopN 高频值 SQL 构造（纯函数，供单测）。次序频数降序 + 值升序（结果稳定可复现）；别名 cnt 避开保留字 */
@@ -1280,8 +1368,8 @@ async function columnStats(args) {
   const split = splitIdent(args.table);
   const schema = args.schema || split.schema || (src.type === "mysql" || src.type === "sqlite" ? null : "public");
   const column = String(args.column || "").trim();
-  if (!/^[A-Za-z_][\w$]*$/.test(column)) {
-    throw new Error(`Invalid column name '${column}'. Pass a plain column name (letters/digits/_/$, not starting with a digit).`);
+  if (!/^[_\p{L}][\p{L}\p{N}$_]*$/u.test(column)) {
+    throw new ToolError("E_PARAM", `Invalid column name '${column}'. Pass a plain column name (letters/digits/_/$, not starting with a digit).`);
   }
   if (args.where) checkWhereFragment(args.where, maskDialect(src.type));
   const ref = tableRef(src.type, schema, split.table);
@@ -1319,7 +1407,8 @@ async function columnStats(args) {
 
 // 与 export_data 对称的反向工具。安全边界：
 //  1) 文件来源——服务端 DBMCP_IMPORT_DIR 白名单目录（未设置时可回退 DBMCP_EXPORT_DIR；都未设置即拒）；
-//  2) 注入面——逐行参数化 INSERT，CSV 单元格永不拼接进 SQL 文本；
+//  2) 注入面——mysql/sqlite 批量参数化 INSERT、postgres COPY FROM STDIN 文本载荷，
+//     CSV 单元格永不拼接进 SQL 文本（COPY 的表/列名同样经 quoteIdent 白名单）；
 //  3) 列名——仅接受裸标识符，quoteIdent 加引（表头即列名，构造方无法夹带 SQL 片段）；
 //  4) 权限——走 allowWrites 开关（与 execute 同门）；行宽不一致即整批中止；
 //  5) 容量——默认上限 10000 行 / 20MB 文件。
@@ -1334,6 +1423,78 @@ export function importInsertSql(dbType, ref, columns, rowCount) {
   const cols = columns.map((c) => quoteIdent(dbType, c));
   const ph = (rowIdx) => `(${cols.map((_, c) => dbType === "postgres" ? `$${rowIdx * columns.length + c + 1}` : "?").join(", ")})`;
   return `INSERT INTO ${ref} (${cols.join(", ")}) VALUES ${Array.from({ length: rowCount }, (_, i) => ph(i)).join(", ")}`;
+}
+
+/**
+ * v1.6.20: 导入批大小按方言占位符预算 × 列数动态定（原硬编码 100）。
+ * 直连实测（万行非事务路径，2026-10-05）：批 100 时 mysql 672ms / sqlite 607ms——每条
+ * 多 VALUES 语句一个网络往返 + 一次提交，批越大往返越少；批 1000 mysql 降至 ~108ms
+ * （5×）、pg 86→60ms 后趋平（甜点）、sqlite 同数量级收益。占位符硬上限：mysql/pg
+ * 65535、node:sqlite 编译默认 32766（实测 25_000 占位符可用）——各留裕量后按列数均摊，
+ * 宽表自动降批（60 列 CSV sqlite 100 行实测通过）。批失败回退逐行的定位语义不受批大小
+ * 影响。纯函数供单测。
+ */
+export function importBatchSize(dbType, colCount) {
+  const cols = Math.max(1, Math.floor(Number(colCount) || 1));
+  // 预算裕量: sqlite 20000 < 32766（编译默认，且 25000 实测可用）; mysql/pg 50000 < 65535
+  const budget = dbType === "sqlite" ? 20000 : 50000;
+  return Math.max(1, Math.min(1000, Math.floor(budget / cols)));
+}
+
+/**
+ * v1.6.21: import_data 的 postgres 批路径改用 COPY FROM STDIN（文本格式）——每批一次
+ * 网络往返整批灌入，绕过逐行绑定/解析开销（万行非事务实测 ~5 倍，见 mcp/bench.mjs）。
+ * mysql/sqlite 仍走参数化多 VALUES INSERT。批大小沿用 importBatchSize（回退逐行的成本上界
+ * 不变，批失败语义与批 INSERT 完全一致：批原子未写入 → 回退逐行定位坏行）。
+ * 纯函数供单测。
+ */
+export function importUsesCopy(dbType) {
+  return dbType === "postgres";
+}
+
+/**
+ * COPY 目标语句。表/列名全部经 quoteIdent（splitIdent 已把表名钉死为裸标识符、
+ * CSV 表头同样正则白名单），值绝不进入 SQL 文本——语句用简单查询协议下发（COPY IN
+ * 不支持扩展协议），注入面为零。
+ */
+export function importCopySql(dbType, ref, columns) {
+  if (!importUsesCopy(dbType)) throw new ToolError("E_INTERNAL", "importCopySql 仅用于 postgres（mysql/sqlite 走参数化 INSERT）");
+  const cols = columns.map((c) => quoteIdent(dbType, c)).join(", ");
+  return `COPY ${ref} (${cols}) FROM STDIN`;
+}
+
+/**
+ * COPY 文本格式单字段转义（PG 文本格式逐字节契约）：NULL = \N；值内 \ → \\、
+ * LF → \n、CR → \r、TAB → \t、BS → \b、FF → \f、VT → \v；字面量 "\N" 编码为 \\N
+ * （与 NULL 区分）；空串保持空字段。值内换行（v1.6.13 CSV 引号内 CRLF 保真）经此
+ * 转义后原样往返——CSV 解析出的值不做任何换行归一。纯函数供单测。
+ */
+export function copyTextField(v) {
+  if (v === null || v === undefined) return "\\N";
+  const s = typeof v === "string" ? v : String(v);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "\\") out += "\\\\";
+    else if (c === "\n") out += "\\n";
+    else if (c === "\r") out += "\\r";
+    else if (c === "\t") out += "\\t";
+    else if (c === "\b") out += "\\b";
+    else if (c === "\f") out += "\\f";
+    else if (c === "\v") out += "\\v";
+    else out += c;
+  }
+  return out;
+}
+
+/** 整批行 → COPY 文本载荷：字段 TAB 分隔、记录裸 LF 分隔。纯函数供单测。 */
+export function copyTextPayload(rows) {
+  let out = "";
+  for (const r of rows) {
+    for (let i = 0; i < r.length; i++) out += (i ? "\t" : "") + copyTextField(r[i]);
+    out += "\n";
+  }
+  return out;
 }
 
 /**
@@ -1353,119 +1514,310 @@ export function isAmbiguousWriteError(e) {
   return /timeout|timed out|connection (terminated|reset|refused|closed)/i.test(String(e.message ?? ""));
 }
 
-/** 完整 CSV 文本 → 行数组（RFC 4180：引号内逗号/换行/双引号转义；CRLF/LF 归一；BOM 由调用方剥）。纯函数供单测。 */
+/**
+ * 完整 CSV 文本 → 行数组（RFC 4180：引号内逗号/换行/双引号转义；BOM 由调用方剥）。纯函数供单测。
+ * v1.6.13 保真修正：换行归一**只作用于记录分隔符**（引号外的 CRLF/CR/LF）；引号内的换行
+ * 是数据值的一部分，必须原样保留——旧版先全局 \r\n→\n，"L1\r\nL2" 经导出→导入回环被压平成
+ * "L1\nL2"（实测往返丢真）。记录分隔符在引号外识别（\r\n 一体消费），引号内逐字进值。
+ */
 export function parseCsv(text) {
-  const src = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const src = String(text);
   const rows = [];
-  let field = "";
   let row = [];
   let inQuotes = false;
+  // v1.6.25 构建重写（语义逐字不变，既有保真钉全绿）：旧版 field += c 逐字符拼接产生 per-char
+  // cons rope——实测 18MB CSV 解析驻留 574MB（~32B/字符 rope 节点，V8 cons cell）。改为
+  // 「原样 run 切片 + 合成片段 join」：引号开/闭与 "" 转义是 run 断点，字段内容仍是逐字节
+  // 相同的字符序列（引号内换行/转义引号/记录分隔归一语义全部不变）。
+  let parts = [];      // 当前字段已完成片段
+  let runStart = -1;   // 当前原样 run 起点（-1 = 无进行中 run）
+  const endRun = (p) => {
+    if (runStart !== -1) {
+      if (p > runStart) parts.push(src.slice(runStart, p));
+      runStart = -1;
+    }
+  };
+  const takeField = (end) => {
+    endRun(end);
+    const field = parts.length === 1 ? parts[0] : parts.join("");
+    parts = [];
+    return field;
+  };
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (inQuotes) {
       if (c === '"') {
-        if (src[i + 1] === '"') { field += '"'; i += 1; }
-        else inQuotes = false;
-      } else field += c;
+        if (src[i + 1] === '"') { endRun(i); parts.push('"'); i += 1; }
+        else { endRun(i); inQuotes = false; }
+      } else if (runStart === -1) runStart = i;
       continue;
     }
-    if (c === '"') { inQuotes = true; continue; }
-    if (c === ",") { row.push(field); field = ""; continue; }
-    if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; continue; }
-    field += c;
+    if (c === '"') { endRun(i); inQuotes = true; continue; }
+    if (c === ",") { row.push(takeField(i)); continue; }
+    if (c === "\n" || c === "\r") {
+      const end = i;
+      if (c === "\r" && src[i + 1] === "\n") i += 1;
+      row.push(takeField(end)); rows.push(row); row = []; continue;
+    }
+    if (runStart === -1) runStart = i;
   }
+  const field = takeField(src.length);
   if (field !== "" || row.length) { row.push(field); rows.push(row); }
   if (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "") rows.pop(); // 尾空行
   return rows;
 }
 
-async function doImportData(args) {
+// v1.6.24: 大导入阶段间让出事件循环——读盘/CSV 解析/值变换等同步块切开，取消通知与定时器
+// 在阶段间得以插队（实测 8MB 导入取消插队延迟峰值 109ms→见 changelog；串行队列语义不变）
+const yieldEventLoop = () => new Promise((r) => setImmediate(r));
+
+/**
+ * v1.6.25: CSV 流式分段器（纯步进器，供 selftest 全偏移切分等价钉直接断言）。
+ * 等价契约：对任意文本与任意 push 切分序列，concat(parseCsv(seg_i)) === parseCsv(整体)。
+ * 切分规则（缺一即破等价，selftest 钉死）：
+ *  1) 只在「引号外、非空记录」的记录终止符后定切点；空记录（[""] 形）归入下一段——
+ *     否则段尾 [""] 会被 parseCsv 的尾空行弹出误吃，与整体解析不等价；
+ *  2) 引号状态跨 push 持续；lookahead 相关的收尾字符（引号内的 `"`、引号外的 `\r`）
+ *     停在段尾时暂缓定性，等下一 push 再判（CRLF 跨块不产生幻影空记录，`""` 跨块不拆对）；
+ *  3) end() 余段原样交回 parseCsv 整体收口（EOF 弹出/未闭引号收尾与整体解析逐字节一致）。
+ */
+export function createCsvSegmenter() {
+  let inQuotes = false;
+  let fieldTouched = false; // 当前记录已有字段内容（非 [""] 形）
+  let sawComma = false;     // 当前记录含逗号（行宽 ≥2，必非 [""] 形）
+  let pending = "";
+  let scanPos = 0;
+  let cut = -1;             // pending 内安全切点（含），-1 = 无
+  return {
+    push(text) {
+      pending += text;
+      let i = scanPos;
+      const end = pending.length;
+      while (i < end) {
+        const c = pending[i];
+        // 收尾定性暂缓：段尾 lookahead 未知的字符（引号外 `\r` 待判 CRLF、引号内 `"` 待判转义对）
+        if (i === end - 1 && ((!inQuotes && c === "\r") || (inQuotes && c === '"'))) break;
+        if (inQuotes) {
+          if (c === '"') {
+            if (pending[i + 1] === '"') { fieldTouched = true; i += 1; }
+            else inQuotes = false;
+          } else fieldTouched = true;
+          i += 1;
+          continue;
+        }
+        if (c === '"') { inQuotes = true; i += 1; continue; }
+        if (c === ",") { sawComma = true; i += 1; continue; }
+        if (c === "\n" || c === "\r") {
+          if (c === "\r" && pending[i + 1] === "\n") i += 1;
+          if (sawComma || fieldTouched) cut = i + 1; // 非空记录终止→切点前进；空记录不设切点（归下一段）
+          fieldTouched = false;
+          sawComma = false;
+          i += 1;
+          continue;
+        }
+        fieldTouched = true;
+        i += 1;
+      }
+      scanPos = i;
+      if (cut > 0) {
+        const seg = pending.slice(0, cut);
+        pending = pending.slice(cut);
+        scanPos -= cut;
+        cut = -1;
+        return [seg];
+      }
+      return [];
+    },
+    end() {
+      // 余段（含暂缓未定性字符）整体交回 parseCsv：EOF 语义与整体解析逐字节一致
+      return pending !== "" ? [pending] : [];
+    },
+  };
+}
+
+/**
+ * v1.6.25: 流式 CSV 导入解析——分片读盘（256KB）+ UTF-8 多字节安全解码 + 记录边界分段 +
+ * 段间让出事件循环。取代旧「readFileSync 整文件 + parseCsv 全量 + dataRows/valueRows 多份驻留」：
+ * 实测 18MB 文件解析驻留 574MB（parseCsv cons rope 病理）→ 流式后 ~20MB（见 changelog 实测）。
+ * 错误文案/检查顺序逐字不变：空文件→表头空→重名→非法列名→无数据行→超限 在解析期抛（先于
+ * splitIdent）；行宽首违只记录（{i, actual}），由 doImportData 在 SQL 准备之后抛——保持旧代码
+ * 「splitIdent 先于行宽」的错误优先级可观测行为逐字不变。
+ */
+export async function readCsvForImport(file, transform) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const seg = createCsvSegmenter();
+    const decoder = new StringDecoder("utf8");
+    const buf = Buffer.allocUnsafe(256 * 1024);
+    let header = null;
+    let rawHeader = null;
+    let totalData = 0;
+    let overCap = false;
+    let widthViolation = null; // 首违标量（第 i 数据行、实际列数），全量计数后再解析抛出
+    let sawAnyRow = false;
+    const valueRows = [];
+    const consume = (segText) => {
+      const rows = parseCsv(segText);
+      if (!rows.length) return;
+      sawAnyRow = true;
+      let start = 0;
+      if (header === null) {
+        rawHeader = rows[0].map((h) => String(h).trim());
+        header = rawHeader.filter(Boolean);
+        if (!header.length) throw new ToolError("E_PARAM", "CSV 首行（表头）为空。");
+        // v1.6.13 重名列拒绝语义逐字不变
+        const dup = header.find((h, i) => header.indexOf(h) !== i);
+        if (dup) throw new ToolError("E_PARAM", `CSV 表头列名重复: '${dup}'（重名列导入会静默丢值）。请修改列名后重试。未写入任何行。`);
+        for (const h of header) {
+          if (!/^[_\p{L}][\p{L}\p{N}$_]*$/u.test(h)) throw new ToolError("E_PARAM", `CSV 表头含非法列名 '${h}'（仅允许字母/数字/_/$，且不以数字开头；字母含中文等 Unicode 文字）。`);
+        }
+        start = 1;
+      }
+      for (let r = start; r < rows.length; r++) {
+        const row = rows[r];
+        if (!(row.length > 1 || String(row[0]).trim() !== "")) continue; // 空记录过滤（同旧 dataRows.filter）
+        totalData++;
+        // 超限行只计数不驻留：LIMIT 文案要真实总数（「数据行 N 超过上限」），内存不吃全量
+        if (totalData > MAX_IMPORT_ROWS) { overCap = true; continue; }
+        if (widthViolation === null && row.length !== header.length) widthViolation = { i: totalData - 1, actual: row.length };
+        valueRows.push(row.map(transform));
+      }
+    };
+    let firstText = true;
+    const feed = async (text) => {
+      if (firstText && text !== "") { text = text.replace(/^\uFEFF/, ""); firstText = false; }
+      for (const s of seg.push(text)) {
+        consume(s);
+        await yieldEventLoop(); // 段间让出——取消通知/定时器插队点（v1.6.25 收解析残余同步块）
+      }
+    };
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      await feed(decoder.write(buf.subarray(0, n)));
+    }
+    await feed(decoder.end());
+    for (const s of seg.end()) consume(s);
+    if (!sawAnyRow) throw new ToolError("E_PARAM", "CSV 为空。");
+    if (!totalData) throw new ToolError("E_PARAM", "CSV 无数据行。");
+    if (overCap) throw new ToolError("E_LIMIT", `数据行 ${totalData} 超过上限 ${MAX_IMPORT_ROWS}（10000）。`);
+    return { header, rawHeader, valueRows, widthViolation };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+async function doImportData(args, signal) {
   // 目录门禁最先（配置级错误先于源查找/DB 访问暴露，未初始化部署也能得到明确指引）
   const dir = process.env.DBMCP_IMPORT_DIR || process.env.DBMCP_EXPORT_DIR;
   if (!dir) {
-    throw new Error("import_data 未启用：在 MCP 服务的环境中设置 DBMCP_IMPORT_DIR=<允许读取导入文件的目录> 后重启（服务端白名单，防任意路径读取）。");
+    throw new ToolError("E_CONFIG", "import_data 未启用：在 MCP 服务的环境中设置 DBMCP_IMPORT_DIR=<允许读取导入文件的目录> 后重启（服务端白名单，防任意路径读取）。");
   }
   const src = getSource(args.source);
   const writable = cfg.allowWrites === true || src.allowWrites === true;
-  if (!writable) throw new Error("import_data 需要写权限：在 dbmcp.config.json 设置 allowWrites=true（全局或该源）后重启。");
+  if (!writable) throw new ToolError("E_CONFIG", "import_data 需要写权限：在 dbmcp.config.json 设置 allowWrites=true（全局或该源）后重启。");
   const file = safeExportPath(dir, args.filename);
-  if (!file || !fs.existsSync(file)) throw new Error(`导入文件不存在（或文件名被清洗拒绝）: ${args.filename}`);
+  if (!file || !fs.existsSync(file)) throw new ToolError("E_NOT_FOUND", `导入文件不存在（或文件名含 Windows 保留设备名/非法字符、被清洗拒绝）: ${args.filename}`);
   const bytes = fs.statSync(file).size;
-  if (bytes > MAX_IMPORT_BYTES) throw new Error(`文件 ${bytes} 字节超过上限 ${MAX_IMPORT_BYTES}（20MB）。`);
+  if (bytes > MAX_IMPORT_BYTES) throw new ToolError("E_LIMIT", `文件 ${bytes} 字节超过上限 ${MAX_IMPORT_BYTES}（20MB）。`);
 
-  const clean = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
-  const rows = parseCsv(clean);
-  if (rows.length < 1) throw new Error("CSV 为空。");
-  const header = rows[0].map((h) => String(h).trim()).filter(Boolean);
-  if (!header.length) throw new Error("CSV 首行（表头）为空。");
-  for (const h of header) {
-    if (!/^[A-Za-z_][\w$]*$/.test(h)) throw new Error(`CSV 表头含非法列名 '${h}'（仅允许字母/数字/_/$，且不以数字开头）。`);
-  }
-  const dataRows = rows.slice(1).filter((r) => r.length > 1 || String(r[0]).trim() !== "");
-  if (!dataRows.length) throw new Error("CSV 无数据行。");
-  if (dataRows.length > MAX_IMPORT_ROWS) throw new Error(`数据行 ${dataRows.length} 超过上限 ${MAX_IMPORT_ROWS}（10000）。`);
-
-  const split = splitIdent(args.table);
-  const schema = args.schema || split.schema || (src.type === "mysql" || src.type === "sqlite" ? null : "public");
-  const ref = tableRef(src.type, schema, split.table);
-
-  // v1.4.1: 占位符按方言生成（pg 扩展协议只认 $n，不认 ? —— 旧版对 postgres 源必炸，全链路审查发现）
-  // + 批量化导入（默认 100 行/条多 VALUES 语句，仍全参数化——注入面为零）；
-  // 批失败自动回退该批逐行导入，精确定位坏行后整批中止（已写入行数如实回报）。
-  const BATCH = 100;
-  const singleSql = importInsertSql(src.type, ref, header, 1);
-  const batchSql = (n) => importInsertSql(src.type, ref, header, n);
-
+  // v1.6.25: 流式解析（readCsvForImport）——不再整文件驻留 readFileSync+parseCsv 全量副本；
+  // 分段解析 + 值变换就地完成、段间让出事件循环。错误文案与检查顺序逐字不变：空文件/表头空/
+  // 重名/非法列名/无数据行/超限 在解析期抛（先于 splitIdent）；行宽首违记录为标量，
+  // 在 SQL 准备之后再抛（保持旧「splitIdent 先于行宽」的错误优先级可观测行为）。
   // v1.5.2: 值变换一次性前移完成（含 emptyAsNull 与可选的中和逆变换）——批失败回退逐行时
   // 不再重复转换，剥离计数也只计一次（旧版 toValues 在批/回退两路径各调一次）。
   const stripNeutralized = args.strip_neutralization === true;
   let strippedCount = 0;
-  const valueRows = dataRows.map((r) => r.map((v) => {
+  const transform = (v) => {
     let u = v;
     if (stripNeutralized && typeof v === "string") {
       const s = unneutralizeCell(v);
       if (s !== v) { strippedCount++; u = s; }
     }
     return u === "" && args.emptyAsNull === true ? null : u;
-  }));
+  };
+  const { header, rawHeader, valueRows, widthViolation } = await readCsvForImport(file, transform);
 
-  // 行宽一次性预检（数据全在内存）：批内中途才报宽度错误时，文案的"此前 N 行已写入"会把
-  // 本批未写入的行数也算进去（实测虚报）；预检在任何写入前完成，文案恒为"未写入任何行"。
-  for (let i = 0; i < dataRows.length; i++) {
-    if (dataRows[i].length !== header.length) {
-      throw new Error(`行宽不一致：期望 ${header.length} 列，实际 ${dataRows[i].length}（第 ${i + 1} 数据行）。未写入任何行。`);
-    }
+  const split = splitIdent(args.table);
+  const schema = args.schema || split.schema || (src.type === "mysql" || src.type === "sqlite" ? null : "public");
+  const ref = tableRef(src.type, schema, split.table);
+
+  // v1.4.1: 占位符按方言生成（pg 扩展协议只认 $n，不认 ? —— 旧版对 postgres 源必炸，全链路审查发现）
+  // + 批量化导入（多 VALUES 语句，仍全参数化——注入面为零）；
+  // 批失败自动回退该批逐行导入，精确定位坏行后整批中止（已写入行数如实回报）。
+  // v1.6.20: 批大小不再硬编码 100——按方言占位符预算 × 列数动态定（实测万行非事务
+  // mysql 672→~150ms、sqlite 607→~80ms；见 importBatchSize 注释）。
+  // v1.6.21: postgres 非事务批路径改用 COPY FROM STDIN（文本格式，逐字节转义保真，
+  // 见 importUsesCopy/importCopySql/copyTextPayload）；批失败回退逐行的契约逐字不变
+  //（COPY 批语句同样原子失败、不写入，与批 INSERT 语义一致）。mysql/sqlite 不动。
+  // v1.6.23: atomic（事务）路径同样按 useCopy 路由——postgres 事务内 COPY（withTransaction
+  // 的 copyIn 助手），mysql/sqlite 事务内参数化 INSERT 不变。
+  const BATCH = importBatchSize(src.type, header.length);
+  const singleSql = importInsertSql(src.type, ref, header, 1);
+  const batchSql = (n) => importInsertSql(src.type, ref, header, n);
+  const useCopy = importUsesCopy(src.type);
+  const copySql = useCopy ? importCopySql(src.type, ref, header) : null;
+
+  // 行宽一次性预检（v1.6.25：首违已在流式解析中记录为标量，全量行数已知后再解析抛出）：
+  // 批内中途才报宽度错误时，文案的"此前 N 行已写入"会把本批未写入的行数也算进去（实测虚报）；
+  // 预检在任何写入前完成，文案恒为"未写入任何行"。
+  if (widthViolation !== null) {
+    // v1.6.13：表头有空列名被忽略时（如 "a,b," 尾空列）旧文案只说"期望 2 列实际 3"，
+    // 用户看表头明明 3 列——把被忽略的空列名数写进文案，指向真正要改的地方
+    const dropped = rawHeader.length - header.length;
+    const hint = dropped ? `（表头含 ${dropped} 个空列名已被忽略）` : "";
+    throw new ToolError("E_PARAM", `行宽不一致：期望 ${header.length} 列${hint}，实际 ${widthViolation.actual}（第 ${widthViolation.i + 1} 数据行）。请补全空列名或删除多余列后重试。未写入任何行。`);
   }
 
+  await yieldEventLoop(); // v1.6.24: 阶段让出（值变换/宽度预检后，写入前）
   let inserted = 0;
   const t0 = Date.now();
   if (args.atomic === true) {
     // v1.5.3: 全文件单事务——任一批失败整体回滚，无"部分行保留"中间态（也不做逐行回退定位：
     // 消除部分写入正是 atomic 的目的；要定位坏行用默认模式）。mysql/pg 事务钉在单连接上执行。
+    // v1.6.23: postgres 事务内也走 COPY FROM STDIN（与非事务路径同一封包，钉在事务连接上）——
+    // COPY 随事务 ROLLBACK 整体消失，「原子导入失败，已全部回滚」契约逐字不变；mysql/sqlite 不动。
     try {
-      await withTransaction(args.source, async (run) => {
+      await withTransaction(args.source, async (run, copyIn) => {
         for (let b = 0; b < valueRows.length; b += BATCH) {
+          // v1.6.24: 取消传导——批界/传输中止即抛错 → withTransaction ROLLBACK，
+          // 「原子导入失败，已全部回滚（未写入任何行）」文案契约逐字不变
+          if (signal?.aborted) throw new Error("导入已被客户端取消");
           const batch = valueRows.slice(b, b + BATCH);
-          await run(batchSql(batch.length), batch.flat());
+          if (useCopy) await copyIn(copySql, copyTextPayload(batch), { signal });
+          else await run(batchSql(batch.length), batch.flat());
           inserted += batch.length;
         }
       });
     } catch (e) {
-      throw new Error(`原子导入失败，已全部回滚（未写入任何行）: ${e.message}`);
+      throw new ToolError("E_DB", `原子导入失败，已全部回滚（未写入任何行）: ${e.message}`);
     }
   } else {
     for (let b = 0; b < valueRows.length; b += BATCH) {
       const batch = valueRows.slice(b, b + BATCH);
+      // v1.6.24: 取消传导——批前/批后/逐行回退三处检查；取消中止如实回报已写入行数
+      if (signal?.aborted) {
+        throw new ToolError("E_DB", `导入已被客户端取消（中止于第 ${b + 1}-${b + batch.length} 行批写入前；此前 ${inserted} 行已写入）`);
+      }
       try {
-        await runQuery(args.source, batchSql(batch.length), batch.flat());
+        if (useCopy) await runCopyIn(args.source, copySql, copyTextPayload(batch), { signal });
+        else await runQuery(args.source, batchSql(batch.length), batch.flat());
         inserted += batch.length;
       } catch (e) {
+        // 取消优先于错误分类：取消引发的传输错误不是「结果未知」，也绝不回退逐行重试
+        if (signal?.aborted) {
+          throw new ToolError("E_DB", `导入已被客户端取消（第 ${b + 1}-${b + batch.length} 行批中止；此前 ${inserted} 行已写入——如需清场请用 execute 按条件删除）`);
+        }
         // 超时/连接类错误下批语句结果未知（可能已在服务端提交）——回退逐行会重复插入，必须中止
         if (isAmbiguousWriteError(e)) {
-          throw new Error(`批写入结果未知（超时/连接中断，安全中止、不自动回退）：第 ${b + 1}-${b + batch.length} 行可能已全部或部分写入，请用 count_rows 核对后人工决定是否补插（此前批次已确认写入 ${inserted} 行）。原始错误: ${e.message}`);
+          throw new ToolError("E_DB", `批写入结果未知（超时/连接中断，安全中止、不自动回退）：第 ${b + 1}-${b + batch.length} 行可能已全部或部分写入，请用 count_rows 核对后人工决定是否补插（此前批次已确认写入 ${inserted} 行）。原始错误: ${e.message}`, "conditional");
         }
         // 约束/数据类错误：批语句原子未写入 → 回退逐行精确定位坏行
         for (let i = 0; i < batch.length; i++) {
+          if (signal?.aborted) {
+            throw new ToolError("E_DB", `导入已被客户端取消（逐行回退中止于第 ${b + i + 1} 行；此前 ${inserted} 行已写入）`);
+          }
           try {
             await runQuery(args.source, singleSql, valueRows[b + i]);
             inserted++;
@@ -1473,7 +1825,7 @@ async function doImportData(args) {
             const tail = isAmbiguousWriteError(e2)
               ? "该行写入结果未知（超时/连接中断）"
               : `此前 ${inserted} 行已写入——如需清场请用 execute 按条件删除`;
-            throw new Error(`第 ${b + i + 1} 行导入失败，整批中止（${tail}）: ${e2.message}`);
+            throw new ToolError("E_DB", `第 ${b + i + 1} 行导入失败，整批中止（${tail}）: ${e2.message}`);
           }
         }
       }
@@ -1502,8 +1854,21 @@ export function safeExportPath(dir, filename) {
   const raw = String(filename).trim();
   // v1.3.1 修正："." / ".." / "..." 在清洗前拒绝——清洗会把它们变成 "_" 绕过检查（selftest 抓到）
   if (!raw || /^\.+$/.test(raw)) return null;
-  const clean = raw.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").slice(0, 120);
-  if (!clean) return null;
+  const clean0 = raw.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/[. ]+$/, "");
+  // v1.6.13 尾点/尾空格归一：Win32 对 "a.csv." 的寻址不一致（实测 Node existsSync 判不存在，
+  // 某些 API 又归一到 "a.csv"）——读写双方都先归一到规范名，杜绝"报了文件名却找不到文件"
+  if (!clean0) return null;
+  // v1.6.13 Windows 保留设备名拒绝：CON/PRN/AUX/NUL/COM1-9/LPT1-9（含带扩展名形态 NUL.csv）。
+  // 实测这类名字会落成"多数工具读不到/删不掉"的怪文件或直通设备命名空间（导出"成功"但数据
+  // 不可用）——属数据可用性陷阱，按微软命名规范显式拒绝。注意 COM10/console 等非保留名不误伤。
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(clean0)) return null;
+  // v1.6.13 超长截断保扩展名：旧版 slice(0,120) 直接切断 ".csv"（118 字基名导出成 ".c"、
+  // 130 字基名导出成无扩展名文件，实测）——先取扩展名（上限 16 字符防病态长后缀），基名让位
+  let clean = clean0;
+  if (clean.length > 120) {
+    const ext = path.extname(clean).slice(0, 16);
+    clean = clean.slice(0, 120 - ext.length) + ext;
+  }
   const base = path.resolve(dir);
   const full = path.resolve(base, clean);
   return full.startsWith(base + path.sep) ? full : null; // 双保险：即使清洗漏网，越界即拒
@@ -1547,7 +1912,7 @@ export function writeFileAtomic(file, content, overwrite) {
     try {
       renameWithRetry(() => fs.linkSync(tmp, file));   // 原子占位：并发者只有一个成功
     } catch (e) {
-      if (e?.code === "EEXIST") throw new Error(`目标文件已存在: ${file}（overwrite: true 可覆盖）`);
+      if (e?.code === "EEXIST") throw new ToolError("E_PARAM", `目标文件已存在: ${file}（overwrite: true 可覆盖）`);
       throw e;
     }
   } finally {
@@ -1568,6 +1933,9 @@ export function csvCell(v, neutralize = true) {
   if (v === null || v === undefined) s = "";
   else if (typeof v === "bigint") s = v.toString();
   else if (typeof v === "number") s = String(v);
+  // v1.6.16: live 字节视图（Uint8Array/Buffer）→ hex——旧版掉进 String(v) 把 BLOB 变成
+  // "0,1,2,255"（Uint8Array）/ utf8 mojibake（Buffer），导出不可辨认（对抗台实测抓获）
+  else if (v && typeof v === "object" && ArrayBuffer.isView(v)) s = Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("hex");
   else if (v && typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) s = Buffer.from(v.data).toString("hex");
   else { s = String(v); isStr = true; }
   if (neutralize && isStr && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
@@ -1598,13 +1966,13 @@ export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPO
   let bytes = 0;
   for (const line of lines) bytes += Buffer.byteLength(line, "utf8") + 2;
   if (bytes > maxBytes) {
-    throw new Error(`导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
+    throw new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
   }
   for (const r of rows) {
     const line = fields.map((f) => cell(r?.[f])).join(",");
     bytes += Buffer.byteLength(line, "utf8") + 2;
     if (bytes > maxBytes) {
-      throw new Error(`导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
+      throw new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
     }
     lines.push(line);
   }
@@ -1616,7 +1984,7 @@ async function doExportData(args) {
   // 目录门禁最先（配置级错误先于源查找/DB 访问暴露，未初始化部署也能得到明确指引）
   const dir = process.env.DBMCP_EXPORT_DIR;
   if (!dir) {
-    throw new Error("export_data 未启用：在 MCP 服务的环境中设置 DBMCP_EXPORT_DIR=<允许导出的目录> 后重启（服务端白名单，防任意路径写盘）。");
+    throw new ToolError("E_CONFIG", "export_data 未启用：在 MCP 服务的环境中设置 DBMCP_EXPORT_DIR=<允许导出的目录> 后重启（服务端白名单，防任意路径写盘）。");
   }
   const src = getSource(args.source);
   const format = args.format === "json" ? "json" : "csv";
@@ -1634,8 +2002,9 @@ async function doExportData(args) {
   let formulaCells = 0;
   if (format === "json") {
     // v1.3.1 修正：必须用 stringify()——原生 JSON.stringify 无法序列化 BigInt（sqlite 读出的
-    // INTEGER 经 setReadBigInts 是 BigInt，实测崩溃），且需要 Buffer 十六进制预览与 scrub 清洗
-    content = stringify({ row_count: visible.length, truncated, columns: cols, rows: visible });
+    // INTEGER 经 setReadBigInts 是 BigInt，实测崩溃），且需要 Buffer 十六进制与 scrub 清洗。
+    // v1.6.3: export 模式不截断单元格、Buffer 全量 hex——导出文件要数据保真（见 stringify 注释）。
+    content = stringify({ row_count: visible.length, truncated, columns: cols, rows: visible }, { export: true });
   } else {
     const csv = exportToCsv(cols, visible, neutralizeFormulas);
     content = csv.content;
@@ -1644,18 +2013,27 @@ async function doExportData(args) {
   content = scrub(content);   // 落盘内容与工具响应同标准清洗
 
   const ext = "." + format;
-  const filename = args.filename
-    ? (String(args.filename).endsWith(ext) ? String(args.filename) : String(args.filename) + ext)
+  // v1.6.13 文件名归一：尾点/尾空格先剥（"report2.csv." 不再变成 "report2.csv..csv"），扩展名
+  // 判定大小写不敏感（"REPORT.CSV" 不再追加成 "REPORT.CSV.csv"）；清洗后为空的病态名字显式拒绝
+  //（旧行为会拼出 "....csv" 之类的垃圾文件名）
+  const nm = args.filename != null && String(args.filename).trim()
+    ? String(args.filename).trim().replace(/[. ]+$/, "")
+    : "";
+  if (args.filename != null && String(args.filename).trim() && !nm) {
+    throw new ToolError("E_PARAM", `Invalid export filename '${args.filename}'（清洗后为空）。`);
+  }
+  const filename = nm
+    ? (nm.toLowerCase().endsWith(ext) ? nm : nm + ext)
     : `export-${src.type}-${new Date().toISOString().replace(/[:.]/g, "-")}${ext}`;
   const file = safeExportPath(dir, filename);
-  if (!file) throw new Error(`Invalid export filename '${args.filename}' or DBMCP_EXPORT_DIR not set properly.`);
+  if (!file) throw new ToolError("E_PARAM", `Invalid export filename '${args.filename}'（含 Windows 保留设备名 CON/PRN/AUX/NUL/COM1-9/LPT1-9、非法字符或越界，被清洗拒绝；也可能 DBMCP_EXPORT_DIR 未正确设置）。`);
   // 快速失败预检（省去无谓等待）；跨进程互斥由 writeFileAtomic 的原子占位最终强制
   if (fs.existsSync(file) && args.overwrite !== true) {
-    throw new Error(`目标文件已存在: ${file}（overwrite: true 可覆盖）`);
+    throw new ToolError("E_PARAM", `目标文件已存在: ${file}（overwrite: true 可覆盖）`);
   }
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > MAX_EXPORT_BYTES) {
-    throw new Error(`导出内容 ${bytes} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
+    throw new ToolError("E_LIMIT", `导出内容 ${bytes} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, content, args.overwrite === true);
@@ -1672,8 +2050,8 @@ async function distinctValues(args) {
   const split = splitIdent(args.table);
   const schema = args.schema || split.schema || (src.type === "mysql" || src.type === "sqlite" ? null : "public");
   const column = String(args.column || "").trim();
-  if (!/^[A-Za-z_][\w$]*$/.test(column)) {
-    throw new Error(`Invalid column name '${column}'. Pass a plain column name (letters/digits/_/$, not starting with a digit).`);
+  if (!/^[_\p{L}][\p{L}\p{N}$_]*$/u.test(column)) {
+    throw new ToolError("E_PARAM", `Invalid column name '${column}'. Pass a plain column name (letters/digits/_/$, not starting with a digit).`);
   }
   const limit = intArg(args.limit, "limit", 1, 200, 20);
   if (args.where) checkWhereFragment(args.where, maskDialect(src.type));
@@ -1709,7 +2087,7 @@ async function doExecute(args) {
   const src = getSource(args.source);
   const writable = cfg.allowWrites === true || src.allowWrites === true;
   if (!writable) {
-    throw new Error(
+    throw new ToolError("E_CONFIG", 
       "Writes are disabled. Set allowWrites=true in dbmcp.config.json (globally or on this source), " +
       "then restart the MCP server. Prefer a least-privilege account."
     );
@@ -1753,7 +2131,7 @@ async function guardAffectedRows(sourceId, src, sql) {
   const total = Number(rows?.[0]?.total ?? NaN);
   if (Number.isFinite(total) && total > cap) {
     const verb = /^update/i.test(sql.trim()) ? "UPDATE" : "DELETE";
-    throw new Error(
+    throw new ToolError("E_SAFETY", 
       `安全红线：该 ${verb} 将影响 ${total} 行，超过上限 ${cap}` +
       "（可在 dbmcp.config.json 调整 maxAffectedRows，0 = 关闭预检）。" +
       "如确需批量变更，请缩小 WHERE 范围后重试；全表/大批量操作请通过 DBeaver 等人工渠道由 DBA 执行。"
@@ -1766,7 +2144,7 @@ async function guardAffectedRows(sourceId, src, sql) {
 async function doCreateTable(args) {
   const src = getSource(args.source);
   if (cfg.allowCreateTable !== true && src.allowCreateTable !== true) {
-    throw new Error('建表未启用：在 dbmcp.config.json 设置 "allowCreateTable": true（全局或该源）后重启 MCP。安全红线（无 WHERE 的 UPDATE/DELETE、TRUNCATE）不受此开关影响，始终生效。');
+    throw new ToolError("E_CONFIG", '建表未启用：在 dbmcp.config.json 设置 "allowCreateTable": true（全局或该源）后重启 MCP。安全红线（无 WHERE 的 UPDATE/DELETE、TRUNCATE）不受此开关影响，始终生效。');
   }
   // v1.0.3: 守卫只做校验并返回原文（旧版返回脱敏文本且被直接执行——带 COMMENT/'x'/反引号的 DDL 必然语法错误）
   const validated = createTableGuard(args.sql, maskDialect(src.type));
@@ -1797,7 +2175,7 @@ export function probeTcp(host, port, timeoutMs = 2500) {
 
 async function findDatabase(args) {
   const q = String(args.name || "").trim().toLowerCase();
-  if (!q) throw new Error("Provide a database name or keyword, e.g. 'za_data_notice', 'test', 'pre'.");
+  if (!q) throw new ToolError("E_PARAM", "Provide a database name or keyword, e.g. 'za_data_notice', 'test', 'pre'.");
   const envFilter = args.env ? String(args.env).trim().toLowerCase() : null;
   const out = [];
   for (const [id, s] of Object.entries(cfg.sources)) {
@@ -1832,11 +2210,72 @@ async function findDatabase(args) {
 function resultContent(data) {
   return { content: [{ type: "text", text: scrub(stringify(data)) }] };
 }
-function errorContent(message) {
-  return { content: [{ type: "text", text: "Error: " + scrub(message) }], isError: true };
+
+/**
+ * v1.6.5 错误语义标准化：工具错误携带稳定机器可读错误码，格式 `Error: [E_CODE:retry] 原文`。
+ * 原文逐字保留在标签之后（存量客户端按子串匹配错误文案的行为不变）；错误码让调用方判断
+ * 「同一参数重试是否有意义」，避免对安全拒绝/参数错误做无效重试（烧 token 且无进展）。
+ * retry 取值：retryable=同参重试可能成功（连接类瞬时错误）| conditional=改变参数/范围后可重试 |
+ * no-retry=同参重试必然失败（守卫拒绝/参数错误/配置缺失）。
+ * 分类优先级：显式标签（v1.6.6 ToolError）> 安全红线 > 配置态 > 对象不存在 > 上限 > 导入语义 > 参数语义 > 驱动错误码 > 兜底；
+ * 未知错误兜底 E_INTERNAL:no-retry（fail-closed，不鼓励盲目重试）。
+ * v1.6.6: 69 个 throw 点（guard.mjs 27 + server.mjs 40 + pool.mjs 2）已全部显式携带错误码，
+ * 消息模式匹配降级为未标注错误/第三方驱动错误的兜底（不再承担主分类职责）。
+ */
+const DB_RETRYABLE_CODES = /^(ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENOTFOUND|PROTOCOL_CONNECTION_LOST|PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR|57P03)$/;
+export function classifyError(e) {
+  if (e && typeof e.errCode === "string") return { code: e.errCode, retry: e.errRetry || "no-retry" };
+  const msg = (e && e.message) || String(e);
+  if (/安全红线|read-only guard/i.test(msg)) return { code: "E_SAFETY", retry: "no-retry" };
+  if (/未启用|尚未初始化|init_required|需写权限|unsupported type/i.test(msg)) return { code: "E_CONFIG", retry: "no-retry" };
+  if (/Unknown source|not found|不存在|doesn't exist|does not exist/i.test(msg)) return { code: "E_NOT_FOUND", retry: "no-retry" };
+  if (/超过上限|缩小范围/i.test(msg)) return { code: "E_LIMIT", retry: "conditional" };
+  if (/批写入结果未知/i.test(msg)) return { code: "E_DB", retry: "conditional" };
+  if (/原子导入失败/i.test(msg)) return { code: "E_DB", retry: "no-retry" };
+  if (/Unknown tool|Invalid '|Invalid |Empty SQL|Only a single SQL statement|expected an integer|must be >=|Provide a column|表头含非法列名|行宽不一致|目标文件已存在|query_plan only accepts|CSV 为空|CSV 首行|CSV 无数据行/.test(msg)) {
+    return { code: "E_PARAM", retry: "no-retry" };
+  }
+  const code = e && e.code;
+  // v1.6.20 真实库超时抓获：查询/执行超时此前按报文形态散落三口径——pg query_timeout 无 code 掉
+  // E_INTERNAL 兜底、pg statement_timeout 57014 与 mysql2 PROTOCOL_SEQUENCE_TIMEOUT 走驱动码层
+  // E_DB:no-retry。超时是「同参重试必然再超、改变范围可成」的条件态，统一 E_DB:conditional；
+  // 写路径结果未知的告诫由 import 批回退显式标签（批写入结果未知）与错误类矩阵超时行承担。
+  // 连接建立超时 ETIMEDOUT 不在此列（瞬时连接错误，仍走驱动码层 E_DB:retryable）。
+  if (code === "57014" || code === "PROTOCOL_SEQUENCE_TIMEOUT" ||
+      /Query read timeout|Query inactivity timeout|canceling statement due to statement timeout|query (?:was )?canceled/i.test(msg)) {
+    return { code: "E_DB", retry: "conditional" };
+  }
+  if (code && typeof code === "string") return { code: "E_DB", retry: DB_RETRYABLE_CODES.test(code) ? "retryable" : "no-retry" };
+  return { code: "E_INTERNAL", retry: "no-retry" };
+}
+function errorContent(message, meta) {
+  const m = meta || { code: "E_INTERNAL", retry: "no-retry" };
+  return { content: [{ type: "text", text: "Error: [" + m.code + ":" + m.retry + "] " + scrub(message) }], isError: true };
 }
 
-async function callTool(name, args) {
+// v1.6.13: 复制粘贴真实形态——聊天/网页/Excel 复制 SQL、表名、条件时常夹带前导不可见字符
+//（零宽空格 ZWSP/ZWNJ/ZWJ、软连字符、方向控制符等 Unicode Cf 类）。这些字符在词法单元之前
+// 不可能承载语义，却让只读守卫首词误拒（"statement must start with SELECT"）、驱动报
+// "no such column: ​id"（实测）。剥前导即可让守卫与驱动看到干净语句；**只剥前导**、不动
+// 语句内部，字符串字面量里的不可见字符（真实数据）零影响。红线检查在剥除后的语句上照常执行。
+const LEADING_INVIS_RE = /^[\s\u00A0\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]+/;
+export function stripLeadingInvis(s) {
+  return typeof s === "string" ? s.replace(LEADING_INVIS_RE, "") : s;
+}
+// 词法/标识符/条件片段类参数键——filename 是不透明文件名（可能真以不可见字符开头），不在其列
+const INVIS_ARG_KEYS = ["sql", "where", "order_by", "table", "column", "schema", "source"];
+
+async function callTool(name, args, logMeta) {
+  // v1.6.9 观测面：每次 tools/call（含失败/未知工具）出口恰好打 1 条审计记录；
+  // DBMCP_ERR_LOG 未设置时 logToolCall 零行为，result/error 载荷契约零改动
+  const t0 = Date.now();
+  // v1.6.13: 参数级前导不可见字符归一（见 stripLeadingInvis 注释）——在任何校验/执行前完成
+  if (args && typeof args === "object") {
+    for (const k of INVIS_ARG_KEYS) {
+      if (typeof args[k] === "string") args[k] = stripLeadingInvis(args[k]);
+    }
+  }
+  let out, errMeta = null, errMsg = null;
   try {
     let data;
     switch (name) {
@@ -1851,18 +2290,29 @@ async function callTool(name, args) {
       case "distinct_values": data = await distinctValues(args); break;
       case "column_stats":    data = await columnStats(args); break;
       case "export_data":     data = await doExportData(args); break;
-      case "import_data":     data = await doImportData(args); break;
+      case "import_data":     data = await doImportData(args, logMeta?.signal); break;
       case "count_rows":      data = await countRows(args); break;
       case "execute":         data = await doExecute(args); break;
       case "create_table":    data = await doCreateTable(args); break;
       case "find_database":   data = await findDatabase(args); break;
       default:
-        return errorContent(`Unknown tool '${name}'. Available: ${TOOLS.map((t) => t.name).join(", ")}`);
+        errMeta = { code: "E_PARAM", retry: "no-retry" };
+        errMsg = `Unknown tool '${name}'. Available: ${TOOLS.map((t) => t.name).join(", ")}`;
+        out = errorContent(errMsg, errMeta);
     }
-    return resultContent(data);
+    if (!out) out = resultContent(data);
   } catch (e) {
-    return errorContent(e?.code ? `${e.message} (${e.code})` : e?.message || String(e));
+    errMeta = classifyError(e);
+    errMsg = e?.code ? `${e.message} (${e.code})` : e?.message || String(e);
+    out = errorContent(errMsg, errMeta);
   }
+  logToolCall({
+    id: logMeta?.id ?? null, tool: name, args,
+    duration_ms: Date.now() - t0,
+    is_error: !!out.isError, code: errMeta?.code ?? null, retry: errMeta?.retry ?? null,
+    err_msg: errMsg,
+  });
+  return out;
 }
 
 /** JSON-RPC 内部错误响应（v1.0.1：不回栈信息，避免细节外泄） */
@@ -1870,10 +2320,81 @@ export function rpcInternalError(id) {
   return { jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } };
 }
 
+/**
+ * v1.6.3: 从超长/坏 JSON 行里尽力恢复请求 id（有界扫描，不解析整行）。
+ * 动机：旧版超长行拒收回 id:null、坏 JSON 行直接静默丢弃——请求方拿不到可关联的响应，
+ * 该请求永久挂起（实测复现：客户端等 id=900 的响应直到超时）。JSON-RPC 对 parse/invalid
+ * 错误要求响应回带 id（无法确定时为 null）；客户端通常把 id 放在报文头部，前 8KB 扫描
+ * 大概率命中。局限（如实）：id 若埋在超长 params 之后、或 params 里恰有更早的 "id" 字面量
+ * 会漏/误配——此为 >2MB 报文的尽力而为降级路径，正常报文不受影响。
+ */
+export function peekRpcId(line, scanLimit = 8192) {
+  const m = /"id"\s*:\s*(-?\d+|"([^"\\]|\\.)*")/.exec(String(line).slice(0, scanLimit));
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
+}
+
 // v1.0.3: 支持的 MCP 协议版本（initialize 按规范回「服务端支持的版本」——旧版直接回显客户端
 // 版本，传 "9999-01-01" 也会被原样确认；现仅当客户端版本在支持列表内才沿用之，否则回最新支持版）
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(["2024-11-05", "2025-06-18"]);
 const LATEST_PROTOCOL_VERSION = "2025-06-18";
+
+/* ------------------------- 请求取消（v1.6.12） ------------------------- */
+/**
+ * MCP 2025-06-18「Cancellation」：notifications/cancelled（params: requestId, reason?）。
+ * 落地语义（逐条对照规范 SHOULD/MAY）：
+ *  - 运行中请求：abort 在途 AbortController → 停止等待、**不发响应**（规范明示
+ *    “Not send a response for the cancelled request”；不引入 -32800——那是 LSP 习惯，
+ *    MCP 此处要求不回响应，客户端按规范忽略迟到响应）；
+ *  - 排队中请求（已发出未派发）：派发时消费取消标记 → 不执行、不响应——对写工具是
+ *    安全方向（被取消的 UPDATE 不应落库）；
+ *  - 未知 id / 已完成 / 无效通知：忽略（“Invalid cancellation notifications SHOULD be ignored”）；
+ *  - initialize 不可被取消（规范 MUST NOT）：它从不入表，取消天然被忽略；
+ *  - id 严格同类型匹配（JSON-RPC id number/string 不得互配）。
+ * 在途表 pending 在报文**到达**即登记（区分「未知 id」与「排队中」），派发/应答后删除，
+ * 天然有界（≤ 队列深度）。
+ * 服务端工作侧边界（如实，v1.6.24 收口）：取消释放「等待与响应」，并尽力中断
+ * import_data——COPY 传输期可中断（未发完补 copyFail、连接不滞留）：atomic 随 ROLLBACK
+ * 整体归零，非 atomic 停在批界（已写入批保留、如实回报行数）。其余在执行的驱动查询不
+ * 回滚、不中断——由各驱动既有超时上界约束（mysql2 单查询 timeout / pg statement_timeout /
+ * sqlite 同步执行不可中断）。COPY 之外的写操作若已开跑仍可能落库，取消不是事务回滚；
+ * 串行派发队列语义不变（并发调用仍按到达顺序排队，取消通知插队除外）。
+ */
+const pendingRpc = new Map();
+const CANCELLED = Symbol("dbmcp.cancelled");
+
+/** 报文到达即登记（仅 tools/call）：返回该请求的 AbortController */
+export function trackRpc(id) {
+  const ac = new AbortController();
+  pendingRpc.set(id, { ac, cancelled: false });
+  return ac;
+}
+/** 应答完成/异常收尾：注销在途条目（其后同 id 的取消按「已完成」忽略） */
+export function finishRpc(id) { pendingRpc.delete(id); }
+/** 派发口消费取消标记：false = 已取消，调用方不执行、不响应；标记一次性，id 复用安全 */
+export function beginDispatch(id) {
+  const e = pendingRpc.get(id);
+  if (!e) return true;
+  if (e.cancelled) { pendingRpc.delete(id); return false; }
+  return true;
+}
+/** 规范形状判别：无 id 的 notifications/cancelled 且 params 为对象 */
+export function isCancelNotification(m) {
+  return !!m && typeof m === "object" && !Array.isArray(m)
+    && (m.id === undefined || m.id === null)
+    && m.method === "notifications/cancelled"
+    && m.params !== undefined && m.params !== null && typeof m.params === "object" && !Array.isArray(m.params);
+}
+/** 处理取消：cancelled = 命中在途/排队请求；ignored = 未知 id/无效通知（规范 SHOULD ignore） */
+export function cancelRpc(params) {
+  const rid = params?.requestId;
+  if (typeof rid !== "number" && typeof rid !== "string") return "ignored";
+  const e = pendingRpc.get(rid);
+  if (!e) return "ignored";
+  e.cancelled = true;
+  try { e.ac.abort(typeof params.reason === "string" ? params.reason : undefined); } catch { /* ignore */ }
+  return "cancelled";
+}
 
 export async function handleRpc(msg) {
   // v1.0.2: JSON-RPC 2.0 合规——
@@ -1907,8 +2428,22 @@ export async function handleRpc(msg) {
     case "prompts/list":
       return { jsonrpc: "2.0", id, result: { prompts: [] } };
     case "tools/call": {
-      const r = await callTool(params?.name, params?.arguments || {});
-      return { jsonrpc: "2.0", id, result: r };
+      // v1.6.12: 取消语义——派发前消费取消标记（排队中被取消 ⇒ 不执行不响应，写安全），
+      // 运行中与 AbortController 竞速，被取消则不发响应。工具契约零改动：callTool 仍
+      // 产出正常结果/错误（观测审计照常 1 条），只是结果被丢弃。
+      if (!beginDispatch(id)) return null;
+      const ac = pendingRpc.get(id)?.ac ?? new AbortController();
+      const abortP = new Promise((resolve) => {
+        if (ac.signal.aborted) resolve(CANCELLED);
+        else ac.signal.addEventListener("abort", () => resolve(CANCELLED), { once: true });
+      });
+      try {
+        const r = await Promise.race([callTool(params?.name, params?.arguments || {}, { id, signal: ac.signal }), abortP]);
+        if (r === CANCELLED) return null;
+        return { jsonrpc: "2.0", id, result: r };
+      } finally {
+        finishRpc(id);
+      }
     }
     default:
       return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
@@ -1928,19 +2463,51 @@ function main() {
   const writeLine = (s) => new Promise((res) => process.stdout.write(s + "\n", () => res()));
   let queue = Promise.resolve();
   rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    // v1.6.12: 取消通知必须插队（out-of-band）——串行队列会把它排到长查询之后，永远
+    // 来不及中断。按规范不产生任何响应；仅对疑似取消通知的行做一次短路解析（普通流量
+    // 零额外开销）。解析失败/形状不符则交回常规队列（坏 JSON 照旧回 -32700）。
+    if (trimmed.length <= MAX_LINE_CHARS && trimmed[0] === "{" && trimmed.includes('"notifications/cancelled"')) {
+      let note = null;
+      try { note = JSON.parse(trimmed); } catch { /* 交回常规队列 */ }
+      if (note && isCancelNotification(note)) {
+        const verdict = cancelRpc(note.params);
+        if (verdict === "cancelled") {
+          // 规范 SHOULD log cancellation reasons：理由来自请求方，出 stderr 前过权威 scrub
+          console.error("[calvin-db-mcp] request cancelled: id=" + String(note.params.requestId) + " reason=" + scrub(String(note.params.reason ?? "")));
+        }
+        return;
+      }
+    }
+    // 到达即解析一次（≤2MB）：tools/call 登记在途表——取消语义需区分「未知 id 忽略」
+    // 与「排队中可取消」；解析/拒收语义与旧版逐条一致（超长 -32600、坏 JSON -32700、
+    // 噪声静默、标量 -32600），只是解析从派发时提前到到达时。
+    const tooLarge = trimmed.length > MAX_LINE_CHARS;
+    let msg, parseFailed = false;
+    if (!tooLarge) {
+      try { msg = JSON.parse(trimmed); } catch { parseFailed = true; }
+    }
+    if (msg && typeof msg === "object" && !Array.isArray(msg)
+        && msg.id !== undefined && msg.id !== null && msg.method === "tools/call") {
+      trackRpc(msg.id);
+    }
     queue = queue
       .then(async () => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        if (trimmed.length > MAX_LINE_CHARS) {
-          await writeLine(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request: message too large" } }));
+        if (tooLarge) {
+          // v1.6.3: 拒收也要回带可关联的请求 id（peekRpcId）——id:null 的错误响应让客户端
+          // 对该请求永久等待；尽力恢复 id，恢复不到才按规范回 null。
+          await writeLine(JSON.stringify({ jsonrpc: "2.0", id: peekRpcId(trimmed), error: { code: -32600, message: "Invalid Request: message too large" } }));
           return;
         }
-        let msg;
-        try {
-          msg = JSON.parse(trimmed);
-        } catch {
-          return; // ignore non-JSON line
+        if (parseFailed) {
+          // v1.6.3: 坏 JSON 行必须回 -32700 Parse error（JSON-RPC 规范），静默丢弃会让客户端
+          // 对该请求永久挂起。仅对疑似 JSON 的行（{ / [ 开头）响应——普通噪声行（日志混入等）
+          // 维持旧的静默忽略，避免给 stdout 制造无主报文。
+          if (trimmed[0] === "{" || trimmed[0] === "[") {
+            await writeLine(JSON.stringify({ jsonrpc: "2.0", id: peekRpcId(trimmed), error: { code: -32700, message: "Parse error" } }));
+          }
+          return;
         }
         try {
           const resp = await handleRpc(msg);

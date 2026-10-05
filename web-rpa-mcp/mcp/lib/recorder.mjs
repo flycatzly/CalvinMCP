@@ -476,6 +476,14 @@ export function recordingStatus() {
 export async function stopRecording({ name, save = true, inferAssertions = true, keepBrowserOpen = false } = {}) {
   if (!ACTIVE) return { ok: false, error: '当前没有进行中的录制会话' };
   const session = ACTIVE;
+  // 防抖挂起的填入先提交、再断开会话指针：事件经 onEvent 只认 ACTIVE 上的会话，
+  // ACTIVE 一清这些事件就没人接收（修前 __rpa.flush 不存在，停止前 700ms 内的填入直接丢）
+  try {
+    for (const p of session.context.pages()) {
+      if (p.isClosed()) continue;
+      await p.evaluate(() => { try { if (window.__rpa && window.__rpa.flush) window.__rpa.flush(); } catch (e) { /* ignore */ } }).catch(() => {});
+    }
+  } catch { /* ignore */ }
   ACTIVE = null;
 
   try {
@@ -483,7 +491,6 @@ export async function stopRecording({ name, save = true, inferAssertions = true,
     const shapes = [];
     for (const p of session.context.pages()) {
       if (p.isClosed()) continue;
-      await p.evaluate(() => { try { if (window.__rpa && window.__rpa.flush) window.__rpa.flush(); } catch (e) { /* ignore */ } }).catch(() => {});
       const u = p.url();
       if (!isRecordableUrl(u)) continue;
       const sh = await capturePageShape(p);

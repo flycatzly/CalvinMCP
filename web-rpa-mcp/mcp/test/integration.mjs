@@ -8,15 +8,15 @@ import { startDemoServer } from '../../demo/app.mjs';
 import { startRecording, stopRecording, activeSession, recordingStatus, cancelRecording, startSplice } from '../lib/recorder.mjs';
 import { runFlow, preflightFlow } from '../lib/player.mjs';
 import { runChain } from '../lib/chain.mjs';
-import { loadFlow, saveFlow, deleteFlow, listFlows, flowMarkdown, stepLabel, listRuns, loadRun, listBackups, restoreFlow } from '../lib/store.mjs';
+import { loadFlow, saveFlow, deleteFlow, listFlows, flowMarkdown, stepLabel, listRuns, loadRun, listBackups, restoreFlow, backupFlow, saveRun } from '../lib/store.mjs';
 import { lintFlow } from '../lib/lint.mjs';
 import { setSecret, getSecret, listSecrets, deleteSecret } from '../lib/secrets.mjs';
 import { readTable, resolveColumn } from '../lib/table.mjs';
-import { composeRunMessage, sendNotify } from '../lib/notify.mjs';
+import { composeRunMessage, sendNotify, outboxCount, outboxInfo } from '../lib/notify.mjs';
 import { writeWrapper } from '../lib/schedule.mjs';
 import {
   statusReport, pruneRuns, pruneLogs, acquireLock, releaseLock, lockInfo,
-  writeRunningMarker, interruptedRun,
+  writeRunningMarker, interruptedRun, liveRunInfo,
 } from '../lib/ops.mjs';
 import { closeAll, getPlaywright } from '../lib/browser.mjs';
 import { formatDate, DIRS, readConfig, writeConfig } from '../lib/core.mjs';
@@ -112,6 +112,11 @@ function startAlarmReceiver() {
     server.listen(0, '127.0.0.1', () => resolve({ server, got, url: 'http://127.0.0.1:' + server.address().port + '/hook' }));
   });
 }
+
+/* 告警发件箱（.work/notify-outbox.json）是全局落盘状态，测试前后都要清干净，
+   否则上一次残留的积压会在下一次 sendNotify 时被补发，打乱 hits 计数断言 */
+const OUTBOX = path.join(DIRS.work, 'notify-outbox.json');
+function clearOutbox() { try { fs.rmSync(OUTBOX, { force: true }); } catch { /* ignore */ } }
 
 async function main() {
   const today = formatDate(new Date(), 'YYYY-MM-DD');
@@ -443,6 +448,41 @@ async function main() {
     assert.equal(rep.status, 'pass', '重试没有生效: ' + rep.error);
   });
 
+  await A('run.retries=0 时不重试（首次断连直接失败）', async () => {
+    // 判别式：1500ms 失败窗口盖住本次 goto 的全部内部重试，重试必须等窗口外（retryDelayMs=3000）才可能成。
+    // 若 run.retries 未被消费（仍按默认 1 重试）：第二次尝试落在窗口外恢复成功，此用例必红。
+    const f = F('t-noretry', [gt(DEMO + '/flaky?key=noretry&failWindow=1500'), { op: 'assert', kind: 'textPresent', text: '服务已恢复' }]);
+    const before = readConfig().run;
+    writeConfig({ run: { retries: 0, retryDelayMs: 3000 } });
+    try {
+      const rep = await run(f);
+      assert.equal(rep.status, 'fail', 'retries=0 不该重试成功: ' + rep.error);
+    } finally {
+      writeConfig({ run: { retries: before.retries, retryDelayMs: before.retryDelayMs } });
+    }
+    assert.equal(readConfig().run.retries, 1, 'retries 未恢复默认');
+    assert.equal(readConfig().run.retryDelayMs, 800, 'retryDelayMs 未恢复默认');
+  });
+
+  await A('run.retries 与 retryDelayMs 配置驱动重试（判别式：延迟不被消费则重试落在失败窗口内仍失败）', async () => {
+    // 失败窗口 1500ms < retryDelayMs 3000ms：只有"睡满配置延迟"的重试才落在窗口外恢复成功。
+    // 若 retryDelayMs 未被消费（默认 800ms）：重试落在窗口内仍被断连 → 判失败，此用例必红。
+    const f = F('t-retry-cfg', [gt(DEMO + '/flaky?key=retrycfg&failWindow=1500'), { op: 'assert', kind: 'textPresent', text: '服务已恢复' }]);
+    const before = readConfig().run;
+    writeConfig({ run: { retries: 1, retryDelayMs: 3000 } });
+    try {
+      const t0 = Date.now();
+      const rep = await run(f);
+      const took = Date.now() - t0;
+      console.log('      重试总耗时 ' + took + 'ms（配置 retryDelayMs=3000）');
+      assert.equal(rep.status, 'pass', '配置 retries=1 的重试应生效: ' + rep.error);
+      assert.ok(took >= 2500, 'retryDelayMs=3000 未被消费，实际 ' + took + 'ms');
+    } finally {
+      writeConfig({ run: { retries: before.retries, retryDelayMs: before.retryDelayMs } });
+    }
+    assert.equal(readConfig().run.retryDelayMs, 800, 'retryDelayMs 未恢复默认');
+  });
+
   /* ================= G6 人工接管 ================= */
   G('6', '人工接管');
   await A('无头模式下 humanHandoff 立即报错（不静默卡死）', async () => {
@@ -463,6 +503,51 @@ async function main() {
     ], { assertions: [{ kind: 'textPresent', text: '人工处理完成' }] });
     const rep = await run(f, { headed: true });
     assert.equal(rep.status, 'pass', '有头人工接管失败: ' + rep.error);
+  });
+
+  await A('等待人工期间 status_report 能看到 waitingHuman（真实接管窗口）', async () => {
+    const f = F('t-waiting-human', [
+      gt(DEMO + '/form'),
+      { op: 'humanHandoff', reason: '等待人工可见性测试', timeoutMs: 8000 }, // 无恢复条件 → 固定 3s 放行窗口
+    ], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    saveFlow(f);
+    created.push(f.id);
+    const runP = run(f, { headed: true });
+    let seen = null;
+    const t0 = Date.now();
+    // 判别式：轮询预算 15s ≫ 等待窗口 3s，且窗口内每 150ms 采样一次（约 20 次机会）
+    while (!seen && Date.now() - t0 < 15000) {
+      await new Promise((r) => setTimeout(r, 150));
+      const st = statusReport({});
+      const item = st.items.find((i) => i.flowId === f.id);
+      if (item && item.waitingHuman) seen = item.waitingHuman;
+    }
+    const rep = await runP;
+    assert.ok(seen, '等待窗口内 status_report 应看到 waitingHuman');
+    assert.ok(/等待人工可见性测试/.test(seen.reason), 'reason 不对: ' + JSON.stringify(seen));
+    assert.equal(rep.status, 'pass', '运行应正常放行: ' + rep.error);
+  });
+
+  await A('humanHandoff 不带 timeoutMs 时用 run.humanHandoffTimeoutMs 兜底', async () => {
+    // 判别式：配置 2500ms；若配置未被消费（默认 180s），等待窗口拖满 3 分钟，took<15s 必红
+    const f = F('t-handoff-cfg', [
+      gt(DEMO + '/handoff'),
+      { op: 'humanHandoff', reason: '配置兜底超时验证', resumeWhenText: '永不出现的恢复条件-XYZ' },
+    ], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    const before = readConfig().run.humanHandoffTimeoutMs;
+    writeConfig({ run: { humanHandoffTimeoutMs: 2500 } });
+    try {
+      const t0 = Date.now();
+      const rep = await run(f, { headed: true });
+      const took = Date.now() - t0;
+      console.log('      状态=' + rep.status + ' 耗时=' + took + 'ms 错误=' + (rep.error || '无'));
+      assert.equal(rep.status, 'fail', '恢复条件永不满足应超时失败: ' + rep.error);
+      assert.ok(/人工接管超时/.test(rep.error || ''), '错误应指向人工接管超时: ' + rep.error);
+      assert.ok(took >= 2000 && took < 15000, '应按配置 2500ms 等待窗口超时，实际 ' + took + 'ms');
+    } finally {
+      writeConfig({ run: { humanHandoffTimeoutMs: before } });
+    }
+    assert.equal(readConfig().run.humanHandoffTimeoutMs, 180000, 'humanHandoffTimeoutMs 未恢复默认');
   });
 
   /* ================= G7 串联（extract -> 参数 -> 目标页） ================= */
@@ -537,6 +622,104 @@ async function main() {
     assert.ok(JSON.stringify(rep).indexOf('TK-8891') < 0, '报告里泄露了凭据明文');
     assert.ok(String(rep.params.tok).indexOf('*') >= 0, '参数没有被掩码: ' + rep.params.tok);
     deleteSecret('int_tok2');
+  });
+
+  await A('redactKeys：未标 secret 的 password 参数明文不进报告（键名脱敏+全文清除）', async () => {
+    const f = F('t-redact-key', [
+      { op: 'goto', url: DEMO + '/chain/target?orderNo=SO-REDACT&token=${password}' },
+      { op: 'assert', kind: 'textPresent', text: '串联数据已接收' },
+    ], {
+      params: [{ name: 'password', required: true }],
+      assertions: [{ kind: 'textPresent', text: '串联数据已接收' }],
+    });
+    saveFlow(f);
+    created.push(f.id);
+    const rep = await run(loadFlow(f.id), { params: { password: 'FAKE-PASS-911' } });
+    assert.equal(rep.status, 'pass', rep.error);
+    assert.equal(rep.params.password, '***', 'password 参数没被键名脱敏: ' + rep.params.password);
+    assert.ok(JSON.stringify(rep).indexOf('FAKE-PASS-911') < 0, '报告里泄露了 password 明文（步骤 URL/明细未被全文清除）');
+  });
+
+  await A('security.redactKeys 自定义名单整体替换默认', async () => {
+    const before = readConfig().security.redactKeys;
+    writeConfig({ security: { redactKeys: ['订单号'] } });
+    try {
+      const f = F('t-redact-custom', [
+        { op: 'goto', url: DEMO + '/chain/target?orderNo=${订单号}&token=${password}' },
+        { op: 'assert', kind: 'textPresent', text: '串联数据已接收' },
+      ], {
+        params: [{ name: '订单号', required: true }, { name: 'password', required: true }],
+        assertions: [{ kind: 'textPresent', text: '串联数据已接收' }],
+      });
+      saveFlow(f);
+      created.push(f.id);
+      const rep = await run(loadFlow(f.id), { params: { 订单号: 'FAKE-ORD-777', password: 'FAKE-PASS-222' } });
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.equal(rep.params['订单号'], '***', '自定义名单键没被脱敏: ' + rep.params['订单号']);
+      assert.equal(rep.params.password, 'FAKE-PASS-222', '名单外的键应保持明文（自定义名单整体替换默认）');
+      assert.ok(JSON.stringify(rep).indexOf('FAKE-ORD-777') < 0, '命中键的原值未被全文清除');
+    } finally {
+      writeConfig({ security: { redactKeys: before } });
+    }
+  });
+
+  await A('maskSecrets=false 只放开参数脱敏，secret 凭据仍打码且全文清除', async () => {
+    setSecret('int_tok3', 'TK-FAKE-777');
+    const before = readConfig().security.maskSecrets;
+    writeConfig({ security: { maskSecrets: false } });
+    try {
+      const f = F('t-mask-off', [
+        { op: 'goto', url: DEMO + '/chain/target?orderNo=SO-MASK&token=${tok}' },
+        { op: 'assert', kind: 'textPresent', text: '串联数据已接收' },
+      ], {
+        params: [{ name: 'password', required: true }, { name: 'tok', source: 'secret:int_tok3', secret: true, required: true }],
+        assertions: [{ kind: 'textPresent', text: '串联数据已接收' }],
+      });
+      saveFlow(f);
+      created.push(f.id);
+      const rep = await run(loadFlow(f.id), { params: { password: 'FAKE-PASS-333' } });
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.equal(rep.params.password, 'FAKE-PASS-333', 'maskSecrets=false 应放开非凭据参数值便于调试: ' + rep.params.password);
+      assert.ok(String(rep.params.tok).indexOf('*') >= 0, 'secret 凭据不许随开关放行: ' + rep.params.tok);
+      assert.ok(JSON.stringify(rep).indexOf('TK-FAKE-777') < 0, 'secret 凭据明文必须全文清除');
+    } finally {
+      writeConfig({ security: { maskSecrets: before } });
+      deleteSecret('int_tok3');
+    }
+  });
+
+  await A('extracted 是数据通道：键名命中 redactKeys 也不脱敏、不清除（链式取值契约）', async () => {
+    const f = F('t-data-channel', [
+      gt(DEMO + '/chain/source'),
+      ext('srcToken', 'token'),
+    ], { assertions: [{ kind: 'textPresent', text: '取数页' }] });
+    saveFlow(f);
+    created.push(f.id);
+    const rep = await run(loadFlow(f.id));
+    assert.equal(rep.status, 'pass', rep.error);
+    assert.equal(rep.extracted.token, 'TK-8891', 'extracted 是数据通道，键名命中 redactKeys 不该被改写: ' + rep.extracted.token);
+  });
+
+  await A('extracted 对 secret 值不豁免：密钥出现在产出里也全文清除（红线）', async () => {
+    setSecret('int_tok4', 'TK-8891');
+    try {
+      const f = F('t-secret-scrub-extracted', [
+        { op: 'goto', url: DEMO + '/chain/source?tok=${tok}' },
+        ext('srcToken', 'token'),
+      ], {
+        params: [{ name: 'tok', source: 'secret:int_tok4', secret: true, required: true }],
+        assertions: [{ kind: 'textPresent', text: '取数页' }],
+      });
+      saveFlow(f);
+      created.push(f.id);
+      const rep = await run(loadFlow(f.id), { allowLintErrors: false });
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.ok(String(rep.params.tok).indexOf('*') >= 0, 'secret 参数没被掩码: ' + rep.params.tok);
+      assert.equal(rep.extracted.token, '***', 'secret 值出现在 extracted 里必须清除: ' + rep.extracted.token);
+      assert.ok(JSON.stringify(rep).indexOf('TK-8891') < 0, 'secret 凭据明文渗进了报告（含 extracted）');
+    } finally {
+      deleteSecret('int_tok4');
+    }
   });
 
   /* ================= G9 表格参数（文章的核心诉求：单号从 Excel 取） ================= */
@@ -614,6 +797,34 @@ async function main() {
     assert.ok(checked.some((s) => s.resolvable), '起始页能命中的元素一个都没命中');
   });
 
+  await A('run.saveEvidence=false 时不产截图（即便 evidenceOn=always）', async () => {
+    // 判别式：evidenceOn=always 是"必截"口径，只有 saveEvidence=false 被消费才会一个不产
+    const f = F('t-noev-cfg', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    const before = readConfig().run.saveEvidence;
+    writeConfig({ run: { saveEvidence: false } });
+    try {
+      const rep = await run(f, { evidenceOn: 'always' });
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.equal((rep.screenshots || []).length, 0, 'saveEvidence=false 不该有截图: ' + JSON.stringify(rep.screenshots));
+    } finally {
+      writeConfig({ run: { saveEvidence: before } });
+    }
+    assert.equal(readConfig().run.saveEvidence, true, 'saveEvidence 未恢复默认');
+  });
+
+  await A('url 断言支持 regex（匹配通过 / 不匹配判失败）', async () => {
+    const f = F('t-url-regex', [gt(DEMO + '/form')], {
+      assertions: [{ kind: 'url', regex: '/form$', message: '地址应匹配 /form$' }],
+    });
+    const rep = await run(f);
+    assert.equal(rep.status, 'pass', JSON.stringify(rep.assertions) + ' ' + rep.error);
+    const f2 = F('t-url-regex-bad', [gt(DEMO + '/form')], {
+      assertions: [{ kind: 'url', regex: '^https?://nomatch-zzz', message: '故意不匹配' }],
+    });
+    const rep2 = await run(f2);
+    assert.equal(rep2.status, 'fail', 'regex 不匹配应判失败: ' + rep2.status);
+  });
+
   /* ================= G11 录制器边界 ================= */
   G('11', '录制器边界');
   await A('重复 record_start 被拒绝', async () => {
@@ -645,6 +856,115 @@ async function main() {
     const c = await cancelRecording();
     assert.ok(c.ok);
     assert.ok(c.discardedSteps > 0, '没有丢弃步骤');
+  });
+
+  await A('record_stop.save=false 只返回流程不落盘', async () => {
+    const a = await startRecording({ url: DEMO + '/form', name: 'int-nosave' });
+    assert.ok(a.ok, JSON.stringify(a));
+    const page = activeSession().page;
+    await page.waitForSelector('[data-testid="orderNo"]');
+    await page.fill('[data-testid="orderNo"]', 'SO-NOSAVE');
+    await sleep(900);
+    const r = await stopRecording({ name: 'int-nosave', save: false });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(r.saved, false, 'save=false 应标记未保存: ' + JSON.stringify(r));
+    assert.ok(r.stepCount > 0, '即使不保存也应返回已录步骤: ' + r.stepCount);
+    assert.ok(!loadFlow(r.flowId), 'save=false 不该写流程文件');
+  });
+
+  await A('record_stop 提交防抖中的填入（停止前 700ms 内的输入不静默丢失）', async () => {
+    // 判别式：填完 250ms 就停（< 700ms 防抖），fill 只存在于挂起态；
+    // 修前 __rpa.flush 是空引用（调用方静默 no-op），这步填入会被整个丢掉
+    const a = await startRecording({ url: DEMO + '/form', name: 'int-flush' });
+    assert.ok(a.ok, JSON.stringify(a));
+    try {
+      const page = activeSession().page;
+      await page.waitForSelector('[data-testid="orderNo"]');
+      await page.fill('[data-testid="orderNo"]', 'SO-FLUSH');
+      await sleep(250);
+      const r = await stopRecording({ name: 'int-flush', save: false, inferAssertions: false });
+      assert.ok(r.ok, JSON.stringify(r));
+      const fills = r.flow.steps.filter((s) => s.op === 'fill');
+      assert.ok(fills.some((s) => s.value === 'SO-FLUSH'), '停止前 250ms 的填入被静默丢弃（flush 未生效）: ' + JSON.stringify(r.flow.steps.map((s) => s.op)));
+    } catch (e) {
+      try { await cancelRecording(); } catch { /* 没有会话时忽略 */ }
+      throw e;
+    }
+  });
+
+  await A('html 上的点击不录成无定位符幽灵步骤（回放点不着、只会卡阻断级）', async () => {
+    // 判别式：documentElement.click() 的目标解析到 <html>，一个定位符都生成不出来；
+    // 修前会录成「点击 (无定位符)」，回放被 L040 卡死后连坐全部步骤
+    const a = await startRecording({ url: DEMO + '/form', name: 'int-ghostclick' });
+    assert.ok(a.ok, JSON.stringify(a));
+    try {
+      const page = activeSession().page;
+      await page.waitForSelector('[data-testid="orderNo"]');
+      await page.fill('[data-testid="orderNo"]', 'SO-GHOST');
+      await sleep(800);
+      await page.evaluate(() => { document.documentElement.click(); });
+      await sleep(200);
+      const r = await stopRecording({ name: 'int-ghostclick', save: false, inferAssertions: false });
+      assert.ok(r.ok, JSON.stringify(r));
+      const bad = r.flow.steps.filter((s) => s.op !== 'goto' && !(s.locators || []).length);
+      assert.equal(bad.length, 0, '录到了无定位符的幽灵步骤: ' + JSON.stringify(bad));
+      assert.ok(!r.flow.steps.some((s) => s.op === 'click'), 'html 上的点击不该录成 click 步骤: ' + JSON.stringify(r.flow.steps.map((s) => s.op)));
+    } catch (e) {
+      try { await cancelRecording(); } catch { /* 没有会话时忽略 */ }
+      throw e;
+    }
+  });
+
+  await A('record_stop.inferAssertions=false 不自动补断言（对照：默认会推断）', async () => {
+    // 判别式：报表页 tbody 恒有行（哪怕"暂无数据"占位行），默认推断必产出断言；
+    // 若 inferAssertions=false 未被消费，对照形态会被推断进断言，断言数不会是 0
+    async function recordToReport(name, inferAssertions) {
+      const a = await startRecording({ url: DEMO + '/', name });
+      assert.ok(a.ok, JSON.stringify(a));
+      try {
+        const page = activeSession().page;
+        await page.waitForSelector('[data-testid="empNo"]');
+        await page.fill('[data-testid="empNo"]', '9527');
+        await page.fill('#pwd', 'demo-pass');   // demo 密码框只有 id="pwd"，没有 data-testid
+        await page.click('[data-testid="loginBtn"]');
+        await page.waitForSelector('table#tbl');
+        await sleep(900);
+        const r = inferAssertions === undefined
+          ? await stopRecording({ name })
+          : await stopRecording({ name, inferAssertions });
+        assert.ok(r.ok, JSON.stringify(r));
+        return r;
+      } catch (e) {
+        // 录制会话是全局单例：这里失败必须释放，否则后续所有录制用例都被"已有会话"连坐
+        try { await cancelRecording(); } catch { /* 没有会话时忽略 */ }
+        throw e;
+      }
+    }
+    const on = await recordToReport('int-assert-on');
+    created.push(on.flowId);
+    console.log('      默认推断断言: ' + JSON.stringify(on.assertions));
+    assert.ok(on.assertions.length > 0, '默认应自动推断断言（对照组失效则本用例失去判别力）');
+    const off = await recordToReport('int-noassert', false);
+    created.push(off.flowId);
+    assert.equal(off.assertions.length, 0, 'inferAssertions=false 不该自动补断言: ' + JSON.stringify(off.assertions));
+  });
+
+  await A('record_stop.keepBrowserOpen=true 时录制结束后浏览器保留可继续操作', async () => {
+    let page;
+    try {
+      const a = await startRecording({ url: DEMO + '/form', name: 'int-keepopen' });
+      assert.ok(a.ok, JSON.stringify(a));
+      page = activeSession().page;
+      await page.waitForSelector('[data-testid="orderNo"]');
+      await page.fill('[data-testid="orderNo"]', 'SO-KEEPOPEN');
+      await sleep(900);
+      const r = await stopRecording({ name: 'int-keepopen', keepBrowserOpen: true });
+      assert.ok(r.ok, JSON.stringify(r));
+      created.push(r.flowId);
+      assert.ok(!page.isClosed(), 'keepBrowserOpen=true 时录制结束后浏览器不该被关闭');
+    } finally {
+      await closeAll();   // 收尾：keepBrowserOpen 留下的浏览器必须关掉，别影响后续用例
+    }
   });
 
   /* ================= G12 告警 ================= */
@@ -682,6 +1002,103 @@ async function main() {
     const msg = composeRunMessage(rep, { notify: {} });
     assert.ok(msg.title.indexOf('t-msg') >= 0, '缺少流程名');
     assert.ok(msg.text.indexOf('校验') >= 0 || msg.markdown.indexOf('校验') >= 0, '缺少校验信息');
+  });
+
+  await A('告警 4xx 如实失败并标 permanent：不重试、不入箱（notify_test 判定面必须报失败）', async () => {
+    clearOutbox();
+    const server = http.createServer((req, res) => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end('{"err":true}'); });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+      const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 5000 } };
+      const res = await sendNotify({ title: 'T', text: 'x', markdown: 'x', data: {} }, cfg, { force: true, skipFlush: true });
+      assert.equal(res.sent, false, '被拒不许谎报送达: ' + JSON.stringify(res));
+      assert.equal(res.permanent, true, '4xx 应标 permanent（补发循环据此移出毒条目）: ' + JSON.stringify(res));
+      assert.equal(res.queued, false, '4xx 不应入箱: ' + JSON.stringify(res));
+      // server.mjs notify_test 的判定三元（res.sent ? ok : fail）在 4xx 下必须走 fail 分支
+      const surface = res.sent ? 'ok:✅ 测试告警已发送' : 'fail:发送失败：' + (res.error || '');
+      assert.ok(surface.startsWith('fail:'), 'notify_test 必须如实报失败，实际: ' + surface);
+    } finally { server.close(); clearOutbox(); }
+  });
+
+  await A('发件箱毒条目不死堵箱：补发被永久拒绝的条目移出记 dead-letter，后续积压继续补发', async () => {
+    clearOutbox();
+    let hits = 0;
+    const server = http.createServer((req, res) => {
+      hits++;
+      const code = hits === 1 ? 400 : 200;   // 首条=毒条目被拒，其余放行
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(code === 200 ? '{"ok":true}' : '{"err":true}');
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+      const old = new Date(Date.now() - 3600 * 1000).toISOString();
+      fs.writeFileSync(OUTBOX, JSON.stringify([
+        { at: old, msg: { title: '积压-A', text: 'a', markdown: 'a' } },
+        { at: old, msg: { title: '积压-B', text: 'b', markdown: 'b' } },
+      ], null, 2), 'utf8');
+      const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 5000 } };
+      const res = await sendNotify({ title: '新告警', text: 'n', markdown: 'n', data: {} }, cfg, { force: true }); // 不带 skipFlush：走补发路径
+      assert.ok(res.sent, '新告警应送达: ' + JSON.stringify(res));
+      assert.equal(hits, 3, '毒条目被拒后应继续补发 B + 新告警，共 3 次请求，实际 ' + hits);
+      assert.equal(outboxCount(), 0, 'B 补发成功、毒条目 A 移出，队列应清空');
+      const log = fs.readFileSync(path.join(DIRS.logs, 'alerts.log'), 'utf8');
+      assert.ok(log.indexOf('outbox-dead-letter') >= 0 && log.indexOf('积压-A') >= 0, '毒条目应记 dead-letter 留痕');
+    } finally { server.close(); clearOutbox(); }
+  });
+
+  await A('发件箱滞留被 status_report 点名：>24h 判 error、summary 带积压数与最旧时长', async () => {
+    clearOutbox();
+    const old = new Date(Date.now() - 26 * 3600 * 1000).toISOString();
+    fs.writeFileSync(OUTBOX, JSON.stringify([{ at: old, msg: { title: '滞留告警', text: 'x', markdown: 'x' } }], null, 2), 'utf8');
+    const rep = statusReport();
+    assert.equal(rep.summary.notifyOutbox, 1, 'summary 应带积压数: ' + JSON.stringify(rep.summary));
+    assert.ok(rep.summary.notifyOutboxOldestAgeHours >= 25, 'summary 应带最旧时长: ' + JSON.stringify(rep.summary));
+    const p = (rep.problems || []).find((x) => x.flowId === 'notify-outbox');
+    assert.ok(p, 'problems 应点名发件箱积压: ' + JSON.stringify(rep.problems));
+    assert.equal(p.level, 'error', '滞留 >24h 应判 error: ' + JSON.stringify(p));
+    assert.ok(p.message.indexOf('发件箱积压') >= 0, 'message 应可读: ' + p.message);
+    // 新鲜积压（<24h）判 warn 不误报 error
+    const fresh = new Date().toISOString();
+    fs.writeFileSync(OUTBOX, JSON.stringify([{ at: fresh, msg: { title: '刚积压', text: 'x', markdown: 'x' } }], null, 2), 'utf8');
+    const rep2 = statusReport();
+    const p2 = (rep2.problems || []).find((x) => x.flowId === 'notify-outbox');
+    assert.ok(p2 && p2.level === 'warn', '未超 24h 应判 warn: ' + JSON.stringify(p2));
+    clearOutbox();
+  });
+
+  await A('发件箱文件损坏不灭迹：坏文件备份保留原始内容，后续可重建', async () => {
+    clearOutbox();
+    const backups = () => fs.readdirSync(DIRS.work).filter((f) => f.startsWith('notify-outbox.json.corrupt'));
+    backups().forEach((f) => fs.rmSync(path.join(DIRS.work, f), { force: true }));
+    fs.writeFileSync(OUTBOX, '{ 坏数据', 'utf8');
+    assert.equal(outboxCount(), 0, '坏文件按空箱处理');
+    const bs = backups();
+    assert.equal(bs.length, 1, '坏文件应备份保留: ' + JSON.stringify(bs));
+    const kept = fs.readFileSync(path.join(DIRS.work, bs[0]), 'utf8');
+    assert.equal(kept, '{ 坏数据', '备份应保留原始坏内容作证据');
+    clearOutbox();
+    bs.forEach((f) => fs.rmSync(path.join(DIRS.work, f), { force: true }));
+  });
+
+  await A('发件箱超过上限（20 条）丢最旧留最新', async () => {
+    clearOutbox();
+    const arr = [];
+    for (let i = 0; i < 25; i++) arr.push({ at: new Date(Date.now() - (25 - i) * 1000).toISOString(), msg: { title: '旧积压-' + i, text: 'x', markdown: 'x' } });
+    fs.writeFileSync(OUTBOX, JSON.stringify(arr, null, 2), 'utf8');
+    // 一次网络级失败入队会触发封顶裁剪（只留最新 20 条）
+    const server = http.createServer(() => {});
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+    await new Promise((r) => server.close(r));
+    const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 1000 } };
+    await sendNotify({ title: '新积压', text: 'x', markdown: 'x', data: {} }, cfg, { force: true, skipFlush: true });
+    assert.equal(outboxCount(), 20, '应封顶 20 条');
+    const kept = JSON.parse(fs.readFileSync(OUTBOX, 'utf8'));
+    assert.equal(kept[0].msg.title, '旧积压-6', '最旧的应被丢弃: ' + JSON.stringify(kept[0]));
+    assert.equal(kept[kept.length - 1].msg.title, '新积压', '最新入队的应保留: ' + JSON.stringify(kept[kept.length - 1]));
+    clearOutbox();
   });
 
   /* ================= G13 定时包装器 ================= */
@@ -831,6 +1248,22 @@ async function main() {
     assert.equal(rep.evidenceMasked, false, '不该打码');
   });
 
+  await A('截图脱敏：security.maskFieldsInScreenshots=false 时密码框页面也不打码（开关真被消费）', async () => {
+    // 判别式：/login 有密码框，开关默认 true 时 evidenceMasked 必为 true（上一用例已锁）；
+    // 置 false 后必须变成不打码——若开关未被消费，仍会打码，此用例必红
+    const f = F('t-mask-cfg', [gt(DEMO + '/login')], { assertions: [{ kind: 'textPresent', text: '登录' }] });
+    const before = readConfig().security.maskFieldsInScreenshots;
+    writeConfig({ security: { maskFieldsInScreenshots: false } });
+    try {
+      const rep = await run(f, { evidenceOn: 'always' });
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.ok(!rep.evidenceMasked, 'maskFieldsInScreenshots=false 时不该打码: ' + rep.evidenceMasked);
+    } finally {
+      writeConfig({ security: { maskFieldsInScreenshots: before } });
+    }
+    assert.equal(readConfig().security.maskFieldsInScreenshots, true, 'maskFieldsInScreenshots 未恢复默认');
+  });
+
   await A('无限滚动：scrollTo 触发分批加载直到第 3 批', async () => {
     const f = F('t-infinite', [
       gt(DEMO + '/infinite'),
@@ -866,7 +1299,7 @@ async function main() {
     const f = F('t-interrupted', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
     saveFlow(f);
     created.push(f.id);
-    writeRunningMarker(f.id, '20260101-000000-000', { trigger: 'schedule' });
+    writeRunningMarker(f.id, '20260101-000000-000', { trigger: 'schedule', pid: 999999999 }); // 死 pid 模拟硬崩后的残留标记
     const runs = listRuns(f.id, 5);
     assert.ok(runs.some((r) => r.status === 'interrupted'), 'listRuns 没暴露中断: ' + JSON.stringify(runs));
     assert.ok(interruptedRun(f.id), 'interruptedRun 没找到');
@@ -875,6 +1308,72 @@ async function main() {
     assert.ok(item, 'statusReport 缺少该流程');
     assert.ok(item.interrupted, 'statusReport 没标出中断');
     assert.ok(st.problems.some((x) => /中断/.test(x.message)), 'problems 没报中断: ' + JSON.stringify(st.problems));
+  });
+
+  await A('活 marker 是进行中而非中断（且等待人工可见）', async () => {
+    const f = F('t-live-marker', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    saveFlow(f);
+    created.push(f.id);
+    writeRunningMarker(f.id, '20260102-000000-000', {
+      trigger: 'manual', pid: process.pid,
+      waitingHuman: { reason: '验证码', startedAt: new Date().toISOString(), until: '2026-01-02T00:05:00.000Z' },
+    });
+    const runs = listRuns(f.id, 5);
+    const row = runs.find((r) => r.stamp === '20260102-000000-000');
+    assert.ok(row && row.status === 'running', '活 marker 应报 running: ' + JSON.stringify(row));
+    assert.ok(row.waitingHuman && /验证码/.test(row.waitingHuman.reason), 'run_history 应透出等待人工: ' + JSON.stringify(row));
+    assert.ok(!interruptedRun(f.id), '活 marker 不该算中断');
+    assert.ok(liveRunInfo(f.id), 'liveRunInfo 应找到进行中的运行');
+    const st = statusReport({});
+    const item = st.items.find((i) => i.flowId === f.id);
+    assert.ok(item && !item.interrupted, '活 marker 不该标 interrupted: ' + JSON.stringify(item));
+    assert.ok(item.waitingHuman && /验证码/.test(item.waitingHuman.reason), 'status_report 应透出等待人工: ' + JSON.stringify(item && item.waitingHuman));
+    assert.ok(st.problems.some((x) => /等待人工接管/.test(x.message)), 'problems 应提示等待人工: ' + JSON.stringify(st.problems));
+    assert.ok(!st.problems.some((x) => x.flowId === f.id && /进程可能被强杀/.test(x.message)), '不该误报中断');
+  });
+
+  await A('连续失败只数真失败：进行中的那次不计为失败（不误报连续失败）', async () => {
+    const f = F('t-cf-running', [gt(DEMO + '/form')], {});
+    saveFlow(f); created.push(f.id);
+    saveRun({ flowId: f.id, stamp: '20260101-000000-000', status: 'pass', startedAt: '2026-01-01T00:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    writeRunningMarker(f.id, '20260102-000000-000', { trigger: 'manual', pid: process.pid }); // 活 pid => running
+    const item = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(item.lastStatus, 'running', '最近应是进行中，实为 ' + item.lastStatus);
+    // 上一次已完成是 pass，当前这次还在跑（未定论）——连续失败必须是 0，不能把进行中的那次当失败
+    assert.equal(item.consecutiveFailures, 0, '进行中的那次不该计为失败，实为 ' + item.consecutiveFailures);
+  });
+
+  await A('连续失败只数真失败：中断项另计，不重复计入连续失败', async () => {
+    const f = F('t-cf-interrupted', [gt(DEMO + '/form')], {});
+    saveFlow(f); created.push(f.id);
+    saveRun({ flowId: f.id, stamp: '20260101-000000-000', status: 'fail', startedAt: '2026-01-01T00:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    saveRun({ flowId: f.id, stamp: '20260102-000000-000', status: 'fail', startedAt: '2026-01-02T00:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    writeRunningMarker(f.id, '20260103-000000-000', { trigger: 'manual', pid: 999999999 }); // 死 pid => interrupted
+    const item = statusReport({}).items.find((i) => i.flowId === f.id);
+    // 只有 2 次真失败；interrupted 是崩溃（item.interrupted 已单列）不等于失败，不应再算作一次
+    assert.equal(item.consecutiveFailures, 2, '中断项不该计为失败（否则重复计数），实为 ' + item.consecutiveFailures);
+  });
+
+  await A('totalRuns 是真实运行总数（不受 100 条摘要窗口封顶）', async () => {
+    const f = F('t-totalruns', [gt(DEMO + '/form')], {});
+    saveFlow(f); created.push(f.id);
+    const N = 108;
+    for (let i = 0; i < N; i++) {
+      const stamp = '20260101-120000-' + String(i).padStart(3, '0');
+      saveRun({ flowId: f.id, stamp, status: 'pass', startedAt: '2026-01-01T00:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    }
+    const item = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(item.totalRuns, N, 'totalRuns 应是真实总数 ' + N + '（旧实现封顶 100），实为 ' + item.totalRuns);
+    assert.equal(listRuns(f.id, 100).length, 100, '摘要窗口仍按 limit 截到 100');
+    // 错误语义：totalRuns 取自运行目录数（readdir dirs.length），与 index.json 是否损坏无关——
+    // 索引坏掉也必须照报真实总数，不能因索引退化而少报或抛错（自愈重建后仍给真值）。
+    fs.writeFileSync(path.join(DIRS.runs, f.id, 'index.json'), '{corrupt-json', 'utf8');
+    const afterCorrupt = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(afterCorrupt.totalRuns, N, '索引损坏时 totalRuns 仍应是真实总数 ' + N + '（取自目录数），实为 ' + afterCorrupt.totalRuns);
+    // 幂等：只读统计，重复调用给同样的真值
+    const again = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(again.totalRuns, N, '幂等：重复调用 totalRuns 不变，实为 ' + again.totalRuns);
+    assert.equal(again.consecutiveFailures, 0, '幂等且只读：' + N + ' 次 pass 不该有连续失败，实为 ' + again.consecutiveFailures);
   });
 
   await A('总览：正常流程被算作健康', async () => {
@@ -960,7 +1459,8 @@ async function main() {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const exec = promisify(execFile);
-    const runnerPath = path.join(process.cwd(), 'runner.mjs');
+    // 与 cwd 无关：曾用 process.cwd()，从项目根跑自检会误报"找不到 runner.mjs"（ESM 里没有 __dirname，用 import.meta.dirname）
+    const runnerPath = path.join(import.meta.dirname, '..', 'runner.mjs');
     const cases = [
       { args: ['help'], expect: /用法/, allowFail: true },
       { args: ['list'], expect: /演示-订单日报导出|还没有任何流程/ },
@@ -1021,6 +1521,58 @@ async function main() {
       assert.equal(rep.status, 'pass', rep.error);
     } finally { writeConfig({ browser: { slowMo: null } }); }
     assert.equal(readConfig().browser.slowMo, 0, 'slowMo 未能恢复默认');
+  });
+
+  await A('浏览器配置：locale 与 timezoneId 真正生效', async () => {
+    writeConfig({ browser: { locale: 'en-US', timezoneId: 'America/New_York' } });
+    try {
+      const f = F('t-cfg-ltz', [
+        gt(DEMO + '/echo'),
+        ext('lang', 'lang'),
+        ext('tz', 'tz'),
+      ], {
+        assertions: [
+          { kind: 'extracted', as: 'lang', matches: '^lang: en-US$', message: 'locale 未生效' },
+          { kind: 'extracted', as: 'tz', matches: '^tz: America/New_York$', message: 'timezoneId 未生效' },
+        ],
+      });
+      const rep = await run(f);
+      console.log('      lang=' + rep.extracted.lang + '  tz=' + rep.extracted.tz);
+      assert.equal(rep.status, 'pass', JSON.stringify(rep.assertions) + ' ' + rep.error);
+    } finally { writeConfig({ browser: { locale: 'zh-CN', timezoneId: 'Asia/Shanghai' } }); }
+    assert.equal(readConfig().browser.locale, 'zh-CN', 'locale 未恢复默认');
+    assert.equal(readConfig().browser.timezoneId, 'Asia/Shanghai', 'timezoneId 未恢复默认');
+  });
+
+  await A('浏览器配置：recordViewport 决定录制窗口大小', async () => {
+    writeConfig({ browser: { recordViewport: { width: 1024, height: 768 } } });
+    try {
+      const a = await startRecording({ url: DEMO + '/form', name: 'int-recvp' });
+      assert.ok(a.ok, JSON.stringify(a));
+      const vp = activeSession().page.viewportSize();
+      assert.equal(vp.width, 1024, 'recordViewport 未生效: ' + JSON.stringify(vp));
+      assert.equal(vp.height, 768, 'recordViewport 未生效: ' + JSON.stringify(vp));
+    } finally {
+      try { await cancelRecording(); } catch { /* 没有会话时忽略 */ }
+      writeConfig({ browser: { recordViewport: { width: 1440, height: 900 } } });
+    }
+    assert.equal(readConfig().browser.recordViewport.width, 1440, 'recordViewport 未恢复默认');
+    assert.equal(readConfig().browser.recordViewport.height, 900, 'recordViewport 未恢复默认');
+  });
+
+  await A('浏览器配置：profileDir 指定的持久化目录真正被使用', async () => {
+    const custom = path.join(TMP, 'custom-profile');
+    writeConfig({ browser: { persistProfile: true, profileDir: custom } });
+    try {
+      const f = F('t-cfg-profile', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+      const rep = await run(f);
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.ok(fs.existsSync(custom), '自定义 profileDir 未被创建/使用');
+    } finally {
+      writeConfig({ browser: { persistProfile: false, profileDir: null } });
+    }
+    assert.equal(readConfig().browser.profileDir, null, 'profileDir 未恢复默认');
+    assert.equal(readConfig().browser.persistProfile, false, 'persistProfile 未恢复默认');
   });
 
   /* ================= G17 片段重录（splice） ================= */
@@ -1175,8 +1727,637 @@ async function main() {
     assert.deepEqual(JSON.parse(JSON.stringify(loadFlow(id).steps)), JSON.parse(beforeSteps), '回滚后步骤与改动前不一致');
   });
 
+  await A('flow_restore.which 指定备份：按时间戳或完整路径回指定版本（不是只能回最近一次）', async () => {
+    const id = 't-restore-which';
+    // 备份不随 deleteFlow 清理，上次异常中断的运行可能留下残件——先清干净，本用例只数自己造的两份
+    for (const b of listBackups(id)) { try { fs.rmSync(b.file, { force: true }); } catch { /* ignore */ } }
+    const f = F(id, [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    f.name = 'v0-name';
+    saveFlow(f); created.push(f.id);
+    await sleep(25);                       // 备份文件名带毫秒时间戳，错开避免同名覆盖
+    backupFlow(f.id);                      // 备份 1 = v0-name
+    const v2 = loadFlow(f.id); v2.name = 'v2-name'; saveFlow(v2);
+    await sleep(25);
+    backupFlow(f.id);                      // 备份 2 = v2-name
+    const v3 = loadFlow(f.id); v3.name = 'v3-name'; saveFlow(v3);
+    const list = listBackups(f.id);
+    assert.equal(list.length, 2, '应有 2 份备份: ' + JSON.stringify(list));
+
+    const which = list[1].at;              // which=时间戳 → 较旧那份（v0-name）
+    const resOld = restoreFlow(f.id, which);
+    assert.ok(resOld.ok, JSON.stringify(resOld));
+    assert.equal(loadFlow(f.id).name, 'v0-name', 'which=时间戳应回到对应备份，实际 ' + loadFlow(f.id).name);
+
+    const resNew = restoreFlow(f.id, list[0].file);   // which=完整路径 → 较新那份（v2-name）
+    assert.ok(resNew.ok, JSON.stringify(resNew));
+    assert.equal(loadFlow(f.id).name, 'v2-name', 'which=完整路径应回到对应备份，实际 ' + loadFlow(f.id).name);
+
+    const resBad = restoreFlow(f.id, 'no-such-backup');
+    assert.equal(resBad.ok, false, '不存在的 which 应报错而不是回退到最近一次');
+    assert.ok(/找不到该备份/.test(resBad.error || ''), '错误信息应点名找不到该备份: ' + resBad.error);
+  });
+
+  /* ================= G18 运行总超时 / 录像证据 / 告警重试 / 定时预期 / 历史早停 ================= */
+  G('18', '运行总超时看门狗 / 录像证据 / 告警重试 / 定时预期 / 历史早停');
+
+  await A('运行总超时：超过 maxDurationMs 优雅收尾（判失败+写报告+释放锁）', async () => {
+    const f = F('t-timeout', [gt(DEMO + '/form'), { op: 'sleep', ms: 30000 }, { op: 'screenshot', name: 'x' }]);
+    const t0 = Date.now();
+    const rep = await run(f, { maxDurationMs: 1500 });
+    const took = Date.now() - t0;
+    assert.equal(rep.status, 'fail', '总超时应判失败: ' + rep.status);
+    assert.ok(rep.timedOut, '缺少 timedOut 标记');
+    assert.ok(String(rep.error).indexOf('总超时') >= 0, '错误信息应说明总超时: ' + rep.error);
+    assert.ok(rep.reportPath && fs.existsSync(rep.reportPath), '超时未写出报告（没收尾）');
+    assert.ok(took < 30000, '30s 的 sleep 没被看门狗拦住，实测 ' + took + 'ms');
+    assert.equal(lockInfo('t-timeout').held, false, '超时后流程锁未释放');
+    created.push('t-timeout');
+  });
+
+  await A('总超时收尾：最后一步越过预算不得报成功（scrollTo 内层等待受总时限约束）', async () => {
+    // 修前：scrollTo 的滚动间隔完全不受总时限约束，5 次 x1s 的等待把运行推过预算后，
+    // 若它是最后一步，整场以 pass 收尾——超时判定必须确定性，成功路径也要收尾判定
+    const f = F('t-timeout-scroll', [gt(DEMO + '/form'), { op: 'scrollTo', to: 'bottom', times: 5, waitMs: 1000 }], { emptyResultOk: true });
+    const t0 = Date.now();
+    const rep = await run(f, { maxDurationMs: 4000 });
+    const took = Date.now() - t0;
+    assert.equal(rep.status, 'fail', '越过总时限的运行不得报成功（当前: ' + rep.status + '）');
+    assert.ok(rep.timedOut, '缺少 timedOut 标记');
+    assert.ok(/总超时/.test(String(rep.error)), '错误应说明总超时: ' + rep.error);
+    assert.ok(took < 15000, '5s 的滚动等待没被预算拦住，实测 ' + took + 'ms');
+    created.push('t-timeout-scroll');
+  });
+
+  await A('总超时收尾：人工接管固定放行也不得越过预算报成功', async () => {
+    // 修前：无恢复条件的 humanHandoff 固定睡满 3s（不裁剪）再返回成功，越过总时限后
+    // 仍报成功 = 误报；固定放行的等待必须与 sleep 步骤同口径受总时限约束。
+    // 预算 2500ms < 固定放行 3s：无论启动快慢，放行等待注定越过预算，裁剪/收尾判定必触发。
+    const f = F('t-timeout-handoff', [gt(DEMO + '/handoff'), { op: 'humanHandoff', reason: '等待人工', timeoutMs: 30000 }], { emptyResultOk: true });
+    const t0 = Date.now();
+    const rep = await run(f, { maxDurationMs: 2500, headed: true });
+    const took = Date.now() - t0;
+    assert.equal(rep.status, 'fail', '越过总时限的运行不得报成功（当前: ' + rep.status + '）');
+    assert.ok(rep.timedOut, '缺少 timedOut 标记');
+    assert.ok(/总超时/.test(String(rep.error)), '错误应说明总超时: ' + rep.error);
+    assert.ok(took < 15000, '固定放行等待没被预算拦住，实测 ' + took + 'ms');
+    created.push('t-timeout-handoff');
+  });
+
+  await A('录像证据：失败运行保留 webm（环境缺录像能力时诚实降级并注明）', async () => {
+    const f = F('t-video', [gt(DEMO + '/form'), { op: 'screenshot', name: 'x' }],
+      { assertions: [{ kind: 'textPresent', text: '__绝不存在的文字__', message: '故意失败以留录像' }] });
+    const rep = await run(f, { saveVideo: true });
+    assert.equal(rep.status, 'fail', '该用例应失败: ' + rep.error);
+    if (rep.videoNote) {
+      assert.ok(String(rep.videoNote).indexOf('录像') >= 0, rep.videoNote);
+      assert.equal(rep.videos.length, 0, '降级时不该有录像: ' + JSON.stringify(rep.videos));
+      console.log('      （诚实降级）' + rep.videoNote);
+    } else {
+      assert.ok(rep.videos.length >= 1, '失败运行应保留录像: ' + JSON.stringify(rep.videos));
+      for (const v of rep.videos) assert.ok(fs.existsSync(v) && fs.statSync(v).size > 0, '录像文件缺失或为空: ' + v);
+    }
+    created.push('t-video');
+  });
+
+  await A('录像证据：成功运行按 videoOn=failure 删除录像省空间', async () => {
+    const f = F('t-video-ok', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    const rep = await run(f, { saveVideo: true });
+    assert.equal(rep.status, 'pass', rep.error);
+    if (!rep.videoNote) {
+      assert.equal(rep.videos.length, 0, '成功的录像应被删除: ' + JSON.stringify(rep.videos));
+      const vdir = path.join(DIRS.runs, 't-video-ok', rep.stamp, 'videos');
+      const left = fs.existsSync(vdir) ? fs.readdirSync(vdir).filter((x) => /\.webm$/i.test(x)) : [];
+      assert.equal(left.length, 0, '录像文件未真正删除: ' + left.join(','));
+    }
+    created.push('t-video-ok');
+  });
+
+  await A('告警重试：服务端前两次 5xx，第三次送达（attempts=3）', async () => {
+    clearOutbox(); // 防上次残留积压被补发，打乱 hits 计数
+    let hits = 0;
+    const server = http.createServer((req, res) => {
+      hits++;
+      const code = hits <= 2 ? 500 : 200;
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(code === 200 ? '{"ok":true}' : '{"err":true}');
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+      const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 5000 } };
+      const res = await sendNotify({ title: 'T', text: 'x', markdown: 'x', data: {} }, cfg, { force: true });
+      assert.ok(res.sent, '重试后应送达: ' + JSON.stringify(res));
+      assert.equal(res.attempts, 3, '应重试到第 3 次: ' + JSON.stringify(res));
+      assert.equal(hits, 3, '服务端应被请求 3 次，实际 ' + hits);
+    } finally { server.close(); }
+  });
+
+  await A('告警重试：4xx 是请求本身不对，不重试也不谎报送达', async () => {
+    let hits = 0;
+    const server = http.createServer((req, res) => {
+      hits++;
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end('{"err":true}');
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+      const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 5000 } };
+      const res = await sendNotify({ title: 'T', text: 'x', markdown: 'x', data: {} }, cfg, { force: true, skipFlush: true });
+      assert.equal(res.sent, false, '被拒=没送出去，不许谎报送达: ' + JSON.stringify(res));
+      assert.equal(res.attempts, 1, '4xx 不应重试: ' + JSON.stringify(res));
+      assert.equal(hits, 1, '只应请求 1 次，实际 ' + hits);
+      assert.equal(res.queued, false, '4xx 永远发不进，不应入箱: ' + JSON.stringify(res));
+      assert.ok(/HTTP 400/.test(String(res.error)), '错误应点名 HTTP 400: ' + JSON.stringify(res));
+    } finally { server.close(); }
+  });
+
+  await A('告警重试：网络级失败也会重试满 3 次后如实报失败', async () => {
+    clearOutbox();
+    // 先开再关，拿一个"确定没人监听"的端口
+    const server = http.createServer(() => {});
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const url = 'http://127.0.0.1:' + server.address().port + '/hook';
+    await new Promise((r) => server.close(r));
+    const cfg = { notify: { enabled: true, type: 'generic', webhook: url, on: ['failure'], timeoutMs: 2000 } };
+    const res = await sendNotify({ title: 'T', text: 'x', markdown: 'x', data: {} }, cfg, { force: true });
+    assert.equal(res.sent, false, JSON.stringify(res));
+    assert.equal(res.attempts, 3, '网络失败应重试满 3 次: ' + JSON.stringify(res));
+    assert.ok(res.error, '应带失败原因');
+    assert.equal(res.queued, true, '网络级失败应入发件箱待补发: ' + JSON.stringify(res));
+    clearOutbox();
+  });
+
+  await A('status_report 定时预期按频率算：daily 三天没跑要点名，once 不误报', async () => {
+    const f = F('t-sched-expect', [gt(DEMO + '/form')]);
+    saveFlow(f);
+    created.push('t-sched-expect');
+    const stamp = '20251001-120000-000';
+    const d = path.join(DIRS.runs, 't-sched-expect', stamp);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({
+      flowId: 't-sched-expect', stamp, status: 'pass',
+      startedAt: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(), durationMs: 1000, healed: [],
+    }));
+    const idxPath = path.join(DIRS.work, 'sched', 'index.json');
+    const hadIdx = fs.existsSync(idxPath);
+    const idxBackup = hadIdx ? fs.readFileSync(idxPath, 'utf8') : null;
+    try {
+      const idx = hadIdx ? JSON.parse(idxBackup) : {};
+      idx['t-sched-expect'] = { spec: { frequency: 'daily', at: '09:00' } };
+      fs.mkdirSync(path.dirname(idxPath), { recursive: true });
+      fs.writeFileSync(idxPath, JSON.stringify(idx));
+      const rep1 = statusReport();
+      assert.ok(rep1.problems.some((p) => p.flowId === 't-sched-expect' && /没有新执行记录/.test(p.message)),
+        'daily 三天没跑应点名: ' + JSON.stringify(rep1.problems));
+      idx['t-sched-expect'] = { spec: { frequency: 'once', date: '2025/12/31', at: '10:00' } };
+      fs.writeFileSync(idxPath, JSON.stringify(idx));
+      const rep2 = statusReport();
+      assert.ok(!rep2.problems.some((p) => p.flowId === 't-sched-expect' && /没有新执行记录/.test(p.message)),
+        'once 任务不该按固定间隔点名: ' + JSON.stringify(rep2.problems));
+    } finally {
+      if (idxBackup !== null) fs.writeFileSync(idxPath, idxBackup);
+      else { try { fs.unlinkSync(idxPath); } catch { /* ignore */ } }
+    }
+  });
+
+  await A('listRuns 早停：只取最新 N 条（新→旧，中断记录排最前）', async () => {
+    const id = 't-listruns';
+    const base = path.join(DIRS.runs, id);
+    fs.mkdirSync(base, { recursive: true });
+    for (let i = 0; i < 30; i++) {
+      const stamp = '20251001-120000-' + String(i).padStart(3, '0');
+      const d2 = path.join(base, stamp);
+      fs.mkdirSync(d2, { recursive: true });
+      fs.writeFileSync(path.join(d2, 'report.json'), JSON.stringify({
+        flowId: id, stamp, status: 'pass', startedAt: '2025-10-01T12:00:00.000Z', durationMs: 1, healed: [],
+      }));
+    }
+    const dInt = path.join(base, '20251001-130000-000');
+    fs.mkdirSync(dInt, { recursive: true });
+    fs.writeFileSync(path.join(dInt, 'running.json'), JSON.stringify({ startedAt: '2025-10-01T13:00:00.000Z', trigger: 'manual' }));
+    const runs = listRuns(id, 5);
+    assert.equal(runs.length, 5, '早停应只返回 5 条: ' + runs.length);
+    assert.deepEqual(runs.map((r) => r.stamp), [
+      '20251001-130000-000', '20251001-120000-029', '20251001-120000-028', '20251001-120000-027', '20251001-120000-026',
+    ]);
+    assert.equal(runs[0].status, 'interrupted', '有标记无报告 = 中断，必须可见');
+  });
+
+  await A('运行索引：saveRun 同步落 index.json，listRuns 摘要口径与报告逐字段一致', async () => {
+    const id = 't-runidx-save';
+    created.push(id);
+    fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); // 用例自密封：上一轮残件会让计数翻倍
+    for (let i = 0; i < 3; i++) {
+      saveRun({
+        flowId: id, stamp: '20251002-120000-00' + i, status: i === 1 ? 'fail' : 'pass',
+        startedAt: '2025-10-02T12:00:0' + i + '.000Z', durationMs: 100 + i, trigger: 'cli',
+        healed: i === 2 ? [{}, {}] : [], failedStep: i === 1 ? 2 : null, error: i === 1 ? 'boom' : null,
+      });
+    }
+    const idx = JSON.parse(fs.readFileSync(path.join(DIRS.runs, id, 'index.json'), 'utf8'));
+    assert.equal(idx.version, 1, '索引应带版本号');
+    assert.equal(idx.runs.length, 3, '3 次运行应有 3 条摘要: ' + idx.runs.length);
+    const runs = listRuns(id, 10);
+    assert.deepEqual(runs.map((r) => r.stamp), ['20251002-120000-002', '20251002-120000-001', '20251002-120000-000']);
+    assert.deepEqual(runs[1], {
+      stamp: '20251002-120000-001', status: 'fail', startedAt: '2025-10-02T12:00:01.000Z',
+      durationMs: 101, trigger: 'cli', healedCount: 0, failedStep: 2, error: 'boom',
+    }, '摘要字段/缺省值口径必须与直读 report.json 一致');
+    assert.equal(runs[0].healedCount, 2, 'healedCount 应取报告 healed[] 长度');
+  });
+
+  await A('运行索引自愈：外部直写报告、删除目录、索引损坏都被集合差抓到并重建', async () => {
+    const id = 't-runidx-heal';
+    created.push(id);
+    fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); // 用例自密封：上一轮残件会让计数翻倍
+    const base = path.join(DIRS.runs, id);
+    fs.mkdirSync(base, { recursive: true });
+    const plant = (stamp) => {
+      const d = path.join(base, stamp);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({ flowId: id, stamp, status: 'pass', startedAt: '2025-10-02T12:00:00.000Z', durationMs: 1, healed: [] }));
+    };
+    plant('20251002-120000-001');
+    plant('20251002-120000-002');
+    assert.equal(listRuns(id, 10).length, 2, '外部直写的运行（不经 saveRun）必须被看到');
+    plant('20251002-120000-003');
+    assert.equal(listRuns(id, 10).length, 3, '索引已存在时再直写也必须可见（增量集合差触发）');
+    fs.rmSync(path.join(base, '20251002-120000-001'), { recursive: true, force: true });
+    assert.deepEqual(listRuns(id, 10).map((r) => r.stamp), ['20251002-120000-003', '20251002-120000-002'], '目录被外部删除后不得报幽灵条目');
+    fs.writeFileSync(path.join(base, 'index.json'), '{ 坏数据');
+    assert.deepEqual(listRuns(id, 10).map((r) => r.stamp), ['20251002-120000-003', '20251002-120000-002'], '索引损坏必须自愈重建，结果不变');
+  });
+
+  await A('运行索引：pruneRuns 裁剪同步清索引条目，不留幽灵', async () => {
+    const id = 't-runidx-prune';
+    created.push(id);
+    fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); // 用例自密封：上一轮残件会让计数翻倍
+    for (let i = 0; i < 5; i++) {
+      saveRun({ flowId: id, stamp: '20251002-120000-00' + i, status: 'pass', startedAt: '2025-10-02T12:00:0' + i + '.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    }
+    const r = pruneRuns(id, { keepCount: 2, keepDays: 0 }); // 两个边界都钉死：天龄走配置会让"既设次数又设天龄"变成 beyondCount && tooOld
+    assert.equal(r.removed.length, 3, '应删 3 条: ' + JSON.stringify(r.removed));
+    const idx = JSON.parse(fs.readFileSync(path.join(DIRS.runs, id, 'index.json'), 'utf8'));
+    assert.equal(idx.runs.length, 2, '索引应同步裁到 2 条: ' + idx.runs.length);
+    assert.deepEqual(listRuns(id, 10).map((x) => x.stamp), ['20251002-120000-004', '20251002-120000-003']);
+  });
+
+  await A('运行索引：进行中断记录与索引摘要按 stamp 交错排序不变', async () => {
+    const id = 't-runidx-order';
+    created.push(id);
+    fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); // 用例自密封：上一轮残件会让计数翻倍
+    const base = path.join(DIRS.runs, id);
+    fs.mkdirSync(base, { recursive: true });
+    saveRun({ flowId: id, stamp: '20251002-120000-001', status: 'pass', startedAt: '2025-10-02T12:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    saveRun({ flowId: id, stamp: '20251002-120000-003', status: 'pass', startedAt: '2025-10-02T12:00:02.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    const dInt = path.join(base, '20251002-120000-002'); // 中间夹一个有标记无报告的
+    fs.mkdirSync(dInt, { recursive: true });
+    fs.writeFileSync(path.join(dInt, 'running.json'), JSON.stringify({ startedAt: '2025-10-02T12:00:01.000Z', trigger: 'schedule' }));
+    const runs = listRuns(id, 10);
+    assert.deepEqual(runs.map((x) => [x.stamp, x.status]), [
+      ['20251002-120000-003', 'pass'], ['20251002-120000-002', 'interrupted'], ['20251002-120000-001', 'pass'],
+    ], '中断记录必须按 stamp 交错在索引摘要之间: ' + JSON.stringify(runs.map((x) => x.stamp)));
+  });
+
+  await A('录像证据：含敏感输入的流程自动跳过录像（防录像泄露密码画面）', async () => {
+    const f = F('t-video-secret', [
+      gt(DEMO + '/form'),
+      { op: 'fill', locators: L('reportDate'), value: '2026-10-04', sensitive: true },
+      { op: 'screenshot', name: 'x' },
+    ]);
+    const rep = await run(f, { saveVideo: true });
+    assert.ok(rep.videoNote && String(rep.videoNote).indexOf('敏感') >= 0, '应注明因敏感输入跳过录像: ' + rep.videoNote);
+    assert.equal(rep.videos.length, 0, '敏感流程不应产出录像: ' + JSON.stringify(rep.videos));
+    created.push('t-video-secret');
+  });
+
+  await A('持久化启动失败不污染 broken 缓存（不连累普通回放）', async () => {
+    const { launchContext, brokenBrowsers } = await import('../lib/browser.mjs');
+    const before = brokenBrowsers().map((b) => b.key).sort();
+    writeConfig({ browser: { mode: 'custom', executablePath: path.join(TMP, 'no-such-browser.exe') } });
+    try {
+      let err = null;
+      try { await launchContext({ persistent: true, headed: false }); } catch (e) { err = e; }
+      assert.ok(err, '坏 exe 路径的持久化启动应当失败');
+      assert.ok(/启动失败|持久化/.test(String(err.message)), err.message);
+      const after = brokenBrowsers().map((b) => b.key).sort();
+      assert.deepEqual(after, before, '持久化启动失败不应写入 broken 缓存');
+    } finally {
+      writeConfig({ browser: { mode: 'auto', channel: null, executablePath: null } });
+    }
+    assert.equal(readConfig().browser.mode, 'auto', '浏览器配置未恢复默认');
+  });
+
+  await A('chain 超时继承：子流程只拿到父流程剩余时长，跑飞被父预算拦住', async () => {
+    // 子流程故意不带结果校验（lint 脏）：父流程 allowLintErrors 的口径应级联到子流程，
+    // 这个用例同时守住「超时继承」与「lint 口径级联」两件事
+    const child = F('t-chain-child', [gt(DEMO + '/form'), { op: 'sleep', ms: 30000 }, { op: 'screenshot', name: 'x' }]);
+    saveFlow(child);
+    created.push('t-chain-child');
+    const parent = F('t-chain-parent', [gt(DEMO + '/form'), { op: 'chain', flow: 't-chain-child' }],
+      { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    created.push('t-chain-parent');
+    const t0 = Date.now();
+    const rep = await run(parent, { maxDurationMs: 8000 });
+    const took = Date.now() - t0;
+    assert.equal(rep.status, 'fail', '子流程跑飞应判失败: ' + rep.error);
+    assert.ok(/总超时/.test(String(rep.error)), '错误应说明总超时: ' + rep.error);
+    assert.ok(took < 20000, '30s 的子流程 sleep 没被父预算拦住，实测 ' + took + 'ms');
+    const childRep = loadRun('t-chain-child', 'latest');
+    assert.ok(childRep && childRep.maxDurationMs, '子流程报告应记录继承到的总超时');
+    assert.ok(childRep.maxDurationMs <= 8000, '子流程预算应 ≤ 父流程总时限: ' + childRep.maxDurationMs);
+  });
+
+  await A('chain 预算：maxDurationMs 用尽后剩余流程标记未执行', async () => {
+    const a = F('t-chain-skip-a', [gt(DEMO + '/form'), { op: 'sleep', ms: 5000 }]);
+    const b = F('t-chain-skip-b', [gt(DEMO + '/form')]);
+    saveFlow(a); saveFlow(b);
+    created.push('t-chain-skip-a', 't-chain-skip-b');
+    const t0 = Date.now();
+    const r = await runChain([{ flow: 't-chain-skip-a', continueOnError: true }, { flow: 't-chain-skip-b' }], {
+      maxDurationMs: 200, headed: false, trigger: 'integration', allowLintErrors: true, notify: false,
+    });
+    const took = Date.now() - t0;
+    assert.equal(r.status, 'fail', r.error);
+    assert.ok(/串联超过总时限/.test(String(r.error)), '应说明串联超过总时限: ' + r.error);
+    assert.equal(r.results.length, 2, JSON.stringify(r.results));
+    assert.equal(r.results[1].status, 'skipped', '预算用尽后第二个流程应标记 skipped: ' + JSON.stringify(r.results[1]));
+    assert.ok(took < 20000, '实测 ' + took + 'ms');
+  });
+
+  await A('无人值守默认上限：trigger=schedule 未配总超时时自动封顶', async () => {
+    const before = readConfig().run.unattendedMaxDurationMs;
+    const f = F('t-unattended', [gt(DEMO + '/form'), { op: 'sleep', ms: 30000 }, { op: 'screenshot', name: 'x' }]);
+    saveFlow(f);
+    created.push('t-unattended');
+    writeConfig({ run: { unattendedMaxDurationMs: 4000 } });
+    try {
+      const t0 = Date.now();
+      const rep = await run(f, { trigger: 'schedule' });
+      const took = Date.now() - t0;
+      assert.equal(rep.status, 'fail', rep.error);
+      assert.ok(rep.timedOut, '应被无人值守上限拦下');
+      assert.ok(/总超时/.test(String(rep.error)), rep.error);
+      assert.equal(rep.budgetSource, 'unattendedMaxDurationMs', '应标注预算来源: ' + rep.budgetSource);
+      assert.equal(rep.maxDurationMs, 4000, '应使用 unattendedMaxDurationMs: ' + rep.maxDurationMs);
+      assert.ok(took < 20000, '30s sleep 没被 4s 上限拦住，实测 ' + took + 'ms');
+    } finally {
+      writeConfig({ run: { unattendedMaxDurationMs: before } });
+    }
+    assert.equal(readConfig().run.unattendedMaxDurationMs, before, '配置未恢复');
+  });
+
+  await A('告警 outbox：彻底失败入队，网络恢复后下次发送自动补发', async () => {
+    clearOutbox();
+    // 先开再关，拿一个"确定没人监听"的端口
+    const dead = http.createServer(() => {});
+    await new Promise((r) => dead.listen(0, '127.0.0.1', r));
+    const deadUrl = 'http://127.0.0.1:' + dead.address().port + '/hook';
+    await new Promise((r) => dead.close(r));
+    const cfgFail = { notify: { enabled: true, type: 'generic', webhook: deadUrl, on: ['failure'], timeoutMs: 1500 } };
+    const r1 = await sendNotify({ title: '积压-1', text: 'x', markdown: 'x' }, cfgFail, { force: true });
+    assert.equal(r1.sent, false, JSON.stringify(r1));
+    assert.equal(r1.queued, true, '网络级失败应入发件箱: ' + JSON.stringify(r1));
+    assert.ok(fs.existsSync(OUTBOX), '发件箱文件应存在');
+    assert.equal(JSON.parse(fs.readFileSync(OUTBOX, 'utf8')).length, 1, '应积压 1 条');
+
+    const alarm2 = await startAlarmReceiver();
+    try {
+      const cfgOk = { notify: { enabled: true, type: 'generic', webhook: alarm2.url, on: ['failure'], timeoutMs: 5000 } };
+      const r2 = await sendNotify({ title: '新告警', text: 'y', markdown: 'y' }, cfgOk, { force: true });
+      assert.ok(r2.sent, JSON.stringify(r2));
+      assert.equal(r2.flushed, 1, '应补发 1 条积压: ' + JSON.stringify(r2));
+      assert.equal(alarm2.got.length, 2, '服务端应收到 2 条（1 补发 + 1 新）: ' + alarm2.got.length);
+      assert.equal(alarm2.got[0].title, '积压-1', '先补发积压（保持时序）: ' + JSON.stringify(alarm2.got.map((g) => g.title)));
+      assert.equal(alarm2.got[1].title, '新告警', '新告警在后');
+      assert.equal(JSON.parse(fs.readFileSync(OUTBOX, 'utf8')).length, 0, '发件箱应清空');
+    } finally {
+      alarm2.server.close();
+      clearOutbox();
+    }
+  });
+
+  await A('doctor 录像能力：探测 Playwright 自带 ffmpeg（诚实报有/无）', async () => {
+    const { detectFfmpeg } = await import('../lib/browser.mjs');
+    const r = detectFfmpeg();
+    assert.equal(typeof r.ffmpeg, 'boolean', JSON.stringify(r));
+    if (r.ffmpeg) assert.ok(r.path && fs.existsSync(r.path), 'ffmpeg 路径应真实存在: ' + r.path);
+    else assert.equal(r.path, null, '没有 ffmpeg 时不该编路径: ' + JSON.stringify(r));
+  });
+
+  await A('录像磁盘治理：pruneRuns 按 keepVideos 只留最近 N 段，报告截图不动', async () => {
+    const id = 't-video-prune';
+    const base = path.join(DIRS.runs, id);
+    fs.mkdirSync(base, { recursive: true });
+    const stamps = [];
+    for (let i = 0; i < 5; i++) {
+      const stamp = '20251001-12000' + i + '-000';
+      stamps.push(stamp);
+      const d = path.join(base, stamp);
+      fs.mkdirSync(path.join(d, 'videos'), { recursive: true });
+      fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({ flowId: id, stamp, status: 'pass', startedAt: '2025-10-01T12:00:00.000Z', durationMs: 1, healed: [] }));
+      fs.writeFileSync(path.join(d, 'shot.png'), 'png');
+      const v = path.join(d, 'videos', 'video.webm');
+      fs.writeFileSync(v, 'webm-' + i);
+      const t = new Date(Date.now() - (5 - i) * 60000); // i=0 最旧 … i=4 最新
+      fs.utimesSync(v, t, t);
+    }
+    const countWebm = () => stamps.reduce((s, st) => s + (fs.existsSync(path.join(base, st, 'videos', 'video.webm')) ? 1 : 0), 0);
+    const dry = pruneRuns(id, { keepVideos: 2, keepCount: 0, keepDays: 0, dryRun: true });
+    assert.equal(dry.videosRemoved, 3, JSON.stringify(dry));
+    assert.equal(dry.videosKept, 2, JSON.stringify(dry));
+    assert.equal(countWebm(), 5, 'dryRun 不应真删');
+    const real = pruneRuns(id, { keepVideos: 2, keepCount: 0, keepDays: 0 });
+    assert.equal(real.videosRemoved, 3, JSON.stringify(real));
+    assert.equal(real.videosKept, 2, JSON.stringify(real));
+    assert.equal(countWebm(), 2, '应只剩 2 段录像');
+    assert.ok(fs.existsSync(path.join(base, stamps[3], 'videos', 'video.webm')), '应留下第 4 新的');
+    assert.ok(fs.existsSync(path.join(base, stamps[4], 'videos', 'video.webm')), '应留下最新的');
+    assert.equal(fs.readdirSync(base).length, 5, 'keepCount/keepDays=0 时运行记录本身不该被删');
+    for (const st of stamps) assert.ok(fs.existsSync(path.join(base, st, 'shot.png')), '截图不该被误删: ' + st);
+  });
+
+  await A('run.navTimeoutMs：导航超时按配置判失败（本地哑端口，确定性复现）', async () => {
+    // 收到请求永不响应的本地端口：goto 必然走到超时，不受外网/防火墙状态影响
+    const silent = http.createServer(() => { /* 收到请求永不响应 */ });
+    await new Promise((r) => silent.listen(0, '127.0.0.1', r));
+    const url = 'http://127.0.0.1:' + silent.address().port + '/';
+    const before = readConfig().run.navTimeoutMs;
+    writeConfig({ run: { navTimeoutMs: 1500 } });
+    try {
+      const f = F('t-navtimeout', [{ op: 'goto', url }], { assertions: [{ kind: 'url', contains: '127.0.0.1', message: '不该到达任何页面' }] });
+      const t0 = Date.now();
+      const rep = await run(f);
+      const took = Date.now() - t0;
+      console.log('      状态=' + rep.status + ' 耗时=' + took + 'ms 错误=' + (rep.error || '无'));
+      assert.equal(rep.status, 'fail', '导航超时应判失败: ' + rep.status + ' ' + rep.error);
+      // 两次尝试都撞在死端口上：首错是 Timeout 1500ms，重试的第二错可能是 net::ERR_ABORTED
+      // （Chromium 中止还挂着的首个请求），错误族只要指向导航失败即可；
+      // navTimeoutMs 被消费的硬证据在步骤耗时：默认 45s×2 次尝试 ≥90s，配置生效时 ≈4s。
+      assert.ok(/page\.goto|timeout|超时|ERR_/i.test(rep.error || ''), '失败原因应指向导航失败: ' + rep.error);
+      const stepMs = rep.steps && rep.steps[0] ? rep.steps[0].ms : took;
+      assert.ok(stepMs < 20000, '配置 1500ms 导航超时应快速失败：步骤耗时 ' + stepMs + 'ms');
+      assert.ok(took < 45000, '失败收尾必须有界（截图/evaluate 不得无限等），实际 ' + took + 'ms');
+    } finally {
+      writeConfig({ run: { navTimeoutMs: before } });
+      // 死端口可能还挂着浏览器残留连接，close() 会等它们断开——先强制断连再关，收尾必须确定性有界
+      if (silent.closeAllConnections) silent.closeAllConnections();
+      await new Promise((r) => silent.close(r));
+    }
+    assert.equal(readConfig().run.navTimeoutMs, 45000, 'navTimeoutMs 未恢复默认');
+  });
+
+  await A('status_report.onlyProblems 只返回有问题的流程（problems 字段省略）', async () => {
+    const okF = F('t-sp-ok', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    saveFlow(okF); created.push(okF.id);
+    const rOk = await run(okF);
+    assert.equal(rOk.status, 'pass', rOk.error);
+    const badF = F('t-sp-bad', [gt(DEMO + '/error')], { assertions: [{ kind: 'textPresent', text: '永不出现-XYZ' }] });
+    saveFlow(badF); created.push(badF.id);
+    const rBad = await run(badF);
+    assert.equal(rBad.status, 'fail', '该用例应失败: ' + rBad.error);
+    const all = statusReport({});
+    assert.ok(all.items.some((i) => i.flowId === 't-sp-ok'), '全量应包含通过的流程');
+    assert.ok(all.items.some((i) => i.flowId === 't-sp-bad'), '全量应包含失败的流程');
+    assert.ok(Array.isArray(all.problems), '默认应带 problems 汇总');
+    const only = statusReport({ onlyProblems: true });
+    assert.ok(!only.items.some((i) => i.flowId === 't-sp-ok'), 'onlyProblems 不该包含通过的流程: ' + JSON.stringify(only.items.map((i) => i.flowId + ':' + i.lastStatus)));
+    assert.ok(only.items.some((i) => i.flowId === 't-sp-bad'), 'onlyProblems 应保留失败流程');
+    assert.equal(only.problems, undefined, 'onlyProblems=true 时 problems 字段应省略');
+  });
+
+  await A('run.keepRunsPerFlow 配置驱动 pruneRuns（不传 keepCount 时走配置）', async () => {
+    const f = F('t-cfg-keepruns', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+    fs.rmSync(path.join(DIRS.runs, f.id), { recursive: true, force: true });
+    for (let i = 0; i < 3; i++) {
+      const r = await run(f);
+      assert.equal(r.status, 'pass', r.error);
+    }
+    const count = () => fs.readdirSync(path.join(DIRS.runs, f.id)).filter((d) => {
+      try { return fs.statSync(path.join(DIRS.runs, f.id, d)).isDirectory(); } catch { return false; }
+    }).length;
+    assert.equal(count(), 3, '应有 3 次运行记录: ' + count());
+    writeConfig({ run: { keepRunsPerFlow: 1, keepRunDays: 0, keepVideosPerFlow: 0 } });
+    try {
+      const res = pruneRuns(f.id, {});
+      assert.ok(res.removed.length >= 2, JSON.stringify(res));
+      assert.equal(count(), 1, '配置 keepRunsPerFlow=1 应只留 1 次，实际 ' + count());
+    } finally {
+      writeConfig({ run: { keepRunsPerFlow: 50, keepRunDays: 30, keepVideosPerFlow: 20 } });
+    }
+    assert.equal(readConfig().run.keepRunsPerFlow, 50, 'keepRunsPerFlow 未恢复默认');
+  });
+
+  await A('run.keepRunDays 配置驱动：超过天龄的运行记录被清理', async () => {
+    const id = 't-cfg-keepdays';
+    const base = path.join(DIRS.runs, id);
+    fs.rmSync(base, { recursive: true, force: true });
+    try {
+      const mk = (stamp, ageDays) => {
+        const d = path.join(base, stamp);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({ flowId: id, stamp, status: 'pass', startedAt: '2025-10-01T12:00:00.000Z', durationMs: 1, healed: [] }));
+        const t = new Date(Date.now() - ageDays * 86400000);
+        fs.utimesSync(d, t, t);            // pruneRuns 的天龄以运行目录 mtime 为准
+      };
+      mk('20251001-120000-000', 10);
+      mk('20251002-120000-000', 1);
+      writeConfig({ run: { keepRunsPerFlow: 0, keepRunDays: 5, keepVideosPerFlow: 0 } });
+      try {
+        const res = pruneRuns(id, {});
+        assert.ok(res.removed.includes('20251001-120000-000'), '10 天前的应被清: ' + JSON.stringify(res));
+        assert.ok(!res.removed.includes('20251002-120000-000'), '1 天内的不该清: ' + JSON.stringify(res));
+        assert.ok(!fs.existsSync(path.join(base, '20251001-120000-000')), '10 天前的目录应已删除');
+        assert.ok(fs.existsSync(path.join(base, '20251002-120000-000')), '1 天内的目录应保留');
+      } finally {
+        writeConfig({ run: { keepRunsPerFlow: 50, keepRunDays: 30, keepVideosPerFlow: 20 } });
+      }
+      assert.equal(readConfig().run.keepRunDays, 30, 'keepRunDays 未恢复默认');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await A('pruneRuns 显式单维度：只传 keepCount 不被配置 keepDays 稀释（修"传了 keepCount:1 却一条不删"）', async () => {
+    const id = 't-prune-singledim';
+    const base = path.join(DIRS.runs, id);
+    fs.rmSync(base, { recursive: true, force: true });
+    try {
+      const mk = (stamp) => {
+        const d = path.join(base, stamp);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({ flowId: id, stamp, status: 'pass', startedAt: '2025-10-01T12:00:00.000Z', durationMs: 1, healed: [] }));
+      };
+      // 配置默认双约束（50 次/30 天）在场：修复前只传 keepCount:1 会走"两者都设"AND 规则，
+      // 新记录不超 30 天恒被保留 -> 静默空跑；修复后显式单维度即单维度生效
+      mk('20251001-120000-000'); mk('20251002-120000-000'); mk('20251003-120000-000');
+      const res1 = pruneRuns(id, { keepCount: 1 });
+      assert.equal(res1.keepDays, 0, '显式只传 keepCount 时 keepDays 应按 0（不限）参与判定: ' + JSON.stringify(res1));
+      assert.equal(res1.removed.length, 2, '应删 2 条: ' + JSON.stringify(res1));
+      assert.equal(fs.readdirSync(base).length, 1, '应只剩 1 次');
+      // 对称：只传 keepDays 时次数不参与（配置 keepRunsPerFlow=50 不稀释天龄规则）
+      fs.rmSync(base, { recursive: true, force: true });
+      for (const s of ['20251001-120000-000', '20251002-120000-000']) {
+        mk(s);
+        const t = new Date(Date.now() - (s === '20251001-120000-000' ? 10 : 1) * 86400000);
+        fs.utimesSync(path.join(base, s), t, t);
+      }
+      const res2 = pruneRuns(id, { keepDays: 5 });
+      assert.equal(res2.keepCount, 0, '显式只传 keepDays 时 keepCount 应按 0（不限）参与判定: ' + JSON.stringify(res2));
+      assert.ok(res2.removed.includes('20251001-120000-000') && !res2.removed.includes('20251002-120000-000'), JSON.stringify(res2));
+      // 两个都显式给 -> AND 规则不变：超次数但未超天龄的不删（对照：只传 keepCount:1 会删）
+      fs.rmSync(base, { recursive: true, force: true });
+      mk('20251001-120000-000'); mk('20251002-120000-000');   // 两条都刚建（1 天都没超）
+      const res3 = pruneRuns(id, { keepCount: 1, keepDays: 30 });
+      assert.equal(res3.removed.length, 0, 'AND 规则下未超天龄的不该删: ' + JSON.stringify(res3));
+      assert.equal(fs.readdirSync(base).length, 2, '两条都应保留');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await A('run.keepVideosPerFlow 配置驱动：录像按配置留 N 段', async () => {
+    const id = 't-cfg-keepvideos';
+    const base = path.join(DIRS.runs, id);
+    fs.rmSync(base, { recursive: true, force: true });
+    try {
+      const stamps = [];
+      for (let i = 0; i < 5; i++) {
+        const stamp = '20251001-12000' + i + '-000';
+        stamps.push(stamp);
+        const d = path.join(base, stamp);
+        fs.mkdirSync(path.join(d, 'videos'), { recursive: true });
+        fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({ flowId: id, stamp, status: 'pass', startedAt: '2025-10-01T12:00:00.000Z', durationMs: 1, healed: [] }));
+        const v = path.join(d, 'videos', 'video.webm');
+        fs.writeFileSync(v, 'webm-' + i);
+        const t = new Date(Date.now() - (5 - i) * 60000);
+        fs.utimesSync(v, t, t);            // 录像新旧以文件 mtime 为准
+      }
+      const countWebm = () => stamps.reduce((s, st) => s + (fs.existsSync(path.join(base, st, 'videos', 'video.webm')) ? 1 : 0), 0);
+      writeConfig({ run: { keepRunsPerFlow: 0, keepRunDays: 0, keepVideosPerFlow: 2 } });
+      try {
+        const res = pruneRuns(id, {});
+        assert.equal(res.videosRemoved, 3, JSON.stringify(res));
+        assert.equal(res.videosKept, 2, JSON.stringify(res));
+        assert.equal(countWebm(), 2, '应只剩 2 段录像');
+      } finally {
+        writeConfig({ run: { keepRunsPerFlow: 50, keepRunDays: 30, keepVideosPerFlow: 20 } });
+      }
+      assert.equal(readConfig().run.keepVideosPerFlow, 20, 'keepVideosPerFlow 未恢复默认');
+      assert.equal(fs.readdirSync(base).length, 5, 'keepRunsPerFlow/keepRunDays=0 时运行记录本身不该被删');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   /* ================= 收尾 ================= */
-  for (const id of created) { try { deleteFlow(id); } catch { /* ignore */ } }
+  // 备份不随 deleteFlow 清理：不一起删会永久累积（每跑一轮多几份残件）
+  const purgeBackups = (id) => { for (const b of listBackups(id)) { try { fs.rmSync(b.file, { force: true }); } catch { /* ignore */ } } };
+  for (const id of created) {
+    try { deleteFlow(id); } catch { /* ignore */ }
+    purgeBackups(id);
+  }
   for (const id of ['t-select', 't-uncheck', 't-press', 't-hover', 't-scroll', 't-slow', 't-extract', 't-optional',
     't-asserts', 't-errbanner', 't-list-ok', 't-list-empty', 't-dl-ok', 't-dl-empty', 't-dl-strict', 't-assert-mix', 't-guard',
     't-guard2', 't-guard-ok', 't-retry', 't-human-headless', 't-human-headed', 't-secret', 't-csv-param',
@@ -1184,9 +2365,16 @@ async function main() {
     't-lock', 't-dlg-accept', 't-dlg-step', 't-dlg-bad', 't-dlg-lenient', 't-dateoff',
     't-mask-yes', 't-mask-no', 't-infinite', 't-interrupted', 't-retention', 't-badurl',
     't-splice-mid', 't-splice-tail', 't-splice-nosuffix', 't-splice-empty', 't-splice-var',
-    't-splice-bad', 't-splice-lock', 't-splice-restore']) {
+    't-splice-bad', 't-splice-lock', 't-splice-restore',
+    't-timeout', 't-timeout-scroll', 't-timeout-handoff', 't-video', 't-video-ok', 't-video-secret', 't-sched-expect', 't-listruns',
+    't-runidx-save', 't-runidx-heal', 't-runidx-prune', 't-runidx-order',
+    't-chain-child', 't-chain-parent', 't-chain-skip-a', 't-chain-skip-b', 't-unattended', 't-video-prune',
+    't-live-marker', 't-waiting-human', 't-cf-running', 't-cf-interrupted', 't-totalruns',
+    't-noretry', 't-retry-cfg', 't-handoff-cfg', 't-mask-cfg', 't-noev-cfg', 't-url-regex', 't-url-regex-bad',
+    't-cfg-ltz', 't-cfg-profile', 't-navtimeout', 't-sp-ok', 't-sp-bad', 't-cfg-keepruns']) {
     try { deleteFlow(id); } catch { /* ignore */ }
     try { fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); } catch { /* ignore */ }
+    purgeBackups(id);
   }
   alarm.server.close();
   demo.server.close();

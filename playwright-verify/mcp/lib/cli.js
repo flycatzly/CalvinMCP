@@ -135,11 +135,15 @@ export async function runCli(o) {
     json = true, timeoutMs = 120_000, extraFlags = [],
   } = o;
 
+  // 早退失败也必须给 summary：调用方（步骤 detail、工具文本）统一读 summary，
+  // 只给 message 会把失败原因吞成空 detail（实测：CLI 未安装时 goto 步骤 detail 为空）。
   if (!CLI_ALLOWLIST.has(subcommand)) {
+    const message = `子命令 ${subcommand} 不在白名单内。可用子命令见 cli-mode.md 的命令表。`;
     return {
       ok: false,
       reason: 'SUBCOMMAND_NOT_ALLOWED',
-      message: `子命令 ${subcommand} 不在白名单内。可用子命令见 cli-mode.md 的命令表。`,
+      message,
+      summary: message,
     };
   }
 
@@ -175,23 +179,27 @@ export async function runCli(o) {
   // 「装了 CLI 才守门」。守门先于能力检查，环境无关。
   const smuggled = optionArgs.find((a) => /^--filename(?:=|$)/.test(a));
   if (redirect && smuggled) {
+    const message = `不接受调用方指定 --filename（收到 ${smuggled}）。`
+      + `产物必须落到约定的证据目录：${dirs[redirect.dir]}。`
+      + '这是为了让失败现场可归档、可被回译时附上；如需自定义目录，请改配置而不是绕过它。';
     return {
       ok: false,
       reason: 'ARTIFACT_PATH_NOT_ALLOWED',
       session: sess,
       subcommand,
-      message: `不接受调用方指定 --filename（收到 ${smuggled}）。`
-        + `产物必须落到约定的证据目录：${dirs[redirect.dir]}。`
-        + '这是为了让失败现场可归档、可被回译时附上；如需自定义目录，请改配置而不是绕过它。',
+      message,
+      summary: message,
     };
   }
 
   const cli = resolveCliRunner(cwd);
   if (!cli) {
+    const message = '找不到 playwright-cli。请先执行：npm i -g @playwright/cli@latest 并运行 playwright-cli install';
     return {
       ok: false,
       reason: 'CLI_NOT_INSTALLED',
-      message: '找不到 playwright-cli。请先执行：npm i -g @playwright/cli@latest 并运行 playwright-cli install',
+      message,
+      summary: message,
       hint: 'npm install -g @playwright/cli@latest && playwright-cli --version && playwright-cli install',
     };
   }
@@ -285,7 +293,12 @@ export function extractRootCause(stderr, stdout) {
   const text = `${stderr || ''}\n${stdout || ''}`;
   const pw = /\[?PlaywrightError:[ \t]*([^\]\r\n]+)/.exec(text);
   const generic = /^[ \t]*Error:[ \t]*([^\r\n]+)/m.exec(text);
-  const picked = (pw && pw[1]) || (generic && generic[1]) || null;
+  // JSON 信封里的 error 字段（探针实录：点击失效选择器时 stdout 是
+  // `"isError": true, "error": "Error: \"#submit-btn\" does not match any elements."`，
+  // Error: 不在行首，旧的两档正则都够不着 → 根因被尾部噪声顶掉）。
+  // 档位插在 PlaywrightError 之后、行首 Error 之前，不动 H20 既有三档的判定顺序。
+  const envelope = /"error":\s*"((?:[^"\\]|\\.)+)"/.exec(text);
+  const picked = (pw && pw[1]) || (envelope && envelope[1]) || (generic && generic[1]) || null;
   if (!picked) return lastLines(stderr || stdout, 3);
   let hint = '';
   // 已知模式：CLI 没有通道配置（.playwright/cli.config.json）时回退自己的默认通道，

@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureHome, paths } from "./paths.mjs";
 import { parseAny, parseJsonChat } from "./parse.mjs";
-import { addLink, applyContactDelta, insertMessages, kvSet, normalizeMessage, recalcSessionCounts, rebuildContactStats, rowToSession, sessionId, tx, upsertSession, store } from "./store.mjs";
-import { extractUrls, inferKindSafe, isHeatLink, normalizeUrl, sha1, writeJson } from "./util.mjs";
+import { addLink, applyContactDelta, insertMessages, kvSet, normalizeMessage, recalcSessionCounts, rebuildContactStats, tx, store } from "./store.mjs";
+import { extractUrls, fmtDay, inferKindSafe, isHeatLink, normalizeUrl, sha1, writeJson } from "./util.mjs";
 import { inboxClaim, inboxComplete, inboxFail, inboxFiles, inboxGet } from "./inbox.mjs";
 import { isOwnerName } from "./profile.mjs";
 
@@ -70,13 +70,23 @@ function rowToCanonical(m, { chat, source, kind }) {
 export function ingestMessages(db, msgs, { source = "scan", runId = null, deferStats = false } = {}) {
   const prepared = [];
   const sessMap = new Map();
-  for (const raw of msgs) {
+  const baseTs = Date.now(); // 仅用于缺时间戳消息的兜底时间
+  const idSeen = new Map(); // 缺时间戳的同内容消息按批内出现序号区分，避免被 INSERT OR IGNORE 塌缩成一条
+  for (let i = 0; i < msgs.length; i++) {
+    const raw = msgs[i];
     const chat = raw.session_name ?? raw.chat ?? "未知会话";
     const kind = raw.session_kind ?? inferKindSafe(chat);
     const canonical = rowToCanonical({ ...raw, ts: raw.ts ?? 0 }, { chat, source, kind });
     const m = normalizeMessage(canonical, { source, runId });
-    if (!m.ts) m.ts = Date.now();
-    m.day = m.day ?? null;
+    if (!m.ts) {
+      // 无时间戳时 id 已按 ts=0 算出（重扫同一文件仍幂等）；同 id 的第 2 条起按出现序号改写 id，
+      // 避免 K 条「同会话+同发送者+同内容」被 INSERT OR IGNORE 塌缩成 1 条
+      const n = (idSeen.get(m.id) ?? 0) + 1;
+      idSeen.set(m.id, n);
+      if (n > 1) m.id = sha1(`${m.id} ${n}`).slice(0, 20);
+      m.ts = baseTs + i;
+      m.day = fmtDay(new Date(m.ts)); // 兜底时间戳也要带 day，否则按日统计漏掉这些行
+    }
     m._links = canonical.links; // 仅供 buildLinks 使用，不落库
     prepared.push(m);
     if (!sessMap.has(chat)) sessMap.set(chat, { name: chat, kind, msgs: [] });
@@ -85,67 +95,132 @@ export function ingestMessages(db, msgs, { source = "scan", runId = null, deferS
   const normSet = new Set();
   let res;
   tx(db, () => {
-    res = insertMessages(db, prepared, { source, runId, skipSessionRecalc: deferStats });
+    // insertMessages 内部已按批 upsert 会话行（first_ts/last_ts/名字），这里不再重复写；
+    // 统计重算与联系人增量也收进同一事务：一次 ingestMessages 只提交一次
+    res = insertMessages(db, prepared, { source, runId, skipSessionRecalc: true });
     // 清理早期版本写入的逐字符脏数据（一次性迁移：buildLinks 的过滤保证不会再产生这类行）
     if (!_linksCleaned) {
       try { db.exec("DELETE FROM links WHERE length(norm) < 8 AND norm NOT LIKE 'http%'"); _linksCleaned = true; } catch { /* ignore */ }
     }
-    for (const [name, meta] of sessMap) {
-      const ms = meta.msgs;
-      const ts = ms.map((x) => x.ts);
-      upsertSession(db, { id: sessionId(name, meta.kind), name, kind: meta.kind, is_group: meta.kind === "group", first_ts: Math.min(...ts), last_ts: Math.max(...ts), msg_count: ms.length, source });
-    }
     for (const m of prepared) buildLinks(db, m, normSet);
+    if (!deferStats) {
+      // 只重算本次涉及的会话与发送者（全量重算会让逐会话索引退化成 O(n^2)）
+      recalcSessionCounts(db, prepared.map((p) => p.session_id));
+      // 联系人统计按本次真正落库的行增量累加，不重扫发送者全量历史
+      applyContactDelta(db, res.senderStats);
+    }
   });
-  // 只重算本次涉及的会话与发送者（全量重算会让逐会话索引退化成 O(n^2)）
-  const sessionIds = prepared.map((p) => p.session_id);
-  const senders = prepared.map((p) => p.sender);
-  if (!deferStats) {
-    recalcSessionCounts(db, sessionIds);
-    // 联系人统计按本次真正落库的行增量累加，不重扫发送者全量历史（flushIngestStats 收尾仍精确重算）
-    applyContactDelta(db, res.senderStats);
-  }
-  return { ...res, sessions: sessMap.size, links: normSet.size, sessionIds, senders };
+  return { ...res, sessions: sessMap.size, links: normSet.size, sessionIds: prepared.map((p) => p.session_id), senders: prepared.map((p) => p.sender) };
 }
 
 /**
- * 批量索引的收尾：把逐会话调用攒下来的 id/sender 一次性重算。
- * 逐会话各开一次事务时，事务提交本身会成为主要开销（实测 600 个会话约 1800 次提交）。
+ * 批量索引的收尾：把逐会话调用攒下来的会话 id 一次性重算、联系人增量一次性落账。
+ * 之前收尾走 rebuildContactStats 逐发送者重扫全量历史（O(发送者×历史)），
+ * 现在直接合并各批 insertMessages 收集的 senderStats 增量（纯 upsert，零扫描）。
  */
 export function flushIngestStats(db, batches = []) {
   const sessionIds = new Set();
   const senders = new Set();
+  const deltas = new Map(); // sender -> {n,f,l}
   for (const b of batches) {
     for (const id of b?.sessionIds ?? []) sessionIds.add(id);
     for (const s of b?.senders ?? []) senders.add(s);
+    if (b?.senderStats) {
+      for (const [name, d] of b.senderStats) {
+        if (!d || !d.n) continue;
+        const cur = deltas.get(name);
+        if (!cur) deltas.set(name, { n: d.n, f: d.f, l: d.l });
+        else { cur.n += d.n; if (d.f < cur.f) cur.f = d.f; if (d.l > cur.l) cur.l = d.l; }
+      }
+    }
   }
   if (sessionIds.size) recalcSessionCounts(db, [...sessionIds]);
-  if (senders.size) rebuildContactStats(db, [...senders]);
-  return { sessions: sessionIds.size, senders: senders.size };
+  if (deltas.size) applyContactDelta(db, deltas);
+  else if (senders.size) rebuildContactStats(db, [...senders]); // 兼容不带增量信息的旧调用方
+  return { sessions: sessionIds.size, senders: Math.max(senders.size, deltas.size) };
+}
+
+/**
+ * 攒批写入器：把「逐批一次 ingestMessages」收进「每 chunkSize 批一个外层事务」，
+ * 统计由 finish() 里的 flushIngestStats 一次收尾。tx 可重入（见 tests 的「嵌套事务
+ * 可重入」），内层 ingestMessages 的 BEGIN/COMMIT 退化为直执行，N 次提交收敛为
+ * ceil(N/chunkSize) 次。写入幂等（确定性 id + INSERT OR IGNORE），失败后重跑即可补齐。
+ * 事务语义：批内原子——同批任一消息批写入抛错则整批回滚、错误上抛（已提交批次保留），
+ * 不吞错继续写，避免批内半成品落库。
+ * 实测量级（600 会话/3 万条）：每会话一事务 + 即时统计 1607ms，单事务对照 385ms。
+ * chunkSize 默认 100：调参实测（4000 会话/20 万条中位数）20→1246ms、100→637ms、500→519ms
+ * （单事务地板 478ms）——100 已近地板，再大只省一成多而批内驻留内存线性上涨。
+ *
+ * add() 逐批喂入（调用方取数可以是异步的，如 indexFromReader 逐页拉取）；
+ * finish() 收尾并返回 { sessions, chunks, inserted, stats, results }，
+ * results 与 add() 顺序同序，供调用方做逐项记账（scanPath 的 perFile、search 的关键词）。
+ */
+export function sessionBatchWriter(db, { source = "vault", runId = null, chunkSize = 100 } = {}) {
+  const size = Math.max(1, Math.min(500, Number(chunkSize) || 100));
+  const pending = [];
+  let chunks = 0;
+  let inserted = 0;
+  let sessions = 0;
+  let chunk = [];
+  const flushChunk = () => {
+    if (!chunk.length) return;
+    const items = chunk;
+    chunk = [];
+    tx(db, () => {
+      for (const msgs of items) {
+        const res = ingestMessages(db, msgs, { source, runId, deferStats: true });
+        pending.push(res);
+        inserted += res.inserted;
+      }
+    });
+    chunks += 1;
+    sessions += items.length;
+  };
+  return {
+    add(msgs) {
+      chunk.push(msgs);
+      if (chunk.length >= size) flushChunk();
+    },
+    finish() {
+      flushChunk();
+      const stats = flushIngestStats(db, pending);
+      return { sessions, chunks, inserted, stats, results: pending };
+    },
+  };
+}
+
+/** 同步批式外壳：入参可为「消息数组的数组」或任意可迭代对象（生成器边解析边写，内存有界） */
+export function ingestSessionBatches(db, sessionMsgs, opts = {}) {
+  const writer = sessionBatchWriter(db, opts);
+  for (const msgs of sessionMsgs) writer.add(msgs);
+  return writer.finish();
 }
 
 /** 扫描文件/目录并落库 */
 export function scanPath(target, { source = "scan", runId = null, out = null } = {}) {
   ensureHome();
+  // 路径不存在必须报错：静默返回 files:0 会让用户以为扫描成功（真实测试发现的缺陷）
+  if (!fs.existsSync(target)) throw new Error("扫描目标不存在：" + target);
   const files = collectFiles(target);
   const db = store();
   const perFile = [];
-  const scanPending = [];
-  let total = 0;
-  for (const file of files) {
-    const raw = fs.readFileSync(file, "utf8");
-    const base = path.basename(file, path.extname(file));
-    const parsed = file.endsWith(".json") ? (() => { try { return parseJsonChat(JSON.parse(raw), { defaultChat: base }); } catch { return parseAny(raw, { defaultChat: base }); } })() : parseAny(raw, { defaultChat: base });
-    const chat = parsed.chat || base;
-    const msgs = parsed.messages.map((m) => ({ ...m, chat, session_name: m.chat ?? chat }));
-    const res = ingestMessages(db, msgs, { source, runId, deferStats: true });
-    scanPending.push(res);
-    perFile.push({ file, chat, format: parsed.format, messages: msgs.length, inserted: res.inserted });
-    total += res.inserted;
+  // 生成器逐文件懒解析，攒批事务每 100 个文件一提交（sessionBatchWriter 默认 chunkSize；旧的逐文件一事务提交成本随文件数增长，
+  // 同量级实测每会话一事务 1607ms vs 攒批 569ms）；内存最多驻留一个批次的解析结果。
+  function* parseFiles() {
+    for (const file of files) {
+      const raw = fs.readFileSync(file, "utf8");
+      const base = path.basename(file, path.extname(file));
+      const parsed = file.endsWith(".json") ? (() => { try { return parseJsonChat(JSON.parse(raw), { defaultChat: base }); } catch { return parseAny(raw, { defaultChat: base }); } })() : parseAny(raw, { defaultChat: base });
+      const chat = parsed.chat || base;
+      const msgs = parsed.messages.map((m) => ({ ...m, chat, session_name: m.chat ?? chat }));
+      perFile.push({ file, chat, format: parsed.format, messages: msgs.length, inserted: 0 });
+      yield msgs;
+    }
   }
-  flushIngestStats(db, scanPending);
+  const write = ingestSessionBatches(db, parseFiles(), { source, runId });
+  for (let i = 0; i < perFile.length; i++) perFile[i].inserted = write.results[i].inserted;
   kvSet("last_index_ts", Date.now());
-  const summary = { target, files: files.length, inserted: total, perFile };
+  const summary = { target, files: files.length, inserted: write.inserted, perFile };
   if (out) {
     fs.mkdirSync(out, { recursive: true });
     writeJson(path.join(out, "scan-summary.json"), summary);
@@ -185,18 +260,10 @@ export async function indexFromReader({
   const { reader, sourceId, reason } = pickReader({ source, allowDemo });
   if (!reader) throw new Error("没有可用的数据源");
   const db = store();
-  const pending = []; // 批量索引：统计信息收集起来一次性重算
-  // 攒批写入：一次 ingestMessages 一个事务时，提交本身占了大头（实测单事务可快 2.5 倍）
-  const CHUNK = 20;
-  let chunk = [];
-  const flushChunk = () => {
-    if (!chunk.length) return;
-    const items = chunk;
-    chunk = [];
-    tx(db, () => {
-      for (const it of items) pending.push(ingestMessages(db, it.msgs, { source: `reader:${sourceId}`, runId, deferStats: true }));
-    });
-  };
+  // 攒批写入：一次 ingestMessages 一个事务时，提交本身占了大头（实测单事务可快 2.5 倍）。
+  // 取数是异步的（逐页拉取），用 sessionBatchWriter 逐页 add、末尾 finish 一次收尾，
+  // 与 scanPath/wai_vault_scan 共用同一套攒批+统计逻辑（不再各自维护 flushChunk）。
+  const writer = sessionBatchWriter(db, { source: `reader:${sourceId}`, runId, chunkSize: 100 });
   const report = { source: sourceId, reason, scope, sessionType, sinceMs, untilMs, keywords, sessions: [], totals: { messages: 0, inserted: 0, sessions: 0, links: 0 } };
 
   let chatNames = [];
@@ -212,16 +279,15 @@ export async function indexFromReader({
     for (const kw of keywords) {
       const r = await reader.search(kw, { limit: perChatLimit, after: sinceMs ? new Date(sinceMs).toISOString() : undefined, before: untilMs ? new Date(untilMs).toISOString() : undefined });
       const msgs = (r.data?.messages ?? []).map((m) => toReaderMessage(m, { chat: m.chat }));
-      const res = ingestMessages(db, msgs.map((m) => ({ ...m, chat: m.chat })), { source: `reader:${sourceId}`, runId, deferStats: true });
-      pending.push(res);
-      report.sessions.push({ keyword: kw, messages: msgs.length, inserted: res.inserted });
+      writer.add(msgs.map((m) => ({ ...m, chat: m.chat })));
+      report.sessions.push({ keyword: kw, messages: msgs.length, inserted: 0 });
       report.totals.messages += msgs.length;
-      report.totals.inserted += res.inserted;
     }
-    flushChunk();
+    const write = writer.finish();
+    for (let i = 0; i < report.sessions.length; i++) report.sessions[i].inserted = write.results[i].inserted;
     report.totals.sessions = report.sessions.length;
-    report.totals.inserted = pending.reduce((a, b) => a + (b?.inserted ?? 0), 0);
-    report.stats = flushIngestStats(db, pending);
+    report.totals.inserted = write.inserted;
+    report.stats = write.stats;
     kvSet("last_index_ts", Date.now());
     const summary = { ...report, out };
     if (out) { fs.mkdirSync(out, { recursive: true }); writeJson(path.join(out, "index-summary.json"), summary); }
@@ -241,29 +307,26 @@ export async function indexFromReader({
   for (const name of chatNames.slice(0, sessionLimit)) {
     let offset = 0;
     let fetched = 0;
-    let inserted = 0;
     for (let page = 0; page < 20; page++) {
-      const t = await reader.timeline(name, { limit: Math.min(perChatLimit, 500), offset, displayOrder: "asc" });
+      const limit = Math.min(perChatLimit, 500);
+      const t = await reader.timeline(name, { limit, offset, displayOrder: "asc" });
       const rows = t.data?.messages ?? [];
       if (!rows.length) break;
       const msgs = rows.map((m) => toReaderMessage(m, { chat: name }));
       const filtered = msgs.filter((m) => (sinceMs === undefined || (m.ts ?? 0) >= sinceMs) && (untilMs === undefined || (m.ts ?? 0) <= untilMs));
-      if (filtered.length) {
-        chunk.push({ msgs: filtered.map((m) => ({ ...m, chat: name })) });
-        if (chunk.length >= CHUNK) flushChunk();
-      }
+      if (filtered.length) writer.add(filtered.map((m) => ({ ...m, chat: name })));
       fetched += rows.length;
       if (!t.data?.query?.has_more) break;
       offset = t.data.query.next_offset ?? offset + rows.length;
-      if (rows.length < 50) break;
+      if (rows.length < limit) break; // 本页没取满（对照实际请求的 limit，而非写死的 50）
     }
     report.sessions.push({ name, fetched });
     report.totals.messages += fetched;
   }
-  flushChunk();
+  const write = writer.finish();
   report.totals.sessions = report.sessions.length;
-  report.totals.inserted = pending.reduce((a, b) => a + (b?.inserted ?? 0), 0);
-  report.stats = flushIngestStats(db, pending);
+  report.totals.inserted = write.inserted;
+  report.stats = write.stats;
   kvSet("last_index_ts", Date.now());
   kvSet("last_index_source", String(sourceId));
   const st = await reader.status().catch(() => null);

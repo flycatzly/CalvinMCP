@@ -16,7 +16,10 @@
  *
  * Env:
  *   PVMCP_CWD          默认工作目录（默认 process.cwd()）
- *   PVMCP_LOG          日志文件路径（默认不写日志；设了就写，便于排查协议问题）
+ *   PVMCP_LOG          日志文件路径（默认不写日志；设了就写，便于排查协议问题）。
+ *                      每请求一行 name/ms/outcome/code；nl_test_goal 另带 cache=hit|miss|skip
+ *                      （计划缓存三态，命中率观测；其余工具不落该字段）
+ *   PVMCP_LOG_MAX_MB   日志容量上限 MB（默认 2，超限轮转到 <file>.1；0=关闭轮转）
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,13 +28,13 @@ import { fileURLToPath } from 'node:url';
 
 import { lint, lintSource, formatText as lintText, RULES } from './lib/lint.js';
 import { checkConfig, formatText as cfgText, BASELINE } from './lib/configcheck.js';
-import { summarize, summarizeFile, formatText as sumText, CATEGORIES } from './lib/signature.js';
+import { summarize, summarizeFile, formatText as sumText, CATEGORIES, summarizeTrend, formatTrendText, slimTrendForContext } from './lib/signature.js';
 import { runPlaywright, playwrightVersion, resolvePlaywrightRunner } from './lib/runner.js';
 import { runCli, cliHealthCheck, ARTIFACT_DIRS, CLI_ALLOWLIST } from './lib/cli.js';
 import { generate, writeGenerated, locatorExpr } from './lib/generate.js';
 import { checkStandards, formatText as stdText, renderStandardsMd } from './lib/standards.js';
 import { orchestrate, readCases, resolvePython } from './lib/orchestrate.js';
-import { boolArg, numArg, arrayArg } from './lib/args.js';
+import { boolArg, numArg, intArg, arrayArg } from './lib/args.js';
 import { maskComments, maskCommentsAndStrings, selfCheck as tokenizerSelfCheck } from './lib/tokenizer.js';
 import { llmChatJson, llmStatus, resolveLlm } from './lib/llmclient.js';
 import { buildPlanMessages, normalizePlan, fallbackPlan, verdictOf, PLAN_MAX_STEPS } from './lib/nlplan.js';
@@ -40,15 +43,24 @@ import {
 } from './lib/agent.js';
 import {
   FACTS_EVAL_FN, factsPath, judgeImages, classifyLinks, probeLinks, judgeExplore, parseConsoleErrors, readFacts,
+  formHash, formsSummary, diffForms,
 } from './lib/explore.js';
+import { findRefByNeedle, DEFAULT_HEAL_LLM_BUDGET, HEAL_LLM_BUDGET_MAX } from './lib/heal.js';
+import { planFingerprint, createPlanCache, PLAN_CACHE_STATES } from './lib/plancache.js';
+import {
+  buildTableEvalFn, collectDir, parseTableFile, mergeRows, diffRows, formatCsv,
+  judgeCollect, planResume, dateStamp, MAX_PAGES_HARD,
+} from './lib/collect.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** 版本单一真相源是 package.json（避免 server 与文档各写一个版本号而漂移）。 */
+/** 版本单一真相源是**仓库根**的 package.json（H16 同源对账；mcp/ 下没有第二个版本源）。
+ *  读错目录会拿到陈旧副本（真实测试实测：曾读到 mcp/package.json 的 1.0.0，与根 1.7.0 漂移）。
+ *  兜底值故意不是合法版本号：读不到就该在版本钉上炸，而不是伪装成一个真版本。 */
 export const VERSION = (() => {
   try {
-    return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '1.0.0';
-  } catch { return '1.0.0'; }
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || '0.0.0-fallback';
+  } catch { return '0.0.0-fallback'; }
 })();
 
 const SERVER_NAME = 'playwright-verify';
@@ -57,16 +69,59 @@ const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 
 const DEFAULT_CWD = process.env.PVMCP_CWD || process.cwd();
 
+/** nl_test_goal 的计划缓存（进程内）：同指纹（goal/url/provider/model）复用「规划」，
+ *  绝不复用「执行」—— 命中后 executePlan 照常一步步真跑、真断言、真落盘。 */
+const PLAN_CACHE = createPlanCache();
+
 /* ------------------------------------------------------------------ *
  * 日志（可选）
  * ------------------------------------------------------------------ */
 const LOG_FILE = process.env.PVMCP_LOG || '';
+
+/** 观测日志容量上限（MB）：默认 2，截断夹取 [1,1024]；0=关闭轮转（外挂轮转方案的留口）。
+ *  长跑的 server 一请求一行只增不减，无上限会把磁盘和 log_summary 的读取都拖垮；
+ *  超限轮转 = 当前文件改名 .1、新日志从「轮转标记行」起 —— 前一段数据不丢，只是不在当前文件里。
+ *  环境变量是垃圾时回退默认并向 stderr 提示一次：调试旋钮不该把服务弄挂，但也不静默装没事。 */
+const LOG_MAX_MB = (() => {
+  const raw = process.env.PVMCP_LOG_MAX_MB;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 2;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    process.stderr.write(`[pvmcp] PVMCP_LOG_MAX_MB="${String(raw).slice(0, 40)}" 不是数字，回退默认 2MB\n`);
+    return 2;
+  }
+  if (n === 0) return 0;
+  return Math.min(1024, Math.max(1, Math.trunc(n)));
+})();
+
 function log(msg) {
   if (!LOG_FILE) return;
   try {
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
+    let rotatedPrefix = '';
+    if (LOG_MAX_MB > 0) {
+      let size = 0;
+      try { size = fs.statSync(LOG_FILE).size; } catch { /* 首次写不存在 */ }
+      if (size >= LOG_MAX_MB * 1024 * 1024) {
+        try {
+          fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
+          rotatedPrefix = `[${new Date().toISOString()}] log rotated: 前一段日志已移到 ${path.basename(LOG_FILE)}.1`
+            + `（容量上限 ${LOG_MAX_MB}MB；PVMCP_LOG_MAX_MB=0 可关闭轮转）\n`;
+        } catch { /* 改名失败（如被占用）就继续追加，下个请求再试 */ }
+      }
+    }
+    fs.appendFileSync(LOG_FILE, `${rotatedPrefix}[${new Date().toISOString()}] ${msg}\n`, 'utf8');
   } catch { /* 日志失败不能影响主流程 */ }
+}
+
+/** 日志取值清洗：空白折叠成单个空格、超长截断 —— 保证「一事件一行」，防日志注入拆行。
+ *  脱敏红线：调用参数值、结果文本、密钥一律不进日志（哨兵测试钉住，见 protocol-check C 段）。 */
+function logText(v, cap = 200) {
+  return String(v ?? '-').replace(/\s+/g, ' ').trim().slice(0, cap) || '-';
+}
+/** 同上，再把空格压成 _：name=/code= 这类 key=value 字段的值不许带空格（否则解析歧义）。 */
+function logToken(v, cap = 100) {
+  return logText(v, cap).replace(/ /g, '_');
 }
 
 /* ------------------------------------------------------------------ *
@@ -77,15 +132,41 @@ function log(msg) {
 function result(text, structured) {
   return { content: [{ type: 'text', text }], structuredContent: structured };
 }
-function fail(text, structured) {
-  return { content: [{ type: 'text', text }], isError: true, structuredContent: structured };
+/** 短码形态：大写开头的标识符（ERROR 分布聚合的键）。长句/消息不算短码。 */
+const SHORT_CODE = /^[A-Z][A-Z0-9_]{1,}$/;
+/**
+ * 失败出口必须带语义短码：日志 code= 与 structuredContent.errorCode 都取它，
+ * 「错误分布」就靠这个键聚合。落长句或字面 'isError' 等于把错误分布变成噪声。
+ * 取码优先级：显式传入 > structured.errorCode > structured.error（须为短码形态）> 'UNCLASSIFIED'（耻辱码，暴露漏配）。
+ * structuredContent 为追加 errorCode 的展开副本，既有字段不动（契约兼容）。
+ */
+function fail(text, structured, code) {
+  const s = (structured && typeof structured === 'object' && !Array.isArray(structured)) ? structured : {};
+  const fromArg = typeof code === 'string' && SHORT_CODE.test(code) ? code : null;
+  const fromField = [s.errorCode, s.error].find((v) => typeof v === 'string' && SHORT_CODE.test(v)) || null;
+  return {
+    content: [{ type: 'text', text }],
+    isError: true,
+    structuredContent: { ...s, errorCode: fromArg || fromField || 'UNCLASSIFIED' },
+  };
 }
 
+/*
+ * annotations 判定口径（客户端自动放行 / 要求确认的机器依据）：
+ *  · readOnlyHint：不改任何状态才算 true —— 纯读文件、纯分析、纯自省。
+ *  · destructiveHint：**最坏情形口径** —— 只要存在「覆盖已有内容 / 执行任意代码 / 驱动真实页面点击填写」
+ *    的能力就如实 true（与 generate_scripts 默认拒绝覆盖不矛盾：显式 overwrite:true 时它确实能毁掉手写
+ *    内容，这是 H5 钉过的老坑；run_verify 跑的是项目自己的测试代码）。
+ *  · idempotentHint：同参重跑不产生新的**语义状态**才算 true —— .playwright-artifacts/ 下的证据落盘是
+ *    设计好的追加式产出（时间戳文件名），不计状态分歧；目标系统数据、项目文件、浏览器会话语义状态才算。
+ *  · openWorldHint：会碰外部实体（真实网页、外链探活、被测环境）就 true；data: 页与本机探测不算。
+ */
 const TOOLS = [
   /* ---------------- 验收线 ---------------- */
   {
     name: 'check_config',
     title: '配置基线体检',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '体检 Playwright 配置基线，规则 CFG001–CFG012。放在流水线最前面：配置错的时候后面全是白干 —— '
       + '没有 forbidOnly，.only 会带着一条用例进 CI；timeout 拉到 300 秒，任何失败都会以「超时」的样子出现。'
@@ -120,7 +201,7 @@ const TOOLS = [
       const blocked = rep.summary.exitCode !== 0;
       if (blocked) {
         return fail(`${text}\n\n[门禁] 有 ${rep.summary.errorCount} 个 ERROR，配置不可信，`
-          + '后面的检查与执行结论都会失真。', rep);
+          + '后面的检查与执行结论都会失真。', rep, 'CONFIG_BLOCK');
       }
       if (rep.summary.verdict === 'UNPARSEABLE') {
         return result(`${text}\n\n[提示] 检测到函数式配置：键值判定是尽力而为，`
@@ -132,6 +213,7 @@ const TOOLS = [
   {
     name: 'lint_spec',
     title: '用例静态扫描',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '扫描 Playwright 用例，20 条规则分 ERROR（阻断，退出码 1）/ WARN（人工确认）。'
       + `核心规则：PW001 固定时长等待、PW002 .only 泄漏、PW003 绝对 XPath、PW004 nth-child、PW005 force:true、`
@@ -165,25 +247,29 @@ const TOOLS = [
       });
       const text = args.format === 'json' ? JSON.stringify(rep, null, 2) : lintText(rep);
       return rep.summary.errorCount > 0
-        ? fail(`${text}\n\n[门禁] ERROR 必须清零才能合入 —— 这是本门禁的阻断条件。`, rep)
+        ? fail(`${text}\n\n[门禁] ERROR 必须清零才能合入 —— 这是本门禁的阻断条件。`, rep, 'LINT_BLOCK')
         : result(text, rep);
     },
   },
   {
     name: 'summarize_report',
     title: '失败聚类与归因',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '解析 Playwright JSON 报告，做 ANSI 清洗 + 失败签名归一化 + 四类归因聚类。'
       + '归因类别：locator-strict（定位器命中多个元素）/ assertion（断言未成立，产品回归或断言写错，必须人判）/ '
       + 'locator-not-found（定位器找不到元素）/ timeout（操作等待超时，先查定位器）/ env（环境不可达）。'
       + '核心价值：把 N 条失败压成 M 个根因签名，派活口径从「一条失败一个人」变成「一个签名一份工作量」；'
       + '偶发（重试后通过）单独列出，不混进失败聚类。'
-      + '判定与签名吃同一份清洗后的文本 —— 这是「断言失败被归成超时」那个缺陷的修法。',
+      + '判定与签名吃同一份清洗后的文本 —— 这是「断言失败被归成超时」那个缺陷的修法。'
+      + '传 files（N 份报告路径或目录）做多报告趋势：通过率曲线 + 签名漂移（新签名=回归信号/'
+      + '消除=修复成效/持续=存量），趋势表落盘 md 只回摘要与路径；签名与单报告同一口径。',
     inputSchema: {
       type: 'object',
       properties: {
         file: { type: 'string', description: 'Playwright JSON 报告路径（reporter: [["json",{outputFile:...}]] 的产物）' },
         json: { type: 'object', description: '直接传报告对象（若已有 JSON，可省去读文件）' },
+        files: { type: 'array', items: { type: 'string' }, description: '多报告趋势：N 份报告路径（或目录，目录按修改时间升序取 *.json）；任一报告不可解析即整体报错，不静默跳过' },
         cwd: { type: 'string', description: '工作目录' },
         format: { type: 'string', enum: ['text', 'json'], description: '返回格式，默认 text' },
       },
@@ -191,6 +277,52 @@ const TOOLS = [
     },
     async handler(args) {
       const cwd = args.cwd || DEFAULT_CWD;
+      const filesList = arrayArg(args.files, 'files');
+      if (filesList.length && (args.file || args.json)) {
+        return fail('files（多报告趋势）与 file/json（单报告）互斥，一次只用一种口径。', { error: 'BAD_ARGS' });
+      }
+      // ---- 多报告趋势：N 份归因 → 通过率曲线 + 签名漂移，趋势表落盘只回摘要 ----
+      if (filesList.length) {
+        const paths = [];
+        for (const p of filesList) {
+          const abs = path.resolve(cwd, p);
+          if (!fs.existsSync(abs)) {
+            return fail(`报告不存在：${abs}`, { error: 'NOT_FOUND', file: abs });
+          }
+          if (fs.statSync(abs).isDirectory()) {
+            const js = fs.readdirSync(abs).filter((f) => f.endsWith('.json')).map((f) => path.join(abs, f));
+            if (!js.length) {
+              return fail(`目录里没有 JSON 报告：${abs}`, { error: 'NOT_FOUND', file: abs });
+            }
+            js.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+            paths.push(...js);
+          } else {
+            paths.push(abs);
+          }
+        }
+        const reports = paths.map((p) => summarizeFile(p));
+        // 任一报告解析失败就整体报错并指名道姓 —— 跳过坏报告再出趋势，
+        // 「这周的失败比上周少」就可能只是「这周少读了一份」。
+        const badRep = reports.find((r) => r.error);
+        if (badRep) return fail(`多报告趋势中止（不静默跳过）：${badRep.source} → ${badRep.error}`, badRep, 'REPORT_ERROR');
+        const trend = summarizeTrend(reports);
+        const dir = path.join(cwd, ARTIFACT_DIRS.reports);
+        fs.mkdirSync(dir, { recursive: true });
+        const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+        const trendFile = path.join(dir, `trend-${uniq}.md`);
+        const trendJsonFile = path.join(dir, `trend-${uniq}.json`);
+        trend.trendFile = trendFile;
+        trend.trendJsonFile = trendJsonFile;
+        // 全量趋势 JSON 落盘（v1.8.11）：CI 对账与 join-back 以落盘为准，structuredContent
+        // 走 slimTrendForContext 有界化 —— 签名爆炸时回灌面有界，与「长产物落盘不灌上下文」同规
+        fs.writeFileSync(trendJsonFile, JSON.stringify(trend), 'utf8');
+        fs.writeFileSync(trendFile, formatTrendText(trend), 'utf8');
+        const slim = slimTrendForContext(trend);
+        const text = args.format === 'json' ? JSON.stringify(slim)
+          : `${trend.headline}\n  报告数 ${trend.runCount}；趋势详情: ${trendFile}`
+            + `\n  全量数据（含 sample 证据文本）: ${trendJsonFile}`;
+        return result(text, slim);
+      }
       let rep;
       if (args.json) rep = summarize(args.json, { file: '(inline)' });
       else if (args.file) {
@@ -201,9 +333,9 @@ const TOOLS = [
         }
         rep = summarizeFile(f);
       } else {
-        return fail('需要 file 或 json 之一。', { error: 'BAD_ARGS' });
+        return fail('需要 file、json 或 files 之一。', { error: 'BAD_ARGS' });
       }
-      if (rep.error) return fail(rep.error, rep);
+      if (rep.error) return fail(rep.error, rep, 'REPORT_ERROR');
       const text = args.format === 'json' ? JSON.stringify(rep, null, 2) : sumText(rep);
       return result(text, rep);
     },
@@ -213,6 +345,7 @@ const TOOLS = [
   {
     name: 'run_verify',
     title: '执行验证（落盘执行）',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       '在指定项目里跑 Playwright 用例。输出重定向到文件而不是管道（沙箱下管道捕获不可用，且长回归日志本来也不该进内存）。'
       + 'execution=false（默认）时只做环境自检与干跑，不真正执行 —— 先确认环境再谈用例。'
@@ -225,9 +358,9 @@ const TOOLS = [
         config: { type: 'string', description: '配置文件路径（相对 cwd）' },
         grep: { type: 'string', description: '只跑标题匹配该正则的用例' },
         project: { type: 'string', description: '只跑指定 project（如 chromium）' },
-        retries: { type: 'number', description: '覆盖重试次数' },
+        retries: { type: 'number', description: '覆盖重试次数（整数，≥0）' },
         env: { type: 'object', description: '额外环境变量，如 {"BASE_URL":"http://localhost:3000"}' },
-        timeoutMs: { type: 'number', description: '整体超时（默认 600000）' },
+        timeoutMs: { type: 'number', description: '整体超时毫秒（默认 600000，整数；0 或缺省=默认）' },
         execution: { type: 'boolean', description: '是否真正执行；默认 false 只干跑自检' },
       },
       required: ['cwd'],
@@ -238,9 +371,10 @@ const TOOLS = [
       // 否则缺 Playwright 的环境会把「参数非法」报成「找不到 Playwright」，
       // 把调用方引向装依赖的错误修复方向 —— 纯净包（不带 node_modules）里这层次序问题只会在这里现形。
       const execution = boolArg(args.execution, 'execution', false);
-      const retries = args.retries === undefined || args.retries === null ? undefined : numArg(args.retries, 'retries', 0);
+      const retries = args.retries === undefined || args.retries === null
+        ? undefined : Math.max(0, intArg(args.retries, 'retries', 0));
       const files = arrayArg(args.files, 'files');
-      const timeoutMs = numArg(args.timeoutMs, 'timeoutMs', 600_000) || 600_000;
+      const timeoutMs = intArg(args.timeoutMs, 'timeoutMs', 600_000) || 600_000;
 
       const cwd = path.resolve(args.cwd);
       if (!fs.existsSync(cwd)) return fail(`目录不存在：${cwd}`, { error: 'NOT_FOUND', cwd });
@@ -288,12 +422,13 @@ const TOOLS = [
       const text = `执行完成：退出码 ${res.code}（${Math.round((res.durationMs || 0) / 1000)}s）\n`
         + `日志：${res.stdoutFile}\n\n--- 输出尾部 ---\n${tail}\n\n`
         + '下一步：用 summarize_report 解析 test-results/report.json 做失败聚类与归因。';
-      return res.code === 0 ? result(text, head) : fail(text, head);
+      return res.code === 0 ? result(text, head) : fail(text, head, 'RUN_FAILED');
     },
   },
   {
     name: 'cli_session',
     title: 'CLI 会话操作（产出落盘）',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       '通过 @playwright/cli 驱动浏览器，**任何产出一律先落盘**：快照→.playwright-artifacts/snapshots（markdown）、'
       + '截图→screenshots（png）、trace→traces、日志→logs。返回值只给路径与摘要，不返回全文 —— '
@@ -312,7 +447,7 @@ const TOOLS = [
         session: { type: 'string', description: '会话名（多流程/多标签隔离），默认 default' },
         headed: { type: 'boolean', description: '调试用有头模式；默认 false（回归无头）' },
         cwd: { type: 'string', description: '工作目录（产物落在这里的 .playwright-artifacts/）' },
-        timeoutMs: { type: 'number', description: '超时（默认 120000）' },
+        timeoutMs: { type: 'number', description: '超时毫秒（默认 120000，整数；0 或缺省=默认）' },
       },
       required: ['subcommand'],
       additionalProperties: false,
@@ -325,7 +460,7 @@ const TOOLS = [
         subcommand: args.subcommand,
         args: args.args || [],
         headed: boolArg(args.headed, 'headed', false),
-        timeoutMs: args.timeoutMs || 120_000,
+        timeoutMs: intArg(args.timeoutMs, 'timeoutMs', 120_000) || 120_000,
       });
       const lines = [
         `[${res.ok ? 'OK' : 'FAIL'}] playwright-cli ${res.subcommand}（session=${res.session}）`,
@@ -335,12 +470,13 @@ const TOOLS = [
         res.stderrTail ? `\n--- stderr 尾部 ---\n${res.stderrTail}` : '',
       ].filter(Boolean);
       const text = lines.join('\n');
-      return res.ok ? result(text, res) : fail(`${text}\n\n原因：${res.reason}${res.message ? `｜${res.message}` : ''}`, res);
+      return res.ok ? result(text, res) : fail(`${text}\n\n原因：${res.reason}${res.message ? `｜${res.message}` : ''}`, res, 'CLI_FAILED');
     },
   },
   {
     name: 'cli_health',
     title: 'CLI 最小闭环验收',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '验收「能开页面、能拿快照、能截图」这条最小闭环。建议当成团队接入 CLI 的第一条验收 —— '
       + '这三步过了，CLI 就能进测试仓库当执行器。失败时明确给出缺什么（CLI 未安装 / 浏览器未安装 / 命令不在白名单）。',
@@ -359,7 +495,7 @@ const TOOLS = [
         res.verdict || res.message,
         ...res.steps.map((s) => `  ${s.ok ? 'PASS' : 'FAIL'} ${s.step}: ${s.summary}`),
       ].join('\n');
-      return res.ok ? result(text, res) : fail(text, res);
+      return res.ok ? result(text, res) : fail(text, res, 'HEALTH_FAILED');
     },
   },
 
@@ -367,11 +503,18 @@ const TOOLS = [
   {
     name: 'explore_page',
     title: '页面探索巡检（死链/坏图/表单盘点）',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     description:
       '打开页面并做确定性巡检：链接、图片、表单盘点 + 死链（HTTP 4xx/5xx）与坏图（加载完成但宽度为 0）判定。'
       + '这是探索性测试的落地 —— 判据是确定的，所以不用 LLM，用 LLM 判反而把确定的事变成概率的事。'
       + '链接探活用 HEAD 抽样（默认 20 条）：HTTP ≥400 记死链进 Fail；网络不可达只警告不进 Fail'
       + '（离线环境外链必然不可达，把环境问题算成页面问题是假警报）。'
+      + '探活有双层预算：单条 probeTimeoutMs（默认 5000）兜慢死主机、整段 probeBudgetMs（默认 20000）'
+      + '兜批量放大；预算耗尽后剩余链接记不可达并在报告标注 partial，绝不静默跳过。'
+      + '表单指纹：报告带 formsHash（整页表单稳定指纹）与逐表单 hash，字段重排不算漂移；'
+      + '传 diffAgainst（上一期 report.factsFile 指向的 facts-*.json）即做两期表单对比'
+      + '（字段新增/删除/必填位变化/表单级增删）进 formsDiff —— 对比不改 verdict（可能是有意改版）；'
+      + 'diffAgainst 不可读时诚实报错，绝不静默当「无对比」。'
       + '只放行 http/https；看起来是生产的主机需要显式 confirmProd=true（独立审批留痕）。',
     inputSchema: {
       type: 'object',
@@ -380,7 +523,10 @@ const TOOLS = [
         cwd: { type: 'string', description: '工作目录（证据落在这里的 .playwright-artifacts/）' },
         session: { type: 'string', description: 'CLI 会话名，默认 explore' },
         checkLinks: { type: 'boolean', description: '是否探活链接，默认 true' },
-        maxLinks: { type: 'number', description: '链接抽样上限，默认 20' },
+        maxLinks: { type: 'number', description: '链接抽样上限（默认 20，硬上限 50，整数）' },
+        probeTimeoutMs: { type: 'number', description: '单条链接探活超时毫秒（默认 5000，范围 500–30000，整数）' },
+        probeBudgetMs: { type: 'number', description: '整个探活阶段的总预算毫秒（默认 20000，范围 2000–120000，整数）；耗尽后剩余链接记不可达并在报告标注 partial' },
+        diffAgainst: { type: 'string', description: '上一期 explore_page 落盘的 facts-*.json 路径（报告 factsFile 字段）：传入即做两期表单对比（字段新增/删除/必填位变化/表单级增删）进 formsDiff；不可读时诚实报错' },
         headed: { type: 'boolean', description: '调试用有头模式；默认 false' },
         confirmProd: { type: 'boolean', description: '生产地址的独立审批留痕：显式 true 才执行生产主机' },
       },
@@ -391,6 +537,12 @@ const TOOLS = [
       const cwd = path.resolve(args.cwd || DEFAULT_CWD);
       const gate = assertTargetAllowed(args.url, { confirmProd: boolArg(args.confirmProd, 'confirmProd', false) });
       if (!gate.ok) return fail(`[拒绝] ${gate.why}`, { error: 'TARGET_REFUSED', why: gate.why });
+
+      // 整数参数在开浏览器前拦下（与 collect_table 的 keyIndex/maxPages 同一教训）：
+      // maxLinks=2.5 会被 Math.min 静默当 2 或 3 用，采样口径含糊；预算参数同理。
+      const maxLinks = Math.min(50, Math.max(1, intArg(args.maxLinks, 'maxLinks', 20)));
+      const probeTimeoutMs = Math.min(30000, Math.max(500, intArg(args.probeTimeoutMs, 'probeTimeoutMs', 5000)));
+      const probeBudgetMs = Math.min(120000, Math.max(2000, intArg(args.probeBudgetMs, 'probeBudgetMs', 20000)));
 
       const session = args.session || 'explore';
       const open = await runCli({ cwd, session, subcommand: 'open', args: [args.url], headed: boolArg(args.headed, 'headed', false) });
@@ -419,9 +571,9 @@ const TOOLS = [
       let classify = { probe: [], skipped: [], total: (facts.links || []).length };
       if (boolArg(args.checkLinks, 'checkLinks', true)) {
         classify = classifyLinks(facts.links || [], {
-          max: Math.min(50, Math.max(1, numArg(args.maxLinks, 'maxLinks', 20))),
+          max: maxLinks,
         });
-        linkResults = await probeLinks(classify.probe);
+        linkResults = await probeLinks(classify.probe, { timeoutMs: probeTimeoutMs, budgetMs: probeBudgetMs });
       }
 
       const consoleRes = await runCli({ cwd, session, subcommand: 'console', args: [] });
@@ -432,12 +584,43 @@ const TOOLS = [
       const consoleErrors = parseConsoleErrors(consoleText);
 
       const judged = judgeExplore({ images, linkResults, consoleErrors });
+      const budgetHit = linkResults.filter((r) => r.budgetExhausted).length;
+
+      // 表单指纹（v1.8.12）：hash 从**全量** facts.forms 算（报告里 inputs 截 10 只为省回灌，
+      // 指纹不吃这个截断 —— 吃了会把第 11+ 字段的变更静默漏掉）。
+      const formsFull = facts.forms || [];
+      const fsum = formsSummary(formsFull);
+
+      // 两期表单对比（可选）：diffAgainst 指上一期 facts-*.json（报告 factsFile 字段）。
+      // 读不出 = 诚实报错指名道姓 —— 静默跳过会把「对比过」变「没对比」。
+      let formsDiff = null;
+      if (args.diffAgainst) {
+        const prevFile = path.resolve(cwd, String(args.diffAgainst));
+        const prevFacts = fs.existsSync(prevFile) ? readFacts(prevFile) : null;
+        if (!prevFacts) {
+          return fail(
+            `diffAgainst 不可读或不是页面事实文件：${prevFile}。两期对比需要上一期 explore_page`
+            + ' 落盘的 facts-*.json（上一期报告的 factsFile 字段）。',
+            { error: 'DIFF_TARGET_INVALID', file: prevFile },
+          );
+        }
+        formsDiff = diffForms(prevFacts.forms || [], formsFull);
+      }
+
       const report = {
         url: facts.url || args.url,
         title: facts.title || '',
         lang: facts.lang || '',
-        forms: (facts.forms || []).map((f) => ({ action: f.action, method: f.method, inputs: (f.inputs || []).slice(0, 10) })),
-        links: { total: classify.total, probed: classify.probe.length, skipped: classify.skipped.length },
+        factsFile: fFile,
+        formsHash: fsum.formsHash,
+        forms: formsFull.map((f) => ({ action: f.action, method: f.method, hash: formHash(f), inputs: (f.inputs || []).slice(0, 10) })),
+        ...(formsDiff ? { formsDiff } : {}),
+        links: {
+          total: classify.total,
+          probed: classify.probe.length,
+          skipped: classify.skipped.length,
+          ...(budgetHit ? { partial: true, partialCount: budgetHit, partialReason: `探活总预算 ${probeBudgetMs}ms 耗尽，${budgetHit} 条未发起探测（已记不可达，不静默跳过）` } : {}),
+        },
         images,
         linkResults,
         consoleErrors,
@@ -450,9 +633,20 @@ const TOOLS = [
 
       const lines = [
         `巡检完成：${report.verdict}　${report.url}${report.title ? `（${report.title}）` : ''}`,
-        `  链接: 总数 ${classify.total} / 探活 ${classify.probe.length} / 跳过 ${classify.skipped.length}`,
+        `  链接: 总数 ${classify.total} / 探活 ${classify.probe.length} / 跳过 ${classify.skipped.length}`
+        + (budgetHit ? ` / 预算耗尽未探测 ${budgetHit}（partial）` : ''),
+        ...(budgetHit ? [`  探活预算: ${probeBudgetMs}ms 耗尽 —— 这是 partial 结果，不是「探过没问题」；可调大 probeBudgetMs 复跑`] : []),
         `  图片: 总数 ${images.total} / 坏图 ${images.broken.length}`,
-        `  表单: ${report.forms.length} 个`,
+        `  表单: ${report.forms.length} 个（formsHash ${report.formsHash}）`,
+        ...(formsDiff ? [
+          `  表单对比（vs 上一期）: ${formsDiff.changed ? '有变更' : '无变更'}`
+          + ` 字段 +${formsDiff.fieldsAddedTotal}/-${formsDiff.fieldsRemovedTotal}`
+          + ` 必填变 ${formsDiff.requiredChangedTotal} 表单 +${formsDiff.formsAddedTotal}/-${formsDiff.formsRemovedTotal}`
+          + '（对比是信息不是质检，不改 verdict；明细在报告 formsDiff）',
+          ...formsDiff.fieldsAdded.slice(0, 4).map((f) => `    + ${f.name}(${f.type})${f.required ? ' [required]' : ''} @ ${f.form}`),
+          ...formsDiff.fieldsRemoved.slice(0, 4).map((f) => `    - ${f.name}(${f.type}) @ ${f.form}`),
+          ...formsDiff.requiredChanged.slice(0, 4).map((f) => `    ~ ${f.name} required ${f.from} → ${f.to} @ ${f.form}`),
+        ] : []),
         `  报告: ${reportFile}`,
         '',
         judged.issues.length ? `问题（${judged.issues.length}）：` : '未发现死链与坏图。',
@@ -461,12 +655,247 @@ const TOOLS = [
         ...judged.warnings.slice(0, 10).map((w) => `  · ${w.kind} ${w.href || w.detail || ''}`.trim()),
       ].filter(Boolean).join('\n');
 
-      return judged.verdict === 'Pass' ? result(lines, report) : fail(`${lines}\n\n[门禁] 存在死链或坏图，巡检不通过。`, report);
+      return judged.verdict === 'Pass' ? result(lines, report) : fail(`${lines}\n\n[门禁] 存在死链或坏图，巡检不通过。`, report, 'EXPLORE_FAIL');
+    },
+  },
+  {
+    name: 'collect_table',
+    title: '翻页表格采集与两期对比',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description:
+      '打开页面并逐页采集表格行（编号/名称/标签/备注这类档案数据），产出 rows.json + 带日期的 CSV（Excel 直接打开）；'
+      + '传 diffAgainst 指向上一期 rows.json 时，额外产出两期对比（新增/删除/变化/未变）—— '
+      + '「每周跑一遍出对比报告」的确定性落地。全程确定性取数，不用 LLM。'
+      + '翻页支持两种真实玩法（文章二的实测经验）：pageInput=在页码框填页码回车（最快）；next=按可见名点「下一页」。'
+      + '停止三选一：到 maxPages 上限 / 一页零行 / 整页都是见过的行（点下一页没推进，防死循环）。'
+      + '长采集中断可断点续采（resumeFrom 指上次 rows.json）：带入已采行、从断点页续扫，'
+      + '指纹（url/keyIndex）不一致拒绝续采（COLLECT_STALE），绝不爬错页污染基准。'
+      + '行数据只落盘不回灌（返回计数与路径）；只放行 http/https；生产主机需显式 confirmProd=true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '起始页地址（http/https）' },
+        cwd: { type: 'string', description: '工作目录（产物落在这里的 .playwright-artifacts/）' },
+        session: { type: 'string', description: 'CLI 会话名，默认 collect' },
+        selector: { type: 'string', description: '表格 CSS 选择器；缺省找 table/[role=table]/[role=grid]' },
+        pagination: {
+          type: 'object',
+          description: '翻页方式：{mode:"none"|"next"|"pageInput", needle:"控件可见名"}；缺省 none（单页）',
+          properties: {
+            mode: { type: 'string', enum: ['none', 'next', 'pageInput'] },
+            needle: { type: 'string', description: '控件可见名（next 默认「下一页」，pageInput 默认「页码」）' },
+          },
+          required: ['mode'],
+          additionalProperties: false,
+        },
+        maxPages: { type: 'number', description: '翻页上限（默认 10，整数，硬上限 100）' },
+        keyIndex: { type: 'number', description: '行唯一键列下标（默认 0，整数，一般是业务编号列）' },
+        resumeFrom: { type: 'string', description: '断点续采：上次中断采集的 rows.json 路径（带入已采行、从断点页续采）；指纹（url/keyIndex）不一致拒绝续采（COLLECT_STALE）' },
+        diffAgainst: { type: 'string', description: '上一期 rows.json 的路径；给了就出两期对比' },
+        headed: { type: 'boolean', description: '调试用有头模式；默认 false' },
+        confirmProd: { type: 'boolean', description: '生产地址的独立审批留痕：显式 true 才执行生产主机' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const cwd = path.resolve(args.cwd || DEFAULT_CWD);
+      const gate = assertTargetAllowed(args.url, { confirmProd: boolArg(args.confirmProd, 'confirmProd', false) });
+      if (!gate.ok) return fail(`[拒绝] ${gate.why}`, { error: 'TARGET_REFUSED', why: gate.why });
+
+      const session = args.session || 'collect';
+      const headed = boolArg(args.headed, 'headed', false);
+      const mode = String(args.pagination?.mode || 'none');
+      if (!['none', 'next', 'pageInput'].includes(mode)) {
+        throw new TypeError(`参数 pagination.mode 应为 none|next|pageInput，收到 ${mode}`);
+      }
+      const maxPages = Math.min(MAX_PAGES_HARD, Math.max(1, intArg(args.maxPages, 'maxPages', 10)));
+      const keyIndex = Math.max(0, intArg(args.keyIndex, 'keyIndex', 0));
+      const needle = String(args.pagination?.needle || (mode === 'pageInput' ? '页码' : '下一页'));
+
+      // 断点续采：先验基准再开浏览器（指纹不符就拒绝，不开无谓的会话）
+      let resume = null;
+      if (args.resumeFrom) {
+        if (mode === 'none') {
+          return fail(
+            '单页采集没有断点可续：resumeFrom 与 pagination.mode=none 不兼容（去掉 resumeFrom，或改翻页模式）',
+            { error: 'COLLECT_RESUME_NOT_APPLICABLE' }, 'COLLECT_RESUME_NOT_APPLICABLE',
+          );
+        }
+        let prev = null;
+        try { prev = parseTableFile(fs.readFileSync(path.resolve(args.resumeFrom), 'utf8')); } catch { /* 下面统一报 */ }
+        const plan = planResume(prev, { url: args.url, keyIndex });
+        if (!plan.ok) return fail(`[拒绝续采] ${plan.detail}`, { error: plan.why, why: plan.detail }, plan.why);
+        resume = plan;
+      }
+
+      const open = await runCli({ cwd, session, subcommand: 'open', args: [args.url], headed });
+      if (!open.ok) {
+        return fail(`打开页面失败：${open.summary}\n${open.stderrTail || ''}`, { error: 'OPEN_FAILED', detail: open.summary });
+      }
+
+      const dir = collectDir(cwd, session);
+      const acc = { map: new Map() };
+      let addedThisRun = 0;
+      // 续采种子：基准行先占位（首见胜出，与正常采集同一归并语义，新页重行不覆盖）
+      if (resume) mergeRows(acc, resume.seedRows, keyIndex);
+      const pages = [];
+      let stopReason = 'max-pages';
+      let lastTable = { headers: [], tableFound: false };
+
+      // 续采导航：先把会话带到断点页再开扫；到不了就如实失败（绝不把第 1 页当成断点页）
+      if (resume && resume.startPage > 1) {
+        let nav;
+        if (mode === 'pageInput') {
+          const f = await findRefByNeedle({ cwd, session, needle, act: 'fill', headed });
+          nav = f.ok
+            ? await runCli({ cwd, session, subcommand: 'fill', args: [f.ref, String(resume.startPage)], headed })
+            : { ok: false, summary: f.detail };
+          if (nav.ok) await runCli({ cwd, session, subcommand: 'press', args: ['Enter'], headed });
+        } else {
+          nav = { ok: true, summary: '' };
+          for (let i = 1; i < resume.startPage && nav.ok; i++) {
+            const f = await findRefByNeedle({ cwd, session, needle, act: 'click', headed });
+            nav = f.ok
+              ? await runCli({ cwd, session, subcommand: 'click', args: [f.ref], headed })
+              : { ok: false, summary: f.detail };
+          }
+        }
+        if (!nav.ok) {
+          return fail(
+            `续采导航失败：到不了第 ${resume.startPage} 页（${nav.summary || '翻页控件未找到'}）`,
+            { error: 'COLLECT_RESUME_NAV_FAILED', resumedFrom: args.resumeFrom },
+            'COLLECT_RESUME_NAV_FAILED',
+          );
+        }
+      }
+
+      let pageNo = resume ? resume.startPage : 1;
+      for (let scanned = 0; scanned < maxPages; scanned++, pageNo++) {
+        const evFile = path.join(dir, `page-${pageNo}-facts.json`);
+        await runCli({
+          cwd, session, subcommand: 'eval', args: [buildTableEvalFn({ selector: args.selector || '' }), '--filename', evFile],
+          headed,
+        });
+        let table = null;
+        try { table = parseTableFile(fs.readFileSync(evFile, 'utf8')); } catch { /* 下面统一报 */ }
+        if (!table) {
+          stopReason = 'eval-failed';
+          pages.push({ page: pageNo, rowCount: 0, added: 0, note: '本页取数未产出可解析结果' });
+          break;
+        }
+        lastTable = table;
+        const added = mergeRows(acc, table.rows, keyIndex);
+        addedThisRun += added;
+        pages.push({ page: pageNo, rowCount: (table.rows || []).length, added });
+        if (!(table.rows || []).length) { stopReason = 'empty'; break; }
+        if (added === 0) { stopReason = 'no-new-rows'; break; }
+        if (mode === 'none') { stopReason = 'single-page'; break; }
+
+        // 翻页：找控件 ref → 动作。找不到就停（如实报，不猜相近控件）
+        const found = await findRefByNeedle({ cwd, session, needle, act: mode === 'pageInput' ? 'fill' : 'click', headed });
+        if (!found.ok) {
+          stopReason = 'no-paging-control';
+          pages[pages.length - 1].note = found.detail;
+          break;
+        }
+        const acted = mode === 'pageInput'
+          ? await runCli({ cwd, session, subcommand: 'fill', args: [found.ref, String(pageNo + 1)], headed })
+          : await runCli({ cwd, session, subcommand: 'click', args: [found.ref], headed });
+        if (!acted.ok) {
+          // 末页点不动下一页是常态（按钮禁用/不存在）——如实记原因就停
+          stopReason = 'paging-action-failed';
+          pages[pages.length - 1].note = acted.summary;
+          break;
+        }
+        if (mode === 'pageInput') {
+          await runCli({ cwd, session, subcommand: 'press', args: ['Enter'], headed });
+        }
+      }
+
+      const rows = [...acc.map.values()];
+      const judged = judgeCollect({ rowCount: rows.length, stopReason });
+
+      // 两期对比：基准读不出就明确失败（绝不静默跳过对比目标）
+      let diff = null;
+      let diffProblem = null;
+      if (args.diffAgainst) {
+        let prev = null;
+        try { prev = parseTableFile(fs.readFileSync(path.resolve(args.diffAgainst), 'utf8')); } catch { /* 下面报 */ }
+        if (!prev) {
+          diffProblem = `对比基准不可解析：${args.diffAgainst}（采集结果已落盘，但两期对比没做成）`;
+        } else {
+          diff = diffRows(prev.rows || [], rows, keyIndex);
+          const diffMd = [
+            `# 两期对比 ${dateStamp()}`,
+            '',
+            `基准：${args.diffAgainst}（${diff.totalPrev} 行）→ 本期 ${diff.totalCurr} 行`,
+            `新增 ${diff.added.length} / 删除 ${diff.removed.length} / 变化 ${diff.changed.length} / 未变 ${diff.unchanged}`,
+            '',
+            ...diff.changed.slice(0, 50).map((c) => `- 变化 [${c.key}]：${c.before.join(' | ')} → ${c.after.join(' | ')}`),
+            ...diff.added.slice(0, 50).map((r) => `- 新增：${r.join(' | ')}`),
+            ...diff.removed.slice(0, 50).map((r) => `- 删除：${r.join(' | ')}`),
+          ].join('\n');
+          fs.writeFileSync(path.join(dir, 'diff.md'), diffMd, 'utf8');
+        }
+      }
+
+      // 产物：rows.json（对比基准/续采基准）/ rows-<date>.csv（Excel 双击开）/ report.json
+      const rowsFile = path.join(dir, 'rows.json');
+      fs.writeFileSync(rowsFile, JSON.stringify({
+        url: args.url, headers: lastTable.headers || [], rows, rowCount: rows.length,
+        // 续采时把基准页账合并进来：下次再续采要靠完整页账定位断点页
+        pages: [...(resume ? resume.seedPages : []), ...pages],
+        stopReason, keyIndex,
+        ...(resume ? { resumedFrom: args.resumeFrom, addedThisRun } : {}),
+        collectedAt: new Date().toISOString(),
+      }, null, 2), 'utf8');
+      const csvFile = path.join(dir, `rows-${dateStamp()}.csv`);
+      fs.writeFileSync(csvFile, formatCsv(lastTable.headers || [], rows), 'utf8');
+      // 累计页账：pagesScanned 只算本轮（续采从断点页起扫，读到 2 会误当「总共 2 页」）；
+      // pagesTotal 含基准页，与 rows.json 的 pages 合并口径一致 —— 两个数并存，语义各自明确。
+      const pagesTotal = (resume ? resume.seedPages.length : 0) + pages.length;
+      const report = {
+        url: args.url,
+        verdict: judged.verdict,
+        rowCount: rows.length,
+        pagesScanned: pages.length,
+        pagesTotal,
+        stopReason,
+        ...(resume ? { resumedFrom: args.resumeFrom, startPage: resume.startPage, addedThisRun } : {}),
+        diff: diff ? {
+          totalPrev: diff.totalPrev, totalCurr: diff.totalCurr,
+          added: diff.added.length, removed: diff.removed.length,
+          changed: diff.changed.length, unchanged: diff.unchanged,
+        } : null,
+        problems: diffProblem ? [diffProblem] : [],
+        files: { rows: rowsFile, csv: csvFile, diff: diff ? path.join(dir, 'diff.md') : null },
+        generatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
+
+      const lines = [
+        `采集完成：${judged.verdict}　${args.url}`,
+        `  行数 ${rows.length}（翻页 ${pages.length} 页${resume ? `，累计 ${pagesTotal} 页` : ''}，停止原因 ${stopReason}）`,
+        resume ? `  续采：从第 ${resume.startPage} 页续采（基准带入 ${resume.seedRows.length} 行，本次新增 ${addedThisRun} 行）` : '',
+        diff ? `  对比：新增 ${diff.added.length} / 删除 ${diff.removed.length} / 变化 ${diff.changed.length} / 未变 ${diff.unchanged}（基准 ${diff.totalPrev} 行）` : '',
+        diffProblem ? `  ⚠ ${diffProblem}` : '',
+        `  产物：${rowsFile}`,
+        `  CSV（Excel 直接打开）：${csvFile}`,
+        judged.issues.length ? `\n问题（${judged.issues.length}）：` : '',
+        ...judged.issues.map((i) => `  · ${i.kind} ${i.detail || ''}`.trim()),
+      ].filter(Boolean).join('\n');
+
+      if (diffProblem) return fail(lines, { ...report, error: 'DIFF_NOT_FOUND' }, 'DIFF_NOT_FOUND');
+      return judged.verdict === 'Pass'
+        ? result(lines, report)
+        : fail(`${lines}\n\n[门禁] 采集不到任何行，目标未达成。`, { ...report, error: 'COLLECT_EMPTY' }, 'COLLECT_EMPTY');
     },
   },
   {
     name: 'nl_test_goal',
     title: '自然语言测试目标（声明式测试）',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       '把「说目标，不说步骤」的测试目标转成检查清单并执行，输出 JSON Pass/Fail 报告（CI 挂门禁看 verdict 字段）。'
       + '分工是刻意的：LLM 只做规划（默认本地 Ollama，页面内容不出机；云端 DeepSeek 须显式 PVMCP_LLM=deepseek），'
@@ -474,7 +903,10 @@ const TOOLS = [
       + '计划动作白名单：goto/click/fill/press/expect_text/expect_visible/screenshot；'
       + '白名单外的动作拒绝并列出，绝不静默丢弃。LLM 不可用时降级为确定性骨架并如实标注 source: fallback。'
       + '守门：危险目标（真实资金/破坏性数据/生产操作/对外发送）在打开浏览器之前就被拒绝；'
-      + '生产主机需要显式 confirmProd=true。断言只判定成立与否，绝不放宽。',
+      + '生产主机需要显式 confirmProd=true。断言只判定成立与否，绝不放宽。'
+      + '定位失败有两层自愈（快照按名 → LLM 从元素清单挑 ref，断言绝不自愈），'
+      + '自愈 LLM 调用受整次运行预算约束（healLlmBudget，默认 2，0=只用确定性自愈），用量在报告里可审计。'
+      + '同一 goal/url/模型指纹的重复目标会命中进程内计划缓存（只省规划，执行与断言仍全量真跑；报告 planCache 字段可审计）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -483,7 +915,8 @@ const TOOLS = [
         cwd: { type: 'string', description: '工作目录（证据落在这里的 .playwright-artifacts/）' },
         session: { type: 'string', description: 'CLI 会话名，默认 nl-goal' },
         llm: { type: 'string', enum: ['auto', 'off'], description: 'auto=按环境配置走 LLM 规划（默认）；off=强制确定性骨架' },
-        maxSteps: { type: 'number', description: '计划步数上限（默认 12，硬上限 20）' },
+        maxSteps: { type: 'number', description: '计划步数上限（默认 12，硬上限 20，整数）' },
+        healLlmBudget: { type: 'number', description: '自愈第二层 LLM 调用预算，整次运行共享（默认 2，硬上限 10；0=只用确定性快照自愈，不问 LLM）' },
         headed: { type: 'boolean', description: '调试用有头模式；默认 false' },
         confirmProd: { type: 'boolean', description: '生产地址的独立审批留痕：显式 true 才执行生产主机' },
       },
@@ -510,30 +943,50 @@ const TOOLS = [
       }
 
       const session = args.session || 'nl-goal';
-      const cap = Math.min(PLAN_MAX_STEPS, Math.max(1, numArg(args.maxSteps, 'maxSteps', 12)));
+      const cap = Math.min(PLAN_MAX_STEPS, Math.max(1, intArg(args.maxSteps, 'maxSteps', 12)));
+      // 自愈 LLM 预算：0..10（0=二级自愈关闭）。3.9→3 截断是设计行为（有钉）：预算口径是
+      // 「最多调 N 次」，截断不改变意图 —— 与 count/超时类参数的 intArg 拒绝（取整即失效）不同类。
+      const healBudget = Math.min(HEAL_LLM_BUDGET_MAX,
+        Math.max(0, Math.trunc(numArg(args.healLlmBudget, 'healLlmBudget', DEFAULT_HEAL_LLM_BUDGET))));
       const forceFallback = args.llm === 'off';
 
-      // 规划：LLM（auto）或确定性骨架（off / LLM 不可用）
+      // 规划：LLM（auto，带计划缓存）或确定性骨架（off / LLM 不可用）。
+      // 缓存三边界：指纹（goal/url/provider/model）任一变即失效；命中只省规划，
+      // 执行与断言仍全量真跑；只缓存成功的 LLM 计划（fallback 骨架与不合法计划不缓存 ——
+      // LLM 可能已经恢复，下一次调用必须重试规划，而不是吃到降级产物）。
       let plan;
       let source = 'fallback';
       let planNote = '';
+      let planCacheState = 'miss';
       if (!forceFallback) {
         const cfg = resolveLlm();
-        const msgs = buildPlanMessages({ goal, url: args.url, facts: null });
-        const llmRes = await llmChatJson(msgs);
-        if (llmRes.ok) {
-          const norm = normalizePlan(llmRes.json, { goal, url: args.url });
-          if (norm.ok) {
-            plan = { steps: norm.steps.slice(0, cap), problems: [] };
-            source = 'llm';
-            planNote = `LLM 规划（${llmRes.provider}/${llmRes.model}，${llmRes.latencyMs}ms）`;
-          } else {
-            planNote = `LLM 规划不合法（${norm.problems.join('；')}），降级确定性骨架`;
-          }
+        const fp = planFingerprint({ goal, url: args.url, provider: cfg.kind, model: cfg.model || '' });
+        const cached = PLAN_CACHE.get(fp);
+        if (cached) {
+          plan = { steps: cached.steps.slice(0, cap), problems: [] };
+          source = 'llm';
+          planCacheState = 'hit';
+          planNote = `LLM 规划缓存命中（${cached.provider}/${cached.model} 的原计划复用，ageMs=${cached.ageMs}；`
+            + '指纹 goal/url/provider/model 一致；执行与断言仍全量真跑）';
         } else {
-          planNote = `LLM 不可用（${llmRes.why}），降级确定性骨架`;
+          const msgs = buildPlanMessages({ goal, url: args.url, facts: null });
+          const llmRes = await llmChatJson(msgs);
+          if (llmRes.ok) {
+            const norm = normalizePlan(llmRes.json, { goal, url: args.url });
+            if (norm.ok) {
+              plan = { steps: norm.steps.slice(0, cap), problems: [] };
+              source = 'llm';
+              PLAN_CACHE.set(fp, { steps: norm.steps, provider: llmRes.provider, model: llmRes.model });
+              planNote = `LLM 规划（${llmRes.provider}/${llmRes.model}，${llmRes.latencyMs}ms）`;
+            } else {
+              planNote = `LLM 规划不合法（${norm.problems.join('；')}），降级确定性骨架`;
+            }
+          } else {
+            planNote = `LLM 不可用（${llmRes.why}），降级确定性骨架`;
+          }
         }
       } else {
+        planCacheState = 'skip';
         planNote = '调用方指定 llm=off，用确定性骨架';
       }
       if (!plan) {
@@ -542,11 +995,15 @@ const TOOLS = [
         source = 'fallback';
       }
 
-      const { steps: stepResults, stopped, reason } = await executePlan({ steps: plan.steps, cwd, session, headed: boolArg(args.headed, 'headed', false) });
+      const { steps: stepResults, stopped, reason, healLlm } = await executePlan({
+        steps: plan.steps, cwd, session,
+        headed: boolArg(args.headed, 'headed', false),
+        healLlmBudget: healBudget,
+      });
       const report = buildReport({
         goal, url: args.url, source, plan, stepResults,
         problems: [...(plan.problems || []), ...(stopped ? [`执行在失败步骤后停止：${reason}`] : [])],
-        startedAt,
+        startedAt, healLlm, planCache: planCacheState,
       });
       report.planNote = planNote;
       const reportFile = writeReport(cwd, report, 'nl');
@@ -560,6 +1017,7 @@ const TOOLS = [
         ...stepResults.map((s) => `  ${s.ok ? 'PASS' : 'FAIL'} ${s.act}${s.target ? ` ${s.target}` : ''}${s.value ? ` = ${s.value}` : ''}`
           + `　${s.detail || ''}${s.evidence ? `　证据: ${s.evidence}` : ''}`),
         plan.problems?.length ? `\n计划提示：\n${plan.problems.map((p) => `  · ${p}`).join('\n')}` : '',
+        report.healLlmUsed > 0 ? `\n自愈 LLM 调用：${report.healLlmUsed}/${report.healLlmBudget}（预算内；用量入报告字段 healLlmUsed）` : '',
         `\nJSON 报告（CI 读 verdict 字段）：${reportFile}`,
         verdictOf(stepResults) === 'Pass'
           ? ''
@@ -568,7 +1026,7 @@ const TOOLS = [
 
       return report.verdict === 'Pass'
         ? result(lines, { ...report, reportFile })
-        : fail(lines, { ...report, reportFile });
+        : fail(lines, { ...report, reportFile }, 'GOAL_FAIL');
     },
   },
 
@@ -576,6 +1034,7 @@ const TOOLS = [
   {
     name: 'generate_scripts',
     title: '生成 PO 分层脚本',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description:
       '把结构化的原子步骤翻译成 Playwright 脚本，页面层（pages/）与用例层（tests/）分开写。'
       + '这不是「让模型自由写脚本」，而是让它填空：选择器策略被锁死（只允许 role/label/testid/text/placeholder/selector，'
@@ -655,7 +1114,7 @@ const TOOLS = [
       ].join('\n');
       const payload = { ...gen, write: writeInfo };
       // 门禁不过 → 以 isError 表达，避免调用方误以为可以合入
-      if (!gen.lint.passed) return fail(text, payload);
+      if (!gen.lint.passed) return fail(text, payload, 'GEN_GATE');
       return result(text, payload);
     },
   },
@@ -664,6 +1123,7 @@ const TOOLS = [
   {
     name: 'check_standards',
     title: '团队测试规范校验',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '校验项目 AGENTS.md / CLAUDE.md 是否覆盖四条「无论做什么任务都要遵守」的测试规范：'
       + 'STD001 证据落盘到约定目录、STD002 回归默认走 CLI + Skill（MCP 只留做探索）、'
@@ -692,6 +1152,7 @@ const TOOLS = [
   {
     name: 'orchestrate_excel',
     title: 'Excel 用例编排执行',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       '把手工用例表（.xlsx/.xlsm/.csv）编排成可执行回归：读表 → 自然语言步骤映射成原子步骤 → '
       + '生成 PO 分层脚本（带生成门禁）→ 可选执行 → 输出结果。'
@@ -716,7 +1177,7 @@ const TOOLS = [
       const cwd = args.cwd || DEFAULT_CWD;
       if (boolArg(args.readOnly, 'readOnly', false)) {
         const r = await readCases(path.resolve(cwd, args.input), { cwd });
-        if (!r.ok) return fail(r.message || '读取失败', r);
+        if (!r.ok) return fail(r.message || '读取失败', r, 'READ_FAILED');
         const { caseToSteps } = await import('./lib/orchestrate.js');
         const lines = [`用例表：${r.file}（sheet=${r.sheet}，${r.caseCount} 条）`, ''];
         for (const c of r.cases) {
@@ -745,12 +1206,13 @@ const TOOLS = [
         rep.unmapped?.length ? `\n无法映射的步骤（${rep.unmapped.length} 条，未丢弃）：\n${rep.unmapped.map((u) => `  [第 ${u.row} 行] ${u.title}: ${u.steps.join(' / ')}`).join('\n')}` : '',
         rep.generatedFiles?.length ? `\n生成文件：${rep.generatedFiles.join(', ')}` : '',
       ].filter(Boolean).join('\n');
-      return rep.ok ? result(text, rep) : fail(text, rep);
+      return rep.ok ? result(text, rep) : fail(text, rep, 'ORCH_FAILED');
     },
   },
   {
     name: 'explain_rules',
     title: '规则表自省',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '列出 lint / config / 归因的完整规则表，含每条规则的级别、判据说明与修法。'
       + '用于回答「这条为什么报」「怎么关掉某条规则」。也可用来确认工具版本里的规则清单。',
@@ -800,6 +1262,7 @@ const TOOLS = [
   {
     name: 'selfcheck',
     title: '服务自检',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       '服务级自检：等长脱敏不变量、规则表完整性、运行器与 CLI 可用性、Python（Excel 编排用）可用性。'
       + '部署后先跑这个，比逐个人工试探快。任何一项失败都会明确说明缺什么。',
@@ -836,7 +1299,7 @@ const TOOLS = [
         '',
         ok ? '必需项全部通过。' : '有关键项失败，请按上面的说明补齐。',
       ].join('\n');
-      return ok ? result(text, { checks, version: VERSION, protocolVersion: LATEST_PROTOCOL_VERSION }) : fail(text, { checks });
+      return ok ? result(text, { checks, version: VERSION, protocolVersion: LATEST_PROTOCOL_VERSION }) : fail(text, { checks }, 'SELFCHECK_FAIL');
     },
   },
 ];
@@ -873,8 +1336,8 @@ async function handleMessage(msg) {
     switch (method) {
       case 'initialize': {
         const protocolVersion = negotiateVersion(params?.protocolVersion);
-        log(`initialize client=${params?.clientInfo?.name || '?'}@${params?.clientInfo?.version || '?'} `
-          + `requested=${params?.protocolVersion} → ${protocolVersion}`);
+        log(`initialize client=${logToken(params?.clientInfo?.name || '?')}@${logToken(params?.clientInfo?.version || '?')} `
+          + `requested=${logToken(params?.protocolVersion)} → ${protocolVersion}`);
         if (isNotification) return null;
         return makeResponse(id, {
           result: {
@@ -901,7 +1364,7 @@ async function handleMessage(msg) {
         return null;   // 通知不需要响应
 
       case 'ping':
-        log(`ping id=${id === undefined ? '(notification)' : id}`);
+        log(`ping id=${logToken(id === undefined ? '(notification)' : id)}`);
         return isNotification ? null : makeResponse(id, { result: {} });
 
       case 'tools/list':
@@ -912,6 +1375,9 @@ async function handleMessage(msg) {
               title: t.title,
               description: t.description,
               inputSchema: t.inputSchema,
+              // annotations 是给客户端的机器可读副作用声明（自动放行/要求确认的依据）。
+              // 接线在这里：只写在 TOOLS 里不发出去，等于没声明。
+              ...(t.annotations ? { annotations: t.annotations } : {}),
             })),
           },
         });
@@ -920,20 +1386,37 @@ async function handleMessage(msg) {
         const name = params?.name;
         const tool = TOOL_MAP.get(name);
         if (!name) {
+          // 协议级拒绝也记账：调用量/成功率不能把「被拒的请求」漏掉
+          log('tools/call name=- ms=0 outcome=rejected code=-32602');
           return isNotification ? null : makeError(id, -32602, '缺少参数 name（要调用的工具名）', { available: [...TOOL_MAP.keys()] });
         }
         if (!tool) {
           // 未知工具按协议返回错误（-32602 无效参数），而不是静默成功
+          log(`tools/call name=${logToken(name)} ms=0 outcome=rejected code=-32602`);
           return isNotification ? null : makeError(id, -32602, `未知工具：${name}`, { available: [...TOOL_MAP.keys()] });
         }
         const started = Date.now();
         try {
           const out = await tool.handler(params?.arguments || {});
-          log(`tools/call ${name} ${Date.now() - started}ms ${out.isError ? 'ERROR' : 'ok'}`);
+          // 一行式观测记录：name/ms/outcome/code 四字段定长在前，离线可直接聚合
+          // 调用量、成功率、延迟分布（P95/P99 由 ms 算）、错误分布（按 code 聚）。
+          // code= 取语义短码（fail() 保证 errorCode 在）；绝不落字面 'isError' 或长句，
+          // 否则 log_summary 的错误分布全是噪声键。漏配兜底 'UNCLASSIFIED' 自曝。
+          const errStruct = out.structuredContent || {};
+          const code = out.isError
+            ? logToken([errStruct.errorCode, errStruct.error].find((v) => typeof v === 'string' && SHORT_CODE.test(v)) || 'UNCLASSIFIED')
+            : '-';
+          // 计划缓存观测（v1.8.10）：只给 nl_test_goal 落 cache= 字段，值取报告 planCache
+          // 单一源（PLAN_CACHE_STATES 白名单）。其余工具与无报告的错误路径不落字段 ——
+          // 「字段可选」是解析侧口径的一部分：缺字段不是异常，不是数据。
+          const cacheField = name === 'nl_test_goal' && PLAN_CACHE_STATES.includes(errStruct.planCache)
+            ? ` cache=${logToken(errStruct.planCache)}`
+            : '';
+          log(`tools/call name=${logToken(name)} ms=${Date.now() - started} outcome=${out.isError ? 'error' : 'ok'} code=${code}${cacheField}`);
           return isNotification ? null : makeResponse(id, { result: out });
         } catch (e) {
           // 工具内部异常：转成 isError 结果，让调用方看到真实原因
-          log(`tools/call ${name} threw: ${e.stack || e.message}`);
+          log(`tools/call name=${logToken(name)} ms=${Date.now() - started} outcome=error code=TOOL_EXCEPTION msg=${logText(e.message)}`);
           if (isNotification) return null;
           return makeResponse(id, {
             result: {
@@ -954,7 +1437,7 @@ async function handleMessage(msg) {
         return isNotification ? null : makeError(id, -32601, `不支持的方法：${method}`);
     }
   } catch (e) {
-    log(`handler error for ${method}: ${e.stack || e.message}`);
+    log(`handler error for ${logToken(method, 40)}: ${logText(e.stack || e.message)}`);
     if (isNotification) return null;
     return makeError(id, -32603, `服务内部错误：${e.message}`);
   }
@@ -981,13 +1464,19 @@ export function startServer() {
       const res = await handleMessage(msg);
       if (res) writeMessage(res);
     }).catch((e) => {
-      log(`queue error: ${e.stack || e.message}`);
+      log(`queue error: ${logText(e.stack || e.message)}`);
     });
   });
 
   rl.on('close', () => {
-    log('stdin closed, exiting');
-    process.exit(0);
+    // stdin EOF ≠ 立刻死：串行队列里还有在飞/排队的调用没应答，先排空再退出。
+    // 立即 exit(0) 会静默吞掉批量末尾的调用（真实测试实测：15 进 5 出，尾部 10 个无响应无日志）。
+    // 排空后等一次 stdout 刷写完成再退出，保证响应行不被 exit 截断。
+    log('stdin closed, draining queue before exit');
+    queue.then(() => {
+      log('queue drained, exiting');
+      process.stdout.write('', () => process.exit(0));
+    }).catch(() => process.exit(0));
   });
 }
 

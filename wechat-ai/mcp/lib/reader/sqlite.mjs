@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
+import { minMax } from "../util.mjs";
 import { envelope, inferKind, matchKeywords, paginate, sortByTime, toReaderMessage } from "./common.mjs";
 
 function listDbFiles(root) {
@@ -105,17 +106,18 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
     // 先读 Name2Id / Contact 建立 id→名字映射
     for (const d of dbs) {
       if (d.schema === "wechat4" && d.has?.Name2Id) {
+        let db = null;
         try {
-          const db = openRo(d.file);
+          db = openRo(d.file);
           for (const r of db.prepare("SELECT rowid, user_name FROM Name2Id").all()) nameMap.set(Number(r.rowid), cstr(r.user_name));
-          db.close();
-        } catch { /* ignore */ }
+        } catch { /* ignore */ } finally { try { db?.close(); } catch { /* ignore */ } }
       }
       if (d.schema === "contact" || d.schema === "wechat4") {
         const table = d.schema === "contact" ? (d.has.contact ? "contact" : "Contact") : null;
         if (table) {
+          let db = null;
           try {
-            const db = openRo(d.file);
+            db = openRo(d.file);
             const cols = columns(db, table);
             const nameCol = cols.find((c) => /^(username|user_name)$/i.test(c));
             const nickCol = cols.find((c) => /^(nickname|nick_name)$/i.test(c));
@@ -126,8 +128,7 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
                 if (nm) nameMap.set(nm, cstr(r[remarkCol]) || cstr(r[nickCol]) || nm);
               }
             }
-            db.close();
-          } catch { /* ignore */ }
+          } catch { /* ignore */ } finally { try { db?.close(); } catch { /* ignore */ } }
         }
       }
     }
@@ -135,8 +136,9 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
 
     for (const d of dbs) {
       if (d.schema === "wechat3") {
+        let db = null;
         try {
-          const db = openRo(d.file);
+          db = openRo(d.file);
           const rows = db.prepare(`SELECT localId, StrTalker, IsSender, CreateTime, Type, StrContent, DisplayContent, BytesExtra, CompressContent FROM MSG ORDER BY CreateTime ASC LIMIT 500000`).all();
           for (const r of rows) {
             const chat = cstr(r.StrTalker);
@@ -147,11 +149,11 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
             });
             addTo(sessions, chat, m);
           }
-          db.close();
-        } catch { /* ignore */ }
+        } catch { /* ignore */ } finally { try { db?.close(); } catch { /* ignore */ } }
       } else if (d.schema === "wechat4") {
+        let db = null;
         try {
-          const db = openRo(d.file);
+          db = openRo(d.file);
           const rows = db.prepare("SELECT local_id, local_type, create_time, real_sender_id, message_content, source FROM message ORDER BY create_time ASC LIMIT 500000").all();
           for (const r of rows) {
             const sender = display(r.real_sender_id);
@@ -163,13 +165,12 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
             });
             addTo(sessions, chat, m);
           }
-          db.close();
-        } catch { /* ignore */ }
+        } catch { /* ignore */ } finally { try { db?.close(); } catch { /* ignore */ } }
       }
     }
     const list = [...sessions.values()].map((s) => {
-      const ts = s.messages.map((m) => m.ts).filter(Boolean);
-      return { ...s, msg_count: s.messages.length, first_ts: ts.length ? Math.min(...ts) : null, last_ts: ts.length ? Math.max(...ts) : null };
+      const { min, max } = minMax(s.messages.map((m) => m.ts).filter(Boolean));
+      return { ...s, msg_count: s.messages.length, first_ts: min, last_ts: max };
     }).sort((a, b) => (b.last_ts ?? 0) - (a.last_ts ?? 0));
     cacheData = { sessions: list, dbs };
     cacheAt = Date.now();
@@ -202,6 +203,19 @@ export function createSqliteReader({ roots = [], files = [], cache = true } = {}
           message_count: v.sessions.reduce((a, s) => a + s.msg_count, 0), session_count: v.sessions.length,
           schemas: d.map((x) => ({ file: x.file, schema: x.schema, ok: x.ok })),
           detail: state === "ready" ? "已解密的微信数据库可读（只读打开）" : "未发现可读的已解密微信数据库；请提供解密副本或改用其它数据源",
+        },
+      });
+    },
+    stats: async () => {
+      const v = loadAll();
+      const perChat = v.sessions.map((s) => ({ chat: s.name, talker: s.name, messages: s.msg_count }));
+      return envelope({
+        tool: "sqlite-reader", command: "stats",
+        data: {
+          reader: "sqlite", sessions: v.sessions.length, contacts: 0,
+          total_messages: v.sessions.reduce((a, s) => a + s.msg_count, 0),
+          message_database_count: v.dbs.length,
+          top_chats: perChat.sort((a, b) => b.messages - a.messages).slice(0, 20),
         },
       });
     },

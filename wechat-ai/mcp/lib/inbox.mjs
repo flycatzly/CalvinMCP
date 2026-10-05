@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureHome, paths, timestampSlug } from "./paths.mjs";
 import { addInboxEntry, listInbox, store, updateInbox } from "./store.mjs";
-import { extractUrls, readJson, safeFileName, sha1, writeJson } from "./util.mjs";
+import { extractUrls, minMax, readJson, safeFileName, sha1, writeJson } from "./util.mjs";
 import { parseAny } from "./parse.mjs";
 import { isOwnerName } from "./profile.mjs";
 
@@ -59,8 +59,8 @@ export function normalizePayload(input = {}) {
     messages,
     files,
     links: [...new Set(messages.flatMap((m) => m.links ?? []))],
-    ts_min: tsList.length ? Math.min(...tsList) : null,
-    ts_max: tsList.length ? Math.max(...tsList) : null,
+    ts_min: minMax(tsList).min,
+    ts_max: minMax(tsList).max,
     hash,
     meta: input.meta ?? {},
     status: "new",

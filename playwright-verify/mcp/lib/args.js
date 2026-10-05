@@ -57,6 +57,21 @@ export function numArg(value, name, dflt) {
   throw new TypeError(`参数 ${name} 应为数字，收到 ${JSON.stringify(value)}。`);
 }
 
+/** 严格解析整数参数（下标/计数/毫秒超时/步数上限这类）：浮点一律报错，绝不静默取整。
+ *  实测教训（2026-10-04）：keyIndex=1.5 时每行都取不到键 → 静默零行 → 误报
+ *  「COLLECT_EMPTY 站点没数据」——把调用方笔误怪给目标，误导性根因必须在参数层拦下；
+ *  maxPages=2.5 会被循环当 3 页用，语义同样含糊。下标/计数没有小数的合法语义，
+ *  毫秒超时同理（timeoutMs=0.5 曾被 `|| 默认值` 放行成 0.5ms 的真超时）。
+ *  反例（设计行为，别「顺手统一」）：healLlmBudget 的 3.9→3 截断有钉 ——
+ *  预算口径是「最多调 N 次」，截断不改变意图；与下标/超时的「取整即失效」不同类。 */
+export function intArg(value, name, dflt) {
+  const n = numArg(value, name, dflt);
+  if (!Number.isInteger(n)) {
+    throw new TypeError(`参数 ${name} 应为整数（不接受小数），收到 ${value}。`);
+  }
+  return n;
+}
+
 /** 严格解析字符串数组（容忍单个字符串，方便调用方少写一层括号）。 */
 export function arrayArg(value, name) {
   if (value === undefined || value === null) return [];
@@ -70,4 +85,4 @@ export function arrayArg(value, name) {
   throw new TypeError(`参数 ${name} 应为字符串数组，收到 ${typeof value}。`);
 }
 
-export default { boolArg, numArg, arrayArg };
+export default { boolArg, numArg, intArg, arrayArg };

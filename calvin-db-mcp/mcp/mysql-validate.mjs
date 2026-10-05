@@ -244,6 +244,89 @@ try {
     if (sum !== 80) throw new Error("histogram sum=" + sum);
   });
 
+  /* ⑥b v1.6.20: 直方图退化边界锚定（三库实测一致后逐库钉住；文本列空数组是修复后统一契约） */
+  await checkAsync("histogram 退化锚定: min=max 单桶 [7,8)×1（hi=lo 宽 1.0 防除零）", async () => {
+    const r = await callStats({ column: "v", histogram: { buckets: 10 }, where: "v = 7" });
+    if (r.isError) throw new Error(r.text.slice(0, 200));
+    const h = r.data.histogram;
+    if (h.length !== 1 || num(h[0].bucket_index) !== 0 || num(h[0].row_count) !== 1
+      || num(h[0].bucket_lower) !== 7 || num(h[0].bucket_upper) !== 8) throw new Error(JSON.stringify(h));
+  });
+  await checkAsync("histogram 退化锚定: 两值三桶稀疏（0→桶0、99→末桶封顶桶2，桶1 空缺不产行）", async () => {
+    const r = await callStats({ column: "v", histogram: { buckets: 3 }, where: "v = 0 OR v = 99" });
+    if (r.isError) throw new Error(r.text.slice(0, 200));
+    const h = r.data.histogram;
+    if (h.length !== 2 || num(h[0].bucket_index) !== 0 || num(h[0].row_count) !== 1
+      || num(h[0].bucket_lower) !== 0 || num(h[0].bucket_upper) !== 33
+      || num(h[1].bucket_index) !== 2 || num(h[1].bucket_upper) !== 99) throw new Error(JSON.stringify(h));
+  });
+  await checkAsync("histogram 文本列锚定: 非数值列空数组收口（不炸不脏，三库统一）", async () => {
+    const r = await callStats({ column: "tag", histogram: { buckets: 4 } });
+    if (r.isError) throw new Error(r.text.slice(0, 200));
+    if (!Array.isArray(r.data.histogram) || r.data.histogram.length !== 0) throw new Error(JSON.stringify(r.data.histogram));
+  });
+
+  /* ⑥c v1.6.21: 全 NULL 列 / 单行列边界锚定（三库探针实测一致后钉住）——全 NULL 域 rng lo/hi=NULL
+     → 宽 NULL → 桶号 NULL → 空数组收口（min/max/avg=NULL 不除零不崩）；单行域 hi=lo → 宽 1.0 防除零
+     单桶 [v,v+1)。探针表建在 PROBE_DB 内（整库 DROP 自动覆盖清理），空表路径由 ⑥c2（v1.6.22）锚定。 */
+  await checkAsync("histogram 边界锚定: 全 NULL 列空数组收口（min/max/avg=NULL 不除零）+ 单行列单桶 [7,8)×1", async () => {
+    await mgr.runQuery(MYSQL_ID, `CREATE TABLE ${PROBE_DB}.hgnull (id INT PRIMARY KEY, vg INT NULL, tg VARCHAR(8) NULL)`);
+    await mgr.runQuery(MYSQL_ID, `CREATE TABLE ${PROBE_DB}.hgsingle (id INT PRIMARY KEY, v INT NULL)`);
+    await mgr.runQuery(MYSQL_ID, `INSERT INTO ${PROBE_DB}.hgnull (id, vg, tg) VALUES (1, NULL, NULL), (2, NULL, NULL), (3, NULL, NULL)`);
+    await mgr.runQuery(MYSQL_ID, `INSERT INTO ${PROBE_DB}.hgsingle (id, v) VALUES (1, 7)`);
+    const rn = await callStats({ table: `${PROBE_DB}.hgnull`, column: "vg", histogram: { buckets: 4 } });
+    const rt = await callStats({ table: `${PROBE_DB}.hgnull`, column: "tg", histogram: { buckets: 4 } });
+    const rs = await callStats({ table: `${PROBE_DB}.hgsingle`, column: "v", histogram: { buckets: 4 } });
+    if (rn.isError || rt.isError || rs.isError) throw new Error((rn.isError ? rn : rt.isError ? rt : rs).text.slice(0, 200));
+    const s = rn.data.stats, sh = rs.data.histogram || [];
+    const ok = Array.isArray(rn.data.histogram) && rn.data.histogram.length === 0
+      && num(s.row_count) === 3 && num(s.non_null) === 0 && num(s.distinct_values) === 0
+      && s.min_value == null && s.max_value == null && s.avg_value == null
+      && Array.isArray(rt.data.histogram) && rt.data.histogram.length === 0
+      && sh.length === 1 && num(sh[0].bucket_index) === 0 && num(sh[0].row_count) === 1
+      && num(sh[0].bucket_lower) === 7 && num(sh[0].bucket_upper) === 8
+      && num(rs.data.stats.min_value) === 7 && num(rs.data.stats.max_value) === 7;
+    if (!ok) throw new Error(JSON.stringify({ gn: rn.data, gt: rt.data, gs: rs.data }).slice(0, 300));
+  });
+
+  /* ⑥c2 v1.6.22: 空表（0 行）histogram/stats 边界锚定（探针 12 项三库实测一致后钉住）——0 行域
+     MIN/MAX=NULL → 同全 NULL 列 NULL-rng 路径 → 空数组收口；row_count=0/non_null=0/distinct=0、
+     min/max/avg=NULL 不除零，top_values 空数组。建表不插行即空表，探针表建在 PROBE_DB 内
+     （整库 DROP 自动覆盖清理）。 */
+  await checkAsync("histogram/stats 空表锚定: 0 行表空数组收口（row_count=0、min/max/avg=NULL 不除零）+ top_values 空数组", async () => {
+    await mgr.runQuery(MYSQL_ID, `CREATE TABLE ${PROBE_DB}.hgempty (id INT PRIMARY KEY, v INT NULL, s VARCHAR(8) NULL)`);
+    const re = await callStats({ table: `${PROBE_DB}.hgempty`, column: "v", histogram: { buckets: 4 }, top_values: { limit: 3 } });
+    const rs2 = await callStats({ table: `${PROBE_DB}.hgempty`, column: "s", histogram: { buckets: 4 } });
+    if (re.isError || rs2.isError) throw new Error((re.isError ? re : rs2).text.slice(0, 200));
+    const s = re.data.stats;
+    const ok = Array.isArray(re.data.histogram) && re.data.histogram.length === 0
+      && Array.isArray(re.data.top_values) && re.data.top_values.length === 0
+      && num(s.row_count) === 0 && num(s.non_null) === 0 && num(s.distinct_values) === 0
+      && s.min_value == null && s.max_value == null && s.avg_value == null
+      && Array.isArray(rs2.data.histogram) && rs2.data.histogram.length === 0
+      && num(rs2.data.stats.row_count) === 0 && num(rs2.data.stats.non_null) === 0;
+    if (!ok) throw new Error(JSON.stringify({ ev: re.data, es: rs2.data }).slice(0, 300));
+  });
+
+  /* ⑥d 第 25 轮残洞锚定：时间列脏桶——DATETIME/DATE 隐式转数读数字头（'2024-01-01 00:00:05'
+     → 20240101000005）曾产出 20240101000000.00000 伪数值桶界，破「非数值列 → 空数组」契约
+     （⑥b 只钉文本列、时间列漏网）。修法：mysql 减法前按值形状 REGEXP 门控；数值样文本照旧
+     放行 GIGO（「数字样文本」carve-out，与 avg 强转 0 同哲学）。 */
+  await checkAsync("histogram 时间列锚定: DATETIME/DATE 空数组收口 + 数字样文本 GIGO 桶保留", async () => {
+    await mgr.runQuery(MYSQL_ID, `CREATE TABLE ${PROBE_DB}.hgts (id INT PRIMARY KEY, ts DATETIME NULL, d DATE NULL, numtxt VARCHAR(20) NULL)`);
+    await mgr.runQuery(MYSQL_ID, `INSERT INTO ${PROBE_DB}.hgts (id, ts, d, numtxt) VALUES (1, '2024-01-01 00:00:01', '2024-01-01', '10'), (2, '2024-01-01 00:00:09', '2024-01-02', '30'), (3, '2024-01-01 00:00:17', '2024-01-03', '50')`);
+    const rts = await callStats({ table: `${PROBE_DB}.hgts`, column: "ts", histogram: { buckets: 3 } });
+    const rd = await callStats({ table: `${PROBE_DB}.hgts`, column: "d", histogram: { buckets: 3 } });
+    const rn = await callStats({ table: `${PROBE_DB}.hgts`, column: "numtxt", histogram: { buckets: 3 } });
+    if (rts.isError || rd.isError || rn.isError) throw new Error((rts.isError ? rts : rd.isError ? rd : rn).text.slice(0, 200));
+    if (!Array.isArray(rts.data.histogram) || rts.data.histogram.length !== 0) throw new Error("ts histogram must be empty: " + JSON.stringify(rts.data.histogram));
+    if (!Array.isArray(rd.data.histogram) || rd.data.histogram.length !== 0) throw new Error("date histogram must be empty: " + JSON.stringify(rd.data.histogram));
+    const hn = rn.data.histogram;
+    if (!Array.isArray(hn) || hn.length === 0) throw new Error("numeric-looking text keeps GIGO buckets: " + JSON.stringify(hn));
+    const sum = hn.reduce((a, b) => a + num(b.row_count), 0);
+    if (sum !== 3) throw new Error("histogram sum=" + sum);
+  });
+
   /* ⑦ 组合：画像 + 直方图 + TopN 一次返回 */
   await checkAsync("combo: 一次调用同时返回 stats + histogram + top_values", async () => {
     const r = await callStats({ column: "v", histogram: { buckets: 4 }, top_values: { limit: 3 } });
@@ -251,6 +334,18 @@ try {
     if (!r.data.stats || r.data.histogram?.length !== 4 || r.data.top_values?.length !== 3) {
       throw new Error(JSON.stringify(Object.keys(r.data)));
     }
+  });
+
+  /* ⑦b v1.6.19: 文本列画像语义锚定（跨方言 avg 差异逐库钉住——sqlite/MySQL 非数值强转 0、
+        PG 类型门控 NULL；同名断言存在于三套件，改任何一库的语义都会在对应真库套件上炸出来） */
+  await checkAsync("column_stats 文本列语义锚定: min/max 字典序 a/c + avg 非数值强转 0（mysql）", async () => {
+    const r = await callStats({ column: "tag" });
+    if (r.isError) throw new Error(r.text.slice(0, 200));
+    const s = r.data.stats;
+    if (num(s.row_count) !== 100 || num(s.non_null) !== 100 || num(s.distinct_values) !== 3) throw new Error(JSON.stringify(s));
+    if (s.min_value !== "a" || s.max_value !== "c") throw new Error("min/max=" + s.min_value + "/" + s.max_value);
+    // 探针实测：('a','b','c') avg=0；('10','20','x') avg=10——非数值文本按 0 计入分母
+    if (Math.abs(num(s.avg_value) - 0) > 0.001) throw new Error("avg=" + s.avg_value);
   });
 
   /* ⑧ 事务：withTransaction 提交/回滚（v1.5.3 一次性探针的固化——钉单连接，真实 MySQL） */

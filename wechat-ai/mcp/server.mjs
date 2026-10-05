@@ -9,7 +9,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.join(HERE, "lib");
 
 const SERVER_NAME = "wechat-ai";
-const SERVER_VERSION = "1.0.1";
+const SERVER_VERSION = "1.1.4";
 const PROTOCOL_VERSION = "2024-11-05";
 const FENCE = String.fromCharCode(96).repeat(3);
 
@@ -51,6 +51,16 @@ const M = {
   skillsCatalog: () => mod("wechat/skills-catalog.mjs"),
   history: () => mod("wechat/history.mjs"),
   batch: () => mod("wechat/batch.mjs"),
+  anaReport: () => mod("analytics/report.mjs"),
+  anaContent: () => mod("analytics/content.mjs"),
+  anaSocial: () => mod("analytics/social.mjs"),
+  anaSentiment: () => mod("analytics/sentiment.mjs"),
+  anaTasks: () => mod("analytics/tasks.mjs"),
+  anaFinance: () => mod("analytics/finance.mjs"),
+  anaMemory: () => mod("analytics/memory.mjs"),
+  anaTeam: () => mod("analytics/team.mjs"),
+  anaRisk: () => mod("analytics/risk.mjs"),
+  anaRender: () => mod("analytics/render.mjs"),
 };
 
 // ---------------- 通用小工具 ----------------
@@ -59,18 +69,25 @@ const fail = (message, extra = {}) => ({ ok: false, error: String(message), ...e
 
 /**
  * 解析时间窗。
- * 之前写成 `hours: a.hours ?? 0` 会让「只给 days/since」的调用退化成零长度窗口 → 查不到任何数据。
+ * 之前写成 `hours: a.hours ?? 0` 会让「只给 days/since」的调用退化成零长度窗口 → 查不到任何数据；
+ * `hours: a.hours ?? 24` 预填则会让 hours 永远存在，days/week/month 被 resolveWindow 静默忽略。
+ * 因此统一走这里：给了任意时间参数就原样透传，一个都没给才落默认。
  * allTime=true 的入口（联系人档案 / 聊天历史 / 主题 / 共同群）在未给时间参数时取全部历史。
  */
-async function windowFor(a = {}, { allTime = false } = {}) {
+async function windowFor(a = {}, { allTime = false, defaultDays = null } = {}) {
   const { resolveWindow } = await M.timewin();
   const hasTime = a.hours !== undefined || a.days !== undefined || a.since || a.until || a.week || a.month;
   if (!hasTime) {
     return allTime
       ? resolveWindow({ since: "1970-01-01", until: new Date().toISOString() })
-      : resolveWindow({ hours: 24 });
+      : resolveWindow(defaultDays ? { days: defaultDays } : { hours: 24 });
   }
   return resolveWindow(a);
+}
+
+/** 任意时间参数（hours/days/since/until/week/month）是否出现过 */
+function hasTimeArg(a = {}) {
+  return a.hours !== undefined || a.days !== undefined || !!(a.since || a.until || a.week || a.month);
 }
 
 async function resolveWindowArgs(args = {}) {
@@ -92,7 +109,9 @@ async function windowMessages(w, { allowDemo = false, autoIndex = true, source }
   if (autoIndex && stats.messages === 0) {
     const { indexFromReader } = await M.ingest();
     try {
-      await indexFromReader({ source, scope: "sessions", sinceMs: w.sinceMs, untilMs: w.untilMs, allowDemo: allowDemo || stats.messages === 0 });
+      // 自动索引只允许真实数据源：不能因为库是空的就强制 allowDemo，
+      // 否则虚构演示数据会被静默写进真实索引并被当作真实情报分析
+      await indexFromReader({ source, scope: "sessions", sinceMs: w.sinceMs, untilMs: w.untilMs, allowDemo });
     } catch { /* 数据源不可用时继续，返回空集并说明 */ }
   }
   return messagesInWindow({ sinceMs: w.sinceMs, untilMs: w.untilMs, limit: 500000 });
@@ -135,36 +154,129 @@ async function analysisFor(w, opts = {}) {
   return { analysis: a, messages: msgs };
 }
 
+/**
+ * 只取消息（不做 signals.analyze）：分析工具族（wai_period_report 等）共用同一条缓存，
+ * 键与 analysisFor 一致，因此连跑「情报工具 + 分析工具」时消息只拉一次。
+ */
+async function messagesFor(w, opts = {}) {
+  const key = `${w.sinceMs}|${w.untilMs}|${opts.allowDemo ? 1 : 0}|${opts.source ?? ""}|${opts.autoIndex === false ? 0 : 1}`;
+  const rid = await messagesRid();
+  const hit = _analysisCache.get(key);
+  if (hit && hit.messages && hit.rid === rid && Date.now() - hit.at < ANALYSIS_TTL_MS) {
+    return { messages: hit.messages, cached: true };
+  }
+  const msgs = await windowMessages(w, opts);
+  _analysisCache.set(key, { analysis: hit?.analysis ?? null, messages: msgs, rid: await messagesRid(), at: Date.now() });
+  if (_analysisCache.size > 8) _analysisCache.delete(_analysisCache.keys().next().value);
+  return { messages: msgs };
+}
+
+/**
+ * 分析工具族统一入口：取窗口消息 → 跑确定性分析 → 可选渲染 Markdown/JSON 落盘。
+ * 落盘走 assertOutOutsideRepo（含隐私的报告不进仓库目录）。
+ */
+async function runAnalytics(kind, a, compute) {
+  const w = await windowFor(a, { defaultDays: 30 });
+  const { messages, cached } = await messagesFor(w, { allowDemo: !!a.allowDemo, source: a.source });
+  const result = (await compute(messages, w)) ?? {};
+  result.message_count = messages.length;
+  result.cached = !!cached;
+  if (a.out) {
+    await assertOutOutsideRepo(a.out);
+    const { renderAnalytics } = await M.anaRender();
+    const rendered = renderAnalytics(kind, result, { outDir: a.out });
+    result.out = rendered.out;
+    result.files = rendered.files;
+  }
+  return result;
+}
+
 async function ensureOutDir(kind) {
   const { runDir, timestampSlug } = await M.paths();
   return runDir(kind, timestampSlug());
 }
 
+/**
+ * 报告/输出落盘前的边界校验：不得写进仓库/包目录（避免含隐私的报告被误提交）。
+ * WECHAT_AI_ALLOW_REPO_OUTPUT=1 可显式放行（用户明确要把产物放进仓库时）。
+ */
+async function assertOutOutsideRepo(outPath) {
+  if (process.env.WECHAT_AI_ALLOW_REPO_OUTPUT === "1") return;
+  const { PKG_ROOT } = await M.paths();
+  const root = path.resolve(PKG_ROOT);
+  const out = path.resolve(String(outPath || ""));
+  if (out === root || out.startsWith(root + path.sep)) {
+    throw new Error("输出路径不能位于仓库/包目录内：" + out + "。请改到 ~/.wechat-ai/output 之类的数据目录；确需写入仓库时设置 WECHAT_AI_ALLOW_REPO_OUTPUT=1。");
+  }
+}
+
 function textResult(obj, summary) {
   const text = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
-  const body = summary ? summary + "\n\n" + FENCE + "json\n" + text + "\n" + FENCE : text;
+  // summary 只接受字符串：对象会被 + 拼成 "[object Object]" 打进 content 首行（对象本身仍在 JSON 正文里）
+  const body = typeof summary === "string" && summary ? summary + "\n\n" + FENCE + "json\n" + text + "\n" + FENCE : text;
+  // MCP 契约要求 structuredContent 是 record：数组/数字/布尔一律包一层 { result }，
+  // 否则严格客户端直接判 "expected record, received array/number"，工具形同不可用
+  const structured =
+    typeof obj === "string" ? { text: obj }
+      : obj !== null && typeof obj === "object" && !Array.isArray(obj) ? obj
+        : { result: obj };
   return {
     content: [{ type: "text", text: body }],
-    structuredContent: typeof obj === "string" ? { text: obj } : obj,
+    structuredContent: structured,
     isError: false,
   };
 }
 
-function errResult(message, extra) {
-  const obj = { ok: false, error: String(message), ...(extra ?? {}) };
+async function errResult(message, extra) {
+  // 错误信息会进入调用方上下文：统一脱敏（路径→~、微信 id→占位符），stack 仅调试时附带
+  const { sanitizeError } = await M.access();
+  const obj = { ok: false, error: sanitizeError(String(message)), ...(extra ?? {}) };
   return { content: [{ type: "text", text: JSON.stringify(obj, null, 2) }], structuredContent: obj, isError: true };
 }
 
+/**
+ * 运行期参数校验：inputSchema 声明了类型/边界就按声明执行。
+ * 此前 P 只是文档——limit 负值直通 SQL 成为无界查询、空 query 变 LIKE %% 全量、
+ * 负 days 被 resolveWindow 交换成「未来窗口」还标成「过去 N 小时」。
+ * 只校验调用方实际给出的键（null 视为未给）；未知键不拦，避免误伤扩展调用。
+ */
+function checkArgs(args, schema) {
+  const props = schema?.properties ?? {};
+  for (const [k, v] of Object.entries(args)) {
+    if (v === undefined || v === null) continue;
+    const p = props[k];
+    if (!p || !p.type) continue;
+    const t = p.type;
+    const ok =
+      t === "string" ? typeof v === "string"
+        : t === "number" ? typeof v === "number" && Number.isFinite(v)
+          : t === "integer" ? typeof v === "number" && Number.isInteger(v)
+            : t === "boolean" ? typeof v === "boolean"
+              : t === "array" ? Array.isArray(v) : true;
+    if (!ok) throw new Error(`参数 ${k} 类型应为 ${t}，收到 ${Array.isArray(v) ? "array" : typeof v}`);
+    if (t === "string" && p.minLength != null && v.trim().length < p.minLength) {
+      throw new Error(`参数 ${k} 不能为空（去掉空白后至少 ${p.minLength} 个字符）`);
+    }
+    if (t === "number" || t === "integer") {
+      if (p.minimum != null && v < p.minimum) throw new Error(`参数 ${k} 不能小于 ${p.minimum}（收到 ${v}）`);
+      if (p.maximum != null && v > p.maximum) throw new Error(`参数 ${k} 不能大于 ${p.maximum}（收到 ${v}）`);
+    }
+  }
+}
+
 /** 只有明确要写盘的动作才允许落盘；统一包一层错误处理 */
-function handler(fn) {
+function handler(fn, schema) {
   return async (args) => {
     try {
+      if (schema) checkArgs(args ?? {}, schema);
       const r = await fn(args ?? {});
-      if (r && r.__raw) return r.__raw;
       if (r && r.ok === false) return errResult(r.error ?? "执行失败", r);
       return textResult(r, r?.summary);
     } catch (e) {
-      return errResult(e?.message ?? String(e), { stack: String(e?.stack ?? "").split("\n").slice(0, 4) });
+      const extra = process.env.WECHAT_AI_DEBUG
+        ? { stack: String(e?.stack ?? "").split("\n").slice(0, 4) }
+        : {};
+      return errResult(e?.message ?? String(e), extra);
     }
   };
 }
@@ -179,26 +291,31 @@ async function buildAndRenderBundle({ outDir, title, analysis, w, coverage, link
 // 工具定义（name / description / inputSchema / handler）
 // =====================================================================================
 const S = (props = {}, required = []) => ({ type: "object", properties: props, required, additionalProperties: false });
+// min/max/minLength 既进 inputSchema（对外声明的约束）也进 checkArgs（运行期校验）。
 const P = {
-  str: (d) => ({ type: "string", description: d }),
-  num: (d) => ({ type: "number", description: d }),
-  int: (d) => ({ type: "integer", description: d }),
+  str: (d, c = {}) => ({ type: "string", description: d, ...(c.minLength != null ? { minLength: c.minLength } : {}) }),
+  num: (d, c = {}) => ({ type: "number", description: d, ...(c.min != null ? { minimum: c.min } : {}), ...(c.max != null ? { maximum: c.max } : {}) }),
+  int: (d, c = {}) => ({ type: "integer", description: d, ...(c.min != null ? { minimum: c.min } : {}), ...(c.max != null ? { maximum: c.max } : {}) }),
   bool: (d) => ({ type: "boolean", description: d }),
   arr: (d, items = { type: "string" }) => ({ type: "array", description: d, items }),
+  obj: (d) => ({ type: "object", description: d }),
   any: (d) => ({ description: d }),
 };
 const WINDOW_PROPS = {
-  hours: P.num("时间窗小时数（默认 24）"),
-  days: P.num("时间窗天数（等价 hours = days*24）"),
+  hours: P.num("时间窗小时数（默认 24）", { min: 0 }),
+  days: P.num("时间窗天数（等价 hours = days*24）", { min: 0 }),
   since: P.str("起始时间，如 2026-08-01 或 2026-08-01 09:00"),
   until: P.str("结束时间；只给日期时表示当天 23:59:59"),
   week: P.bool("本周"),
   month: P.bool("本月"),
 };
 
+// MCP structuredContent 契约：恒为 record（数组/标量会被 textResult 包 {result}，错误信封本身是 record）
+const OUTPUT_SCHEMA = Object.freeze({ type: "object" });
+
 const TOOLS = [];
 function tool(name, description, inputSchema, fn) {
-  TOOLS.push({ name, description, inputSchema, handler: handler(fn) });
+  TOOLS.push({ name, description, inputSchema, handler: handler(fn, inputSchema) });
 }
 
 // ---------- 0. 状态 / 接入 ----------
@@ -331,7 +448,7 @@ tool("wai_inbox_list", "列出 Inbox 条目（按状态：new / processing / pro
   });
 
 tool("wai_inbox_process", "把 Inbox 中 new 状态的条目解析并写入本地索引（含附件、链接、联系人）。",
-  S({ limit: P.int("处理条数上限，默认 100") }), async (a) => {
+  S({ limit: P.int("处理条数上限，默认 100", { min: 0 }) }), async (a) => {
     const { ingestInbox } = await M.ingest();
     return ingestInbox(a);
   });
@@ -359,26 +476,28 @@ tool("wai_vault_status", "查看已配置的导出目录（vault）状态：文�
 
 tool("wai_vault_scan", "扫描导出目录并写入索引（等价于 wai_scan 指向 vault 目录）。",
   S({ dirs: P.arr("临时覆盖导出目录"), out: P.str("输出目录") }), async (a) => {
-    const { createVaultReader } = await mod("reader/vault.mjs");
-    const { ingestMessages } = await M.ingest();
-    const { store } = await M.store();
-    const r = createVaultReader({ dirs: a.dirs, force: true });
-    const v = r.describe();
-    const dirs = a.dirs && a.dirs.length ? a.dirs : (await M.readerIndex()).vaultDirs();
     const { loadVault } = await mod("reader/vault.mjs");
+    const { ingestSessionBatches } = await M.ingest();
+    const { store } = await M.store();
+    const dirs = a.dirs && a.dirs.length ? a.dirs : (await M.readerIndex()).vaultDirs();
+    // 只强制解析一次（旧实现 describe() 与 loadVault() 各 force 解析一遍全目录）
     const loaded = loadVault({ dirs, force: true });
     const db = store();
-    let inserted = 0;
-    for (const s of loaded.sessions) {
-      const res = ingestMessages(db, s.messages.map((m) => ({ ...m, chat: m.chat })), { source: "vault" });
-      inserted += res.inserted;
-    }
-    return { ...v, dirs, inserted, sessions: loaded.sessions.length };
+    // 攒批事务写入（每 20 会话一提交 + 攒批统计）：旧的「每会话一事务 + 即时统计」
+    // 在 600 会话/3 万条量级实测 1607ms，攒批形态贴近单事务对照 385ms。
+    // 批内原子、批间独立；写入幂等（确定性 id + INSERT OR IGNORE），失败重跑即可补齐。
+    const write = ingestSessionBatches(db, loaded.sessions.map((s) => s.messages.map((m) => ({ ...m, chat: m.chat }))), { source: "vault" });
+    return {
+      reader: "vault", roots: loaded.roots, files: loaded.files,
+      sessions: loaded.sessions.length, parsed: loaded.parsedCount, cache_hits: loaded.cacheHits,
+      dirs, inserted: write.inserted,
+      write_chunks: write.chunks, write_stats: write.stats,
+    };
   });
 
 tool("wai_db_index", "从数据源拉取并建立/刷新本地索引。scope=sessions 刷新近期会话；scope=labels 按微信标签；scope=search 按关键词。",
   S({
-    source: P.str("数据源 id（local/vault:path/sqlite:path/cli:id/mock）"),
+    source: P.str("数据源 id（local/vault:path/sqlite:path/wcdb:path/cli:id/mock）"),
     scope: P.str("sessions | labels | search | all"),
     sessionType: P.str("private,group | all"),
     sessionLimit: P.int("会话数上限，默认 80"),
@@ -409,28 +528,37 @@ tool("wai_db_status", "索引新鲜度：最新消息时间、距现在多久、
 
 // ---------- 2. 检索 ----------
 tool("wai_chat_search", "在全部已导入微信内容里检索关键词（实时、覆盖全量，不受标签限制），并把命中写入本地索引。",
-  S({ query: P.str("关键词"), chat: P.str("限定会话"), limit: P.int("返回条数，默认 100"), maxTextChars: P.int("正文截断，默认 500"), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["query"]),
+  S({ query: P.str("关键词", { minLength: 1 }), chat: P.str("限定会话"), limit: P.int("返回条数，默认 100", { min: 0 }), maxTextChars: P.int("正文截断，默认 500", { min: 0 }), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["query"]),
   async (a) => {
     const { pickReader } = await M.readerIndex();
     const { reader, sourceId } = pickReader({ source: a.source, allowDemo: true });
     const w = await windowFor(a, { allTime: true });
+    // 任意时间参数（hours/days/week/month 同样生效）都应约束检索范围
+    const bounded = hasTimeArg(a);
+    // maxTextChars 只控制给调用方看的展示截断；取数必须按全文——
+    // 截断正文写回索引会以不同去重键重复落库，下游（memory 卡片/团队分析）还会读到半截话
+    const FULL_FETCH_CHARS = 1e6;
     const r = await reader.search(a.query, {
-      limit: a.limit ?? 100, maxTextChars: a.maxTextChars ?? 500, inChat: a.chat,
-      after: a.since ? new Date(w.sinceMs).toISOString() : undefined,
-      before: a.until ? new Date(w.untilMs).toISOString() : undefined,
+      limit: a.limit ?? 100, maxTextChars: FULL_FETCH_CHARS, inChat: a.chat,
+      after: bounded ? new Date(w.sinceMs).toISOString() : undefined,
+      before: bounded ? new Date(w.untilMs).toISOString() : undefined,
     });
     const { store } = await M.store();
     const { ingestMessages } = await M.ingest();
     const msgs = (r.data?.messages ?? []);
     const res = msgs.length ? ingestMessages(store(), msgs.map((m) => ({ ...m, chat: m.chat })), { source: `reader:${sourceId}` }) : { inserted: 0 };
-    return { source: sourceId, query: a.query, count: msgs.length, inserted: res.inserted, query_meta: r.data?.query ?? null, messages: msgs.slice(0, 80) };
+    const showChars = a.maxTextChars ?? 500;
+    return {
+      source: sourceId, query: a.query, count: msgs.length, inserted: res.inserted, query_meta: r.data?.query ?? null,
+      messages: msgs.slice(0, 80).map((m) => ({ ...m, content: String(m.content ?? "").slice(0, showChars) })),
+    };
   });
 
 tool("wai_db_search", "在本地索引里快速检索（已索引范围，速度更快）。支持限定会话与时间。",
-  S({ query: P.str("关键词"), chat: P.str("限定会话"), limit: P.int("默认 30"), out: P.str("输出 markdown 路径"), ...WINDOW_PROPS }, ["query"]),
+  S({ query: P.str("关键词", { minLength: 1 }), chat: P.str("限定会话"), limit: P.int("默认 30", { min: 0 }), out: P.str("输出 markdown 路径"), ...WINDOW_PROPS }, ["query"]),
   async (a) => {
     const { searchMessages } = await M.store();
-    const w = a.since || a.until ? await resolveWindowArgs(a) : null;
+    const w = hasTimeArg(a) ? await resolveWindowArgs(a) : null;
     const rows = searchMessages({ keyword: a.query, chat: a.chat, sinceMs: w?.sinceMs, untilMs: w?.untilMs, limit: a.limit ?? 30 });
     let out = null;
     if (a.out) {
@@ -444,7 +572,7 @@ tool("wai_db_search", "在本地索引里快速检索（已索引范围，速度
   });
 
 tool("wai_chat_history", "读取某个联系人或群在指定时间范围内的聊天原文（支持关键词过滤）。",
-  S({ chat: P.str("联系人或群名"), query: P.str("关键词过滤"), limit: P.int("默认 200"), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["chat"]),
+  S({ chat: P.str("联系人或群名"), query: P.str("关键词过滤"), limit: P.int("默认 200", { min: 0 }), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["chat"]),
   async (a) => {
     const { chatHistory } = await M.views();
     const w = await windowFor(a, { allTime: true });
@@ -457,7 +585,7 @@ tool("wai_chat_history", "读取某个联系人或群在指定时间范围内的
   });
 
 tool("wai_person", "联系人档案：我和某人聊到哪、还有什么承诺没完成、对方有哪些待回应要求、商业相关时间线。",
-  S({ name: P.str("联系人或群名"), refresh: P.bool("先从数据源刷新该会话"), limit: P.int("默认 500"), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["name"]),
+  S({ name: P.str("联系人或群名"), refresh: P.bool("先从数据源刷新该会话"), limit: P.int("默认 500", { min: 0 }), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["name"]),
   async (a) => {
     const { personDossier } = await M.views();
     const w = await windowFor(a, { allTime: true });
@@ -470,10 +598,10 @@ tool("wai_person", "联系人档案：我和某人聊到哪、还有什么承诺
   });
 
 tool("wai_topic", "主题/产品/项目/事件的来龙去脉：跨群跨人会聚合并按事件时间线去重总结。",
-  S({ topic: P.str("主题名（产品/项目/事件/品牌）"), keyword: P.arr("别名或补充关键词"), days: P.num("回看天数，默认 7"), limitMessages: P.int("默认 800"), limitChats: P.int("默认 20"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["topic"]),
+  S({ topic: P.str("主题名（产品/项目/事件/品牌）"), keyword: P.arr("别名或补充关键词"), days: P.num("回看天数，默认 7（也支持 hours/since/until/week/month）", { min: 0 }), limitMessages: P.int("默认 800", { min: 0 }), limitChats: P.int("默认 20", { min: 0 }), out: P.str("输出目录"), ...WINDOW_PROPS }, ["topic"]),
   async (a) => {
     const { topicReport } = await M.views();
-    const w = await resolveWindowArgs({ hours: a.hours, days: a.days ?? 7, since: a.since, until: a.until });
+    const w = await windowFor(a, { defaultDays: 7 });
     const r = await topicReport(a.topic, { keywords: a.keyword ?? [], sinceMs: w.sinceMs, untilMs: w.untilMs, limitMessages: a.limitMessages ?? 800, limitChats: a.limitChats ?? 20, out: a.out });
     if (a.out && !r.out) {
       const md = await M.reportMd();
@@ -497,7 +625,7 @@ tool("wai_wechat_labels", "只读列出微信标签及标签下的联系人（�
   });
 
 tool("wai_common_groups", "判断两个人是否在共同群、是否有交接关系（用成员身份核验，不靠昵称猜测）。",
-  S({ a: P.str("第一个人"), b: P.str("第二个人"), groupLimit: P.int("扫描群上限，默认 5000"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["a", "b"]),
+  S({ a: P.str("第一个人"), b: P.str("第二个人"), groupLimit: P.int("扫描群上限，默认 5000", { min: 0 }), out: P.str("输出目录"), ...WINDOW_PROPS }, ["a", "b"]),
   async (a) => {
     const { commonGroups } = await M.views();
     const w = await windowFor(a, { allTime: true });
@@ -511,15 +639,15 @@ tool("wai_common_groups", "判断两个人是否在共同群、是否有交接�
 
 // ---------- 3. 情报 ----------
 tool("wai_signals", "原始情报信号提取：待回复 / 待兑现承诺 / 等待对方 / 临近截止 / 待结算 / 商机 / 培训合作 / 资源机会 / 跨群链接 / 低价值群。",
-  S({ ...WINDOW_PROPS, source: P.str("数据源 id"), allowDemo: P.bool("允许演示数据") }),
+  S({ ...WINDOW_PROPS, source: P.str("数据源 id"), allowDemo: P.bool("允许演示数据（默认 false，不把虚构演示数据写入真实索引）") }),
   async (a) => {
     const w = await resolveWindowArgs(a);
-    const { analysis } = await analysisFor(w, { allowDemo: a.allowDemo ?? true });
+    const { analysis } = await analysisFor(w, { allowDemo: a.allowDemo ?? false });
     return { window: w.label, coverage: analysis.coverage, pendingReplies: analysis.pendingReplies, promises: analysis.promises, waiting: analysis.waiting, deadlines: analysis.deadlines, settlements: analysis.settlements, brandDeals: analysis.brandDeals, trainings: analysis.trainings, resources: analysis.resources, links: analysis.links.filter((l) => l.rank > 0), lowValue: analysis.lowValue, sessions: analysis.sessions.slice(0, 60) };
   });
 
 tool("wai_today", "今天先处理什么：合并待回复、逾期承诺、临近截止、待结算与到期商机，最多 10 项，按真实紧迫度排序。",
-  S({ minPriority: P.int("最低优先级 0-5，默认 3"), limit: P.int("默认 10"), out: P.str("输出目录（可选，写出 today.md）") }), async (a) => {
+  S({ minPriority: P.int("最低优先级 0-5，默认 3", { min: 0 }), limit: P.int("默认 10", { min: 0 }), out: P.str("输出目录（可选，写出 today.md）") }), async (a) => {
     const { todayActions } = await M.views();
     const r = await todayActions({ minPriority: a.minPriority ?? 3, limit: a.limit ?? 10 });
     if (a.out) {
@@ -531,24 +659,27 @@ tool("wai_today", "今天先处理什么：合并待回复、逾期承诺、临�
   });
 
 tool("wai_new_leads", "新发现的高优先级线索（待审核候选）。这些只是候选，不等于真实商单。",
-  S({ minPriority: P.int("默认 4"), limit: P.int("默认 20"), out: P.str("输出目录（可选，写出 inbox.md）") }), async (a) => {
+  S({ minPriority: P.int("默认 4", { min: 0 }), limit: P.int("默认 20", { min: 0 }), out: P.str("输出目录（可选，写出 inbox.md）") }), async (a) => {
     const { inboxRows } = await M.views();
-    const r = await inboxRows({ minPriority: a.minPriority ?? 4, limit: a.limit ?? 20 });
+    const raw = await inboxRows({ minPriority: a.minPriority ?? 4, limit: a.limit ?? 20 });
+    // inboxRows 直接返回数组：对外统一成 { count, rows } record——
+    // 数组既违反 structuredContent 契约，在数组上挂 .out 也会被 JSON.stringify 静默丢掉
+    const rows = Array.isArray(raw) ? raw : (raw.rows ?? raw.items ?? []);
+    const r = { count: rows.length, rows };
     if (a.out) {
       const md = await M.reportMd();
-      const rows = r.rows ?? r.items ?? r;
       if (typeof md.renderInboxRows === "function") r.out = await md.renderInboxRows(rows, { outDir: a.out });
     }
     return r;
   });
 
 tool("wai_brief", "跨报告行动总览（近 N 小时）：待回复、待兑现承诺、推进中机会、待审核候选、重点私聊/群聊、主题变化、附件核验队列。",
-  S({ ...WINDOW_PROPS, limitChats: P.int("默认 10"), selfName: P.arr("本人昵称"), out: P.str("输出目录") }),
+  S({ ...WINDOW_PROPS, limitChats: P.int("默认 10", { min: 0 }), selfName: P.arr("本人昵称"), out: P.str("输出目录") }),
   async (a) => {
-    const w = await resolveWindowArgs({ hours: a.hours ?? 24, ...a });
+    const w = await windowFor(a);
     const span = w.untilMs - w.sinceMs;
     const prev = await resolveWindowArgs({ since: new Date(w.sinceMs - span).toISOString(), until: new Date(w.sinceMs).toISOString() });
-    const { analysis } = await analysisFor(w, { allowDemo: true });
+    const { analysis } = await analysisFor(w, {});
     const { fmtLocal } = await M.util();
     const views = await M.views();
     const md = await M.reportMd();
@@ -566,10 +697,10 @@ tool("wai_brief", "跨报告行动总览（近 N 小时）：待回复、待兑�
   });
 
 tool("wai_group_daily", "群聊日报：机器初筛 + 语义编辑素材包（editorial packet）。输出 digest/appendix/CSV/JSON、跨群链接、群聊价值矩阵与编辑包。",
-  S({ ...WINDOW_PROPS, groupLimit: P.int("群上限，默认 60"), perGroupLimit: P.int("每群消息上限，默认 500"), minLinkChats: P.int("跨群链接最少群数，默认 2"), exclude: P.arr("排除群名"), out: P.str("输出目录") }),
+  S({ ...WINDOW_PROPS, groupLimit: P.int("群上限，默认 60", { min: 0 }), perGroupLimit: P.int("每群消息上限，默认 500", { min: 0 }), minLinkChats: P.int("跨群链接最少群数，默认 2", { min: 0 }), exclude: P.arr("排除群名"), out: P.str("输出目录") }),
   async (a) => {
-    const w = await resolveWindowArgs({ hours: a.hours ?? 24, ...a });
-    const { analysis, messages } = await analysisFor(w, { allowDemo: true });
+    const w = await windowFor(a);
+    const { analysis, messages } = await analysisFor(w, {});
     const outDir = a.out ?? await ensureOutDir("group-daily");
     const md = await M.reportMd();
     const exclude = new Set(a.exclude ?? []);
@@ -599,9 +730,9 @@ tool("wai_group_daily", "群聊日报：机器初筛 + 语义编辑素材包（e
   });
 
 tool("wai_contact_daily", "重点联系人私聊日报（关系推进）：待兑现、待回复、等待对方、留意，并给每个联系人的回复方向。",
-  S({ ...WINDOW_PROPS, contacts: P.arr("限定联系人"), selfName: P.arr("本人昵称"), limit: P.int("默认 80"), scope: P.str("hybrid | priority_labels_only"), out: P.str("输出目录") }),
+  S({ ...WINDOW_PROPS, contacts: P.arr("限定联系人"), selfName: P.arr("本人昵称"), limit: P.int("默认 80", { min: 0 }), scope: P.str("hybrid | priority_labels_only"), out: P.str("输出目录") }),
   async (a) => {
-    const w = await resolveWindowArgs({ hours: a.hours ?? 24, ...a });
+    const w = await windowFor(a);
     const { contactDailyRows } = await M.views();
     const { loadProfile } = await M.profile();
     const rows = await contactDailyRows({ sinceMs: w.sinceMs, untilMs: w.untilMs, contacts: a.contacts, selfNames: a.selfName, scope: a.scope ?? loadProfile().contact_daily?.scope ?? "hybrid", limit: a.limit ?? 80 });
@@ -616,14 +747,14 @@ tool("wai_reactivation", "品牌方复联雷达：找出值得重新联系的人
   S({ ...WINDOW_PROPS, inactiveDays: P.int("沉默阈值天数，默认 21"), label: P.arr("限定标签"), selfName: P.arr("本人昵称"), out: P.str("输出目录"), indexFirst: P.bool("先建索引") }),
   async (a) => {
     const { reactivation } = await M.signals();
-    const w = await resolveWindowArgs({ hours: a.hours, days: a.days ?? 365, since: a.since, until: a.until });
-    const { messagesInWindow } = await M.store();
-    // 复联只读正文/时间戳/发送者，走轻量行（跳过 links/attachments 的 JSON 解析）
-    let msgs = messagesInWindow({ sinceMs: w.sinceMs, untilMs: w.untilMs, limit: 500000, light: true });
+    const w = await windowFor(a, { defaultDays: 365 });
+    const { messagesRaw } = await M.store();
+    // 复联只读正文/时间戳/发送者，走 5 列裸行（跳过 rowToMessage 映射与 links/attachments 解析）
+    let msgs = messagesRaw({ sinceMs: w.sinceMs, untilMs: w.untilMs, limit: 500000 });
     if (!msgs.length) {
       const { indexFromReader } = await M.ingest();
-      try { await indexFromReader({ scope: "sessions", sessionLimit: 200, allowDemo: true }); } catch { /* ignore */ }
-      msgs = messagesInWindow({ sinceMs: w.sinceMs, untilMs: w.untilMs, limit: 500000, light: true });
+      try { await indexFromReader({ scope: "sessions", sessionLimit: 200, allowDemo: false }); } catch { /* ignore */ }
+      msgs = messagesRaw({ sinceMs: w.sinceMs, untilMs: w.untilMs, limit: 500000 });
     }
     const r = reactivation({ messages: msgs, inactiveDays: a.inactiveDays ?? 21, label: a.label });
     const outDir = a.out ?? await ensureOutDir("reactivation");
@@ -636,22 +767,23 @@ tool("wai_reactivation", "品牌方复联雷达：找出值得重新联系的人
   });
 
 tool("wai_db_links", "跨群重复链接聚合：每个 URL 只出现一次，列出出现群、发布者和商单概率判断（高概率/疑似/普通）。",
-  S({ ...WINDOW_PROPS, minChats: P.int("最少群数，默认 2"), limit: P.int("默认 50"), out: P.str("输出 markdown 路径") }),
+  S({ ...WINDOW_PROPS, minChats: P.int("最少群数，默认 2", { min: 0 }), limit: P.int("默认 50", { min: 0 }), out: P.str("输出 markdown 路径") }),
   async (a) => {
     const { crossGroupLinks } = await M.views();
-    const w = await resolveWindowArgs({ hours: a.hours, days: a.days ?? 30, since: a.since, until: a.until });
+    const w = await windowFor(a, { defaultDays: 30 });
     return crossGroupLinks({ sinceMs: w.sinceMs, untilMs: w.untilMs, minChats: a.minChats ?? 2, limit: a.limit ?? 50, out: a.out });
   });
 
 tool("wai_deal_radar", "微信商单雷达：品牌方/中间人/自媒体博主私聊与群聊里的合作信号、培训咨询项目、资源引荐、待结算清单。",
   S({ ...WINDOW_PROPS, out: P.str("输出目录") }), async (a) => {
-    const w = await resolveWindowArgs({ hours: a.hours ?? 24, ...a });
+    const w = await windowFor(a);
     const { dealRadar } = await M.views();
-    return dealRadar({ sinceMs: w.sinceMs, untilMs: w.untilMs, out: a.out });
+    // dealRadar(analysis, opts)：第一个参数是分析结果，传 null 时它自行 analyze
+    return dealRadar(null, { sinceMs: w.sinceMs, untilMs: w.untilMs });
   });
 
 tool("wai_reply_draft", "回复建议：先判断是否需要回复，再按联系人与已有语气生成**一条**简短本地草稿（绝不自动发送）。",
-  S({ name: P.str("联系人或群名"), limit: P.int("默认 120"), styleDays: P.int("语气学习天数，默认 30"), minimumChatMessages: P.int("学习专属口语所需最少本人消息数，默认 5"), selfName: P.arr("本人昵称"), out: P.str("输出目录") }, ["name"]),
+  S({ name: P.str("联系人或群名"), limit: P.int("默认 120", { min: 0 }), styleDays: P.int("语气学习天数，默认 30", { min: 0 }), minimumChatMessages: P.int("学习专属口语所需最少本人消息数，默认 5", { min: 0 }), selfName: P.arr("本人昵称"), out: P.str("输出目录") }, ["name"]),
   async (a) => {
     const { replyDraft } = await M.views();
     const r = await replyDraft(a.name, { limit: a.limit ?? 120, styleDays: a.styleDays, minimumChatMessages: a.minimumChatMessages, selfNames: a.selfName });
@@ -665,9 +797,10 @@ tool("wai_reply_draft", "回复建议：先判断是否需要回复，再按联�
 
 // ---------- 4. 报告 ----------
 tool("wai_render_bundle", "把一轮报告目录渲染成旗舰交互式 HTML + 分区 Markdown 站点（全局搜索、分区路由、明暗主题、打印、当前分区 Markdown 下载）。",
-  S({ reportDir: P.str("报告目录"), out: P.str("HTML 输出路径"), markdownOut: P.str("门户 Markdown 路径"), title: P.str("标题") }, ["reportDir"]),
+  S({ reportDir: P.str("报告目录"), out: P.str("HTML 输出路径（不得位于仓库/包目录内）"), markdownOut: P.str("门户 Markdown 路径（不得位于仓库/包目录内）"), title: P.str("标题") }, ["reportDir"]),
   async (a) => {
     const bundle = await M.reportBundle();
+    for (const p of [a.reportDir, a.out, a.markdownOut].filter(Boolean)) await assertOutOutsideRepo(p);
     const attempt = (dir) => bundle.renderBundle(dir, { out: a.out, markdownOut: a.markdownOut, title: a.title });
     try {
       return attempt(a.reportDir);
@@ -692,18 +825,31 @@ tool("wai_render_bundle", "把一轮报告目录渲染成旗舰交互式 HTML + 
   });
 
 tool("wai_render_html", "把一份 Markdown 渲染成安全的静态 HTML（白名单净化 + CSP，不依赖 pandoc）。",
-  S({ markdown: P.str("Markdown 文本"), mdPath: P.str("或 Markdown 文件路径"), out: P.str("输出 HTML 路径"), title: P.str("标题") }, []),
+  S({ markdown: P.str("Markdown 文本"), mdPath: P.str("或 Markdown 文件路径（限数据目录/包目录内）"), out: P.str("输出 HTML 路径（不得位于仓库/包目录内）"), title: P.str("标题") }, []),
   async (a) => {
     const { mdToHtmlLite, protectDocument, sanitizeFragment } = await mod("report/security.mjs");
+    const { paths } = await M.paths();
+    // mdPath 限制在数据目录/包目录内，避免经由提示注入读取任意本机文件
+    if (a.mdPath) {
+      const resolved = path.resolve(a.mdPath);
+      const roots = [paths().home, (await M.paths()).PKG_ROOT].map((r) => path.resolve(r));
+      if (!roots.some((r) => resolved === r || resolved.startsWith(r + path.sep))) {
+        return fail("mdPath 超出允许范围（仅限数据目录 " + paths().home + " 与包目录内）：" + a.mdPath);
+      }
+    }
     const mdText = a.markdown ?? (a.mdPath ? fs.readFileSync(a.mdPath, "utf8") : "");
     const body = sanitizeFragment(mdToHtmlLite(mdText));
     const html = protectDocument(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${a.title ?? "微信情报报告"}</title></head><body><main class="markdown-body">${body}</main></body></html>`, { static: true });
-    if (a.out) { fs.mkdirSync(path.dirname(a.out), { recursive: true }); fs.writeFileSync(a.out, html, "utf8"); }
+    if (a.out) {
+      await assertOutOutsideRepo(a.out);
+      fs.mkdirSync(path.dirname(a.out), { recursive: true });
+      fs.writeFileSync(a.out, html, "utf8");
+    }
     return { out: a.out ?? null, bytes: Buffer.byteLength(html), html: a.out ? undefined : html };
   });
 
 tool("wai_report_list", "列出历次报告目录与产物文件。",
-  S({ limit: P.int("默认 20") }), async (a) => {
+  S({ limit: P.int("默认 20", { min: 0 }) }), async (a) => {
     const { paths } = await M.paths();
     const out = paths().output;
     if (!fs.existsSync(out)) return { output: out, runs: [] };
@@ -719,11 +865,19 @@ tool("wai_report_list", "列出历次报告目录与产物文件。",
     return { output: out, runs };
   });
 
-tool("wai_cleanup", "清理历史输出与原始中间产物。默认只预览，确认后才删除。",
-  S({ root: P.str("根目录，默认输出目录"), rawDays: P.int("原始文件保留天数，默认 7"), reportDays: P.int("报告保留天数，默认 30"), apply: P.bool("真正删除") }),
+tool("wai_cleanup", "清理历史输出与原始中间产物。默认只预览，确认后才删除。root 必须位于数据目录内。",
+  S({ root: P.str("根目录，默认输出目录（必须位于数据目录内）"), rawDays: P.int("原始文件保留天数，默认 7"), reportDays: P.int("报告保留天数，默认 30"), apply: P.bool("真正删除") }),
   async (a) => {
     const { paths } = await M.paths();
     const root = a.root ?? paths().output;
+    // 删除面限制在数据目录内，避免提示注入诱导删除任意本机 JSON 文件
+    {
+      const resolved = path.resolve(root);
+      const home = path.resolve(paths().home);
+      if (!(resolved === home || resolved.startsWith(home + path.sep))) {
+        return fail("root 超出允许范围（必须位于数据目录 " + paths().home + " 内）：" + root);
+      }
+    }
     const now = Date.now();
     const plan = [];
     const walk = (dir, depth = 0) => {
@@ -745,7 +899,7 @@ tool("wai_cleanup", "清理历史输出与原始中间产物。默认只预览�
 
 // ---------- 5. 商机 ----------
 tool("wai_opportunities", "商机管线：默认只看正式机会；includeCandidates 才显示未人工确认的候选；dueOnly 只看到期跟进。",
-  S({ status: P.str("new|active|waiting|paused|won|lost|ignored|stale|archived"), stage: P.str("阶段"), chat: P.str("限定会话"), dueOnly: P.bool("只看到期"), includeClosed: P.bool("含已关闭"), includeCandidates: P.bool("含待审核候选"), minPriority: P.int("默认 3"), limit: P.int("默认 50"), out: P.str("输出目录") }),
+  S({ status: P.str("new|active|waiting|paused|won|lost|ignored|stale|archived"), stage: P.str("阶段"), chat: P.str("限定会话"), dueOnly: P.bool("只看到期"), includeClosed: P.bool("含已关闭"), includeCandidates: P.bool("含待审核候选"), minPriority: P.int("默认 3", { min: 0 }), limit: P.int("默认 50", { min: 0 }), out: P.str("输出目录") }),
   async (a) => {
     const { listOpportunities } = await M.opportunities();
     const rows = listOpportunities({ ...a, includeCandidates: !!a.includeCandidates, dueOnly: !!a.dueOnly, includeClosed: !!a.includeClosed });
@@ -758,11 +912,11 @@ tool("wai_opportunities", "商机管线：默认只看正式机会；includeCand
   });
 
 tool("wai_opportunity_sync", "从当前时间窗的聊天里发现候选并同步进商机库（去重、加固、状态单调推进）。默认 dryRun 预览。",
-  S({ ...WINDOW_PROPS, chat: P.str("限定会话"), dryRun: P.bool("只预览"), exclude: P.arr("排除群名") }),
+  S({ ...WINDOW_PROPS, chat: P.str("限定会话"), dryRun: P.bool("只预览（默认 true；显式 false 才写入）"), exclude: P.arr("排除群名") }),
   async (a) => {
-    const w = await resolveWindowArgs({ hours: a.hours ?? 24, ...a });
+    const w = await windowFor(a);
     const { buildCandidates, syncCandidates } = await M.opportunities();
-    const { messages } = await (async () => { const r = await analysisFor(w, { allowDemo: true }); return r; })();
+    const { messages } = await analysisFor(w, {});
     const cands = buildCandidates(a.chat ? messages.filter((m) => m.session_name.includes(a.chat)) : messages);
     const r = syncCandidates(cands, { dryRun: a.dryRun !== false });
     return { window: w.label, candidates: cands.length, ...r };
@@ -793,10 +947,12 @@ tool("wai_feedback_add", "持久化用户纠正：confirmed 确认 / false_posit
   S({ targetType: P.str("chat|opportunity|message|link"), target: P.str("目标（群名/商机 key/商机 id/链接）"), verdict: P.str("confirmed|false_positive|ignore|low_priority"), note: P.str("备注") }, ["targetType", "target", "verdict"]),
   async (a) => {
     const { addFeedback } = await M.opportunities();
-    return addFeedback(a);
+    // addFeedback 返回新行 id（数字）：包成 record，数字直传违反 structuredContent 契约（写库本身是成功的）
+    const id = await addFeedback(a);
+    return { saved: true, id, targetType: a.targetType, target: a.target, verdict: a.verdict };
   });
 
-tool("wai_feedback_list", "查看已记录的纠正。", S({ targetType: P.str("类型过滤"), limit: P.int("默认 50") }), async (a) => {
+tool("wai_feedback_list", "查看已记录的纠正。", S({ targetType: P.str("类型过滤"), limit: P.int("默认 50", { min: 0 }) }), async (a) => {
     const { listFeedback } = await M.opportunities();
     return { rows: listFeedback(a) };
   });
@@ -826,12 +982,39 @@ tool("wai_config_set", "修改配置：新增导出目录 / 外部只读 CLI / �
     vaults: P.arr("导出目录 [{id,path,enabled}]", { type: "object" }),
     readers: P.arr("外部只读 CLI [{id,name,command,args}]", { type: "object" }),
     sqliteSources: P.arr("已解密数据库 [{id,path,enabled}]", { type: "object" }),
-    settings: P.any("设置项 patch"),
+    settings: P.obj("设置项 patch（键值对象，如 {\"defaultHours\": 24}）"),
     targets: P.arr("转发目标 patch：按 id 合并（如启用文件夹目标并给 path）", { type: "object" }),
     scenes: P.arr("场景 patch：按 id 覆盖", { type: "object" }),
     reader: P.str("指定默认数据源 id，或 auto"),
   }), async (a) => {
-    const { loadConfig, saveConfig } = await M.config();
+    const { loadConfig, saveConfig, defaultConfig } = await M.config();
+    // settings 声明为 object 只保证严格客户端按对象送达（此前缺 type 会被按 string 序列化）；
+    // 真正的边界在这里：字符串/数组会被 ...展开成索引垃圾键写进 config.json，未知键会被静默保存。
+    // 先按形状 + 已知键白名单显式校验（defaultConfig 的 settings 键 + reader）。
+    if (a.settings !== undefined && a.settings !== null) {
+      const s = a.settings;
+      if (typeof s !== "object" || Array.isArray(s)) {
+        return fail("settings 必须是键值对象（如 {\"defaultHours\": 24}），不能是" + (Array.isArray(s) ? "数组" : typeof s));
+      }
+      const known = new Set([...Object.keys(defaultConfig().settings), "reader"]);
+      const unknownKeys = Object.keys(s).filter((k) => !known.has(k));
+      if (unknownKeys.length) return fail(`settings 未知键：${unknownKeys.join("、")}。可用键：${[...known].join("、")}`);
+      for (const [k, v] of Object.entries(s)) {
+        if (v !== null && typeof v === "object") return fail(`settings.${k} 只能是字符串/数字/布尔值`);
+      }
+    }
+    // targets/scenes 按 id 合并：缺 id 的 patch 此前会被原样追加成无主条目
+    for (const [key, list] of [["targets", a.targets], ["scenes", a.scenes]]) {
+      for (const patch of list ?? []) {
+        if (!patch || typeof patch !== "object" || Array.isArray(patch)) return fail(`${key} 的每一项必须是对象`);
+        if (!String(patch.id ?? "").trim()) return fail(`${key} 的每一项必须带非空 id（按 id 合并）`);
+      }
+    }
+    for (const [key, list] of [["vaults", a.vaults], ["readers", a.readers], ["sqliteSources", a.sqliteSources]]) {
+      for (const item of list ?? []) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return fail(`${key} 的每一项必须是对象`);
+      }
+    }
     const cfg = loadConfig({ reload: true });
     if (a.vaults) cfg.vaults = [...(cfg.vaults ?? []), ...a.vaults];
     if (a.readers) cfg.readers = [...(cfg.readers ?? []), ...a.readers];
@@ -890,7 +1073,7 @@ tool("wai_target_list", "列出全部转发目标（Agent / Obsidian / 剪贴板
     return { targets: listTargets() };
   });
 
-tool("wai_deliver", "把选中的微信内容投递到指定目标：写成 Agent 提示词文件、写入 Obsidian、复制到剪贴板、存到文件夹，或交给自定义命令。默认 dryRun 只预览不落盘。",
+tool("wai_deliver", "把选中的微信内容投递到指定目标：写成 Agent 提示词文件、写入 Obsidian、复制到剪贴板、存到文件夹，或交给自定义命令。默认 dryRun 只预览不落盘（显式 dryRun:false 才真正执行）。",
   S({
     body: P.str("选中的聊天文本"),
     messages: P.arr("结构化消息", { type: "object" }),
@@ -900,16 +1083,17 @@ tool("wai_deliver", "把选中的微信内容投递到指定目标：写成 Agen
     target: P.str("目标 id：codex|claude-code|deepseek-harness|workbuddy|doubao|qwen-work|wesight|obsidian|clipboard|folder|custom"),
     targets: P.arr("多个目标 id"),
     out: P.str("输出目录（默认自动创建）"),
-    dryRun: P.bool("只预览不落盘"),
+    dryRun: P.bool("只预览不落盘（默认 true；显式 false 才真正执行）"),
   }, ["body"]), async (a) => {
     const { renderPayload, deliver, listTargets } = await M.targets();
     const { matchSceneFor } = await M.scenes();
     const scene = a.scene ? { id: a.scene } : await matchSceneFor(a.chat ?? a.title ?? "");
     const payload = await renderPayload(a, { scene });
     const ids = a.targets?.length ? a.targets : (a.target ? [a.target] : (scene?.targets ?? ["clipboard"]));
+    const dryRun = a.dryRun !== false; // 写动作默认预览，显式关闭才执行
     const results = [];
-    for (const id of ids) results.push(await deliver(payload, { target: id, scene, dryRun: !!a.dryRun }));
-    return { dryRun: !!a.dryRun, scene: scene?.id ?? null, targets: ids, results, available: listTargets().map((t) => t.id) };
+    for (const id of ids) results.push(await deliver(payload, { target: id, scene, dryRun }));
+    return { dryRun, scene: scene?.id ?? null, targets: ids, results, available: listTargets().map((t) => t.id) };
   });
 
 tool("wai_obsidian_write", "把内容写成 Obsidian 笔记（含 frontmatter、附件复制、图片嵌入 ![[...]]、文件链接 [[...]]）。",
@@ -935,15 +1119,15 @@ tool("wai_skill_run", "对选中内容套用内置技能：生成结构化提示
   });
 
 tool("wai_history_list", "查看操作记录（历次转发/投递），可用于把之前选过的内容再次发给其他 Agent。",
-  S({ limit: P.int("默认 50"), action: P.str("动作过滤"), target: P.str("目标过滤") }), async (a) => {
+  S({ limit: P.int("默认 50", { min: 0 }), action: P.str("动作过滤"), target: P.str("目标过滤") }), async (a) => {
     const { listOperations, historySummary } = await M.history();
     return { summary: historySummary(), rows: listOperations(a) };
   });
 
-tool("wai_history_rerun", "把某条历史记录再次投递到另一个目标（换一个 Agent 或写到 Obsidian）。",
-  S({ id: P.str("历史记录 id"), target: P.str("新目标 id") }, ["id", "target"]), async (a) => {
+tool("wai_history_rerun", "把某条历史记录再次投递到另一个目标（换一个 Agent 或写到 Obsidian）。默认 dryRun 只预览不落盘。",
+  S({ id: P.str("历史记录 id"), target: P.str("新目标 id"), dryRun: P.bool("只预览不落盘（默认 true；显式 false 才真正执行）") }, ["id", "target"]), async (a) => {
     const { rerun } = await M.history();
-    return rerun(a.id, { target: a.target });
+    return rerun(a.id, { target: a.target, dryRun: a.dryRun !== false });
   });
 
 tool("wai_batch_create", "批量采集：把多条选中内容作为一批登记，进入 pending→staging→ready→delivering→done 状态机。",
@@ -959,13 +1143,126 @@ tool("wai_batch_status", "查看批次状态与逐条进度；失败的条目会
     return a.id ? b.batchStatus(a.id) : { batches: b.listBatches() };
   });
 
-tool("wai_batch_deliver", "投递整个批次；支持重试失败项。",
-  S({ id: P.str("批次 id"), target: P.str("目标 id"), dryRun: P.bool("只预览") }, ["id"]), async (a) => {
-    const { deliverBatch } = await M.batch();
-    return deliverBatch(a.id, { target: a.target, dryRun: !!a.dryRun });
+tool("wai_batch_stage", "暂存批次条目并标记可交付（→ staging → ready）：原始载荷写进 items/<index>.json 永不丢弃。省略 index 处理全部未交付条目；text/file 只配合单条 index；ready:false 只暂存不标记。wai_batch_deliver 只投递 ready 条目。",
+  S({ id: P.str("批次 id"), index: P.int("条目序号（省略=全部未交付条目）", { min: 0 }), text: P.str("条目正文（仅单条）"), file: P.str("附件路径（仅单条）"), ready: P.bool("暂存后标记 ready（默认 true）") }, ["id"]),
+  async (a) => {
+    const b = await M.batch();
+    if ((a.text != null || a.file != null) && a.index == null) return fail("text/file 只能配合单条 index 使用");
+    const before = b.batchStatus(a.id); // 批次不存在时显式报错
+    const idxs = a.index != null ? [Number(a.index)] : before.items.filter((i) => i.status !== "done").map((i) => i.index);
+    if (!idxs.length) return fail("没有可暂存的条目（全部已交付）");
+    let staged = 0, marked = 0, skipped = 0;
+    const details = [];
+    for (const idx of idxs) {
+      const r = b.stageItem(a.id, idx, { text: a.text, file: a.file });
+      if (!r.ok) { skipped += 1; details.push({ index: idx, detail: r.detail }); continue; }
+      staged += 1;
+      if (a.ready !== false) { const m = b.markReady(a.id, idx); if (m.ok) marked += 1; }
+    }
+    const after = b.batchStatus(a.id);
+    return { batchId: a.id, staged, ready: marked, skipped, status: after.status, counts: after.counts, details };
   });
 
-// ---------- 8. 只读 Reader 统一入口（对应 rion-wechat-cli 的命令面） ----------
+tool("wai_batch_deliver", "投递整个批次的 ready 条目；未暂存/失败条目先用 wai_batch_stage 处理（重试=重新暂存）。默认 dryRun 只预览不落盘。",
+  S({ id: P.str("批次 id"), target: P.str("目标 id"), dryRun: P.bool("只预览（默认 true；显式 false 才真正执行）") }, ["id"]), async (a) => {
+    const { deliverBatch } = await M.batch();
+    return deliverBatch(a.id, { target: a.target, dryRun: a.dryRun !== false });
+  });
+
+// ---------- 8. 聊天记录分析（提示词全集 A-I：报告/社交/情绪/任务/财务/记忆/内容/团队/风控） ----------
+// 全部只读分析：不发送消息、不改微信；证据脱敏（手机号/身份证/卡号/验证码打码）；
+// 输出 Markdown 时同样走脱敏链路；不做医疗/法律/投资定性。默认时间窗 30 天。
+const ANA_WINDOW = {
+  ...WINDOW_PROPS,
+  source: P.str("数据源 id（可选）"),
+  allowDemo: P.bool("允许演示数据（默认 false）"),
+  out: P.str("输出目录（可选：写出 <kind>_report.md + <kind>.json，落盘前脱敏）"),
+};
+
+tool("wai_period_report", "A 年度/月度聊天报告：消息量与类型分布、活跃时段（小时/星期/日/月）、Top 联系人与群、关键词/口头禅/表情、消息长度、回复间隔、连续聊天天数与最长静默、关系升温降温、5-10 条洞察。默认近 30 天。",
+  S({ ...ANA_WINDOW, top: P.int("排行条数（默认 20）", { min: 1, max: 100 }) }), async (a) => {
+    const { periodReport } = await M.anaReport();
+    return runAnalytics("period", a, (msgs, w) => {
+      const r = periodReport(msgs, { sinceMs: w.sinceMs, untilMs: w.untilMs, top: a.top ?? 20 });
+      return { ...r, summary: `期间报告：${r.total_messages} 条消息（我 ${r.self_messages} / 收 ${r.received_messages}），最活跃 ${r.activity?.peak_day?.day ?? "-"}，洞察 ${r.insights.length} 条` };
+    });
+  });
+
+tool("wai_social_graph", "B 社交关系分析：谁主动联系我最多 / 我主动联系谁最多、回复间隔（中位）、双向互动比例、关系升温降温、群内核心与边缘成员、跨群桥梁（近似）、同群共现聚类、互动模式线索（只描述不评判）。",
+  S({ ...ANA_WINDOW, top: P.int("排行条数（默认 15）", { min: 1, max: 50 }), gapHours: P.num("对话段切分间隔小时（默认 4）", { min: 0.5, max: 72 }) }), async (a) => {
+    const { socialGraph } = await M.anaSocial();
+    return runAnalytics("social", a, (msgs, w) => {
+      const r = socialGraph(msgs, { sinceMs: w.sinceMs, untilMs: w.untilMs, top: a.top ?? 15, gapMs: (a.gapHours ?? 4) * 3600000 });
+      return { ...r, summary: `社交关系：私聊 ${r.overview.peers} / 群 ${r.overview.groups}，对方主动最多「${r.who_contacts_me_most[0]?.name ?? "-"}」，线索 ${r.interaction_notes.length} 条` };
+    });
+  });
+
+tool("wai_sentiment_trend", "C 情绪与心理趋势：积极/中性/消极比例、每日情绪得分、波动最大的日子、压力源话题、冲突/安慰词、夜间负面、需要关注的时段。文本情绪线索，不做医疗诊断。",
+  S(ANA_WINDOW), async (a) => {
+    const { sentimentTrend } = await M.anaSentiment();
+    return runAnalytics("sentiment", a, (msgs, w) => {
+      const r = sentimentTrend(msgs, { sinceMs: w.sinceMs, untilMs: w.untilMs });
+      return { ...r, summary: `情绪趋势：积极 ${(r.positive_ratio * 100).toFixed(0)}% / 消极 ${(r.negative_ratio * 100).toFixed(0)}%，需关注 ${r.high_risk_periods.length} 个时段（非医疗诊断）` };
+    });
+  });
+
+tool("wai_task_extract", "D 时间与任务管理：抽取待办/约定/会议/提醒/生日/缴费/行程，给负责人（我答应/别人答应）、截止、状态（待确认|已确认|已完成|逾期）、来源 msg_id 与置信度；可生成 ICS 日历片段。",
+  S({ ...ANA_WINDOW, includeIcs: P.bool("是否附 ICS（默认 true）") }), async (a) => {
+    const { taskExtract } = await M.anaTasks();
+    return runAnalytics("tasks", a, (msgs, w) => {
+      const r = taskExtract(msgs, { includeIcs: a.includeIcs !== false });
+      return { ...r, summary: `任务抽取：${r.stats.total} 项（${JSON.stringify(r.stats.by_status)}）` };
+    });
+  });
+
+tool("wai_finance", "E 财务与消费记录：抽取转账/红包/AA/收付款/购物/账单流水，月度收支与净额、消费类别、高频交易对象、异常线索（大额/高频/未还）。默认金额脱敏为区间（showAmounts 才给精确值）；不提供任何投资/借贷/理财建议。",
+  S({ ...ANA_WINDOW, showAmounts: P.bool("是否显示精确金额（默认 false，只给区间）") }), async (a) => {
+    const { financeLedger } = await M.anaFinance();
+    return runAnalytics("finance", a, (msgs, w) => {
+      const r = financeLedger(msgs, { showAmounts: !!a.showAmounts });
+      return { ...r, summary: `财务记录：${r.totals.entries} 笔流水，支出 ${r.totals.expense} / 收入 ${r.totals.income}${a.showAmounts ? "" : "（金额按区间脱敏）"}，线索 ${r.suspicious.length} 条` };
+    });
+  });
+
+tool("wai_memory", "F 个人记忆与知识库：把重要事件/决策/经验/文件/照片/地点/链接整理成知识卡片与时间线（附 source_msg_ids）；给 query 时做检索式记忆问答（只引用命中，不编造）。",
+  S({ ...ANA_WINDOW, query: P.str("记忆问答查询（可选）"), maxCards: P.int("卡片上限（默认 60）", { min: 1, max: 300 }) }), async (a) => {
+    const { memoryCards, memoryAnswer } = await M.anaMemory();
+    return runAnalytics("memory", a, (msgs, w) => {
+      const r = memoryCards(msgs, { maxCards: a.maxCards ?? 60 });
+      if (a.query) r.answer = memoryAnswer(msgs, a.query);
+      return { ...r, summary: `记忆库：${r.stats.cards} 张卡片 / ${r.timeline.length} 条时间线索引${a.query ? `，问答命中 ${r.answer.found} 条` : ""}` };
+    });
+  });
+
+tool("wai_content_analysis", "G 内容分析：词频/口头禅/表情、话题聚类、意图识别（询问/约定/请求/抱怨/通知/安慰/冲突/确认/感谢/承诺）、实体抽取（时间/地点/人物/金额/组织/事件）、抽取式摘要、检索问答（给 query，附 msg_id）。",
+  S({ ...ANA_WINDOW, top: P.int("词频条数（默认 20）", { min: 5, max: 100 }), query: P.str("检索问答查询（可选）") }), async (a) => {
+    const { contentAnalysis, answerQuestion } = await M.anaContent();
+    return runAnalytics("content", a, (msgs, w) => {
+      const r = contentAnalysis(msgs, { top: a.top ?? 20 });
+      if (a.query) r.qa = answerQuestion(msgs, a.query);
+      return { ...r, summary: `内容分析：${r.total} 条消息，话题 ${r.topics.length} 类，实体 ${Object.values(r.entities).reduce((n, v) => n + (v?.length ?? 0), 0)} 个${a.query ? `，问答命中 ${r.qa.evidence.length} 条证据` : ""}` };
+    });
+  });
+
+tool("wai_team_review", "H 工作/团队分析：沟通复盘（参与度/回复节奏）、决策追溯（谁在何时定了什么）、任务分配（负责人/截止/状态）、风险提醒（延期/阻塞/冲突/信息缺失）、客服质检线索、客户需求与异议、FAQ。企业场景需合规会话存档并告知员工；风险只提示不定性。",
+  S({ ...ANA_WINDOW, project: P.str("项目名称（可选）") }), async (a) => {
+    const { teamReview } = await M.anaTeam();
+    return runAnalytics("team", a, (msgs, w) => {
+      const r = teamReview(msgs, { projectName: a.project ?? null });
+      return { ...r, summary: `团队复盘：${r.window_messages} 条消息，决策 ${r.decisions.length} 项 / 分配 ${r.assignments.length} 项 / 风险线索 ${r.risks.length} 条` };
+    });
+  });
+
+tool("wai_risk_scan", "I 安全/风控分析：诈骗话术（高回报/冒充/垫付/钓鱼）、敏感信息泄露（身份证/银行卡/手机号/验证码/密码/住址）、合规风险（收益承诺/回扣/内幕）、异常行为（线下转账/短链/删记录/频繁转账/深夜资金）。只输出线索且 needs_review=true，必须人工复核；未获授权不得分析。",
+  S({ ...ANA_WINDOW, goal: P.str("风控目标过滤（如 诈骗 / 合规 / 敏感信息泄露 / 异常）") }), async (a) => {
+    const { riskScan } = await M.anaRisk();
+    return runAnalytics("risk", a, (msgs, w) => {
+      const r = riskScan(msgs, { goal: a.goal ?? null });
+      return { ...r, summary: `风控线索：扫描 ${r.scanned} 条，命中 ${r.stats.total} 条（高 ${r.stats.by_level?.["高"] ?? 0} / 中 ${r.stats.by_level?.["中"] ?? 0} / 低 ${r.stats.by_level?.["低"] ?? 0}），全部需人工复核` };
+    });
+  });
+
+// ---------- 9. 只读 Reader 统一入口（对应 rion-wechat-cli 的命令面） ----------
 const READER_CMDS = [
   "version", "status", "self-test", "doctor", "access-plan", "tools", "schema",
   "sessions", "contacts", "resolve-chat", "timeline", "history", "context", "search", "search-context",
@@ -976,11 +1273,11 @@ const READER_CMDS = [
 tool("wai_reader", "统一的只读微信读取器命令入口（对应 rion-wechat-cli 的命令面）。只读快照、不修改原始数据库、不获取密钥、不注入、不 Hook。",
   S({
     command: P.str(`子命令：${READER_CMDS.join(" | ")}`),
-    source: P.str("数据源 id（local/vault:path/sqlite:path/cli:id/mock）"),
+    source: P.str("数据源 id（local/vault:path/sqlite:path/wcdb:path/cli:id/mock）"),
     chat: P.str("会话名（timeline/context/members/media/export 用）"),
     query: P.str("检索词或 SQL（search/sql 用）"),
     keyword: P.str("关键词过滤"),
-    limit: P.int("条数上限"),
+    limit: P.int("条数上限", { min: 0 }),
     offset: P.int("偏移"),
     order: P.str("asc | desc"),
     since: P.str("起始时间"),
@@ -1014,7 +1311,7 @@ tool("wai_reader", "统一的只读微信读取器命令入口（对应 rion-wec
       case "search":
       case "search-context": return { source: sourceId, ...(await reader.search(a.query ?? a.keyword ?? "", { limit: lim ?? 20, offset: a.offset ?? 0, inChat: a.chat, after: a.since, before: a.before })).data };
       case "unread": return { source: sourceId, ...(await (reader.unread ? reader.unread({ limit: lim ?? 50 }) : Promise.resolve({ data: { sessions: [], note: "该数据源不提供未读" } }))).data };
-      case "stats": return { source: sourceId, ...(await reader.stats()).data };
+      case "stats": return { source: sourceId, ...(await (reader.stats ? reader.stats() : Promise.resolve({ data: { note: "该数据源不提供 stats（可用 status / schema 概览）" } }))).data };
       case "members": return { source: sourceId, ...(await reader.members(a.chat ?? "", { limit: lim ?? 500 })).data };
       case "announcements": return { source: sourceId, ...(await (reader.announcements ? reader.announcements(a.chat, { limit: lim ?? 20 }) : Promise.resolve({ data: { announcements: [] } }))).data };
       case "favorites": return { source: sourceId, ...(await (reader.favorites ? reader.favorites({ limit: lim ?? 100, after: a.since, before: a.before }) : Promise.resolve({ data: { favorites: [] } }))).data };
@@ -1025,7 +1322,16 @@ tool("wai_reader", "统一的只读微信读取器命令入口（对应 rion-wec
       case "red-packets": return { source: sourceId, ...(await (reader.redPackets ? reader.redPackets({ limit: lim ?? 50 }) : Promise.resolve({ data: { rows: [] } }))).data };
       case "forward-history": return { source: sourceId, ...(await (reader.forwardHistory ? reader.forwardHistory({ limit: lim ?? 50 }) : Promise.resolve({ data: { rows: [] } }))).data };
       case "export": return { source: sourceId, ...(await (reader.exportMessages ? reader.exportMessages({ chat: a.chat, format: a.format ?? "jsonl", limit: lim ?? 1000, since: a.since, before: a.before }) : Promise.resolve({ ok: false, data: { error: "该数据源不支持导出" } }))).data };
-      case "sql": return { source: sourceId, ...(await reader.sql({ query: a.query, subdir: a.subdir, file: a.file, limit: lim ?? 100 })).data };
+      case "sql": {
+        // 错误形状统一：reader 内部 error 可能是字符串或 {code,message}，工具面固定 error 为字符串、code 单列
+        const d = { ...((await reader.sql({ query: a.query, subdir: a.subdir, file: a.file, limit: lim ?? 100 })).data ?? {}) };
+        if (d.error && typeof d.error === "object") {
+          const { code, message } = d.error;
+          d.error = String(message ?? code ?? "SQL 执行失败");
+          if (code) d.error_code = String(code);
+        }
+        return { source: sourceId, ...d };
+      }
       case "agent": return { mode: "overview", identity: { name: SERVER_NAME, version: SERVER_VERSION }, source: sourceId, coverage: reader.describe?.() ?? null, note: "只读；不发送、不操作 UI、不获取密钥。" };
       default: return fail(`未知子命令 ${a.command}；可用：${READER_CMDS.join(", ")}`);
     }
@@ -1037,7 +1343,9 @@ tool("wai_reader", "统一的只读微信读取器命令入口（对应 rion-wec
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
 
 function toolList() {
-  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+  // outputSchema 只声明 type 不锁字段：字段集随工具演化，锁死反而制造契约违规。
+  // 全部工具（含错误信封 {ok:false,error}）的 structuredContent 恒为 record，声明即契约测试的靶子。
+  return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, outputSchema: OUTPUT_SCHEMA }));
 }
 
 async function handleRpc(msg) {
@@ -1102,35 +1410,85 @@ async function handleRpc(msg) {
   }
 }
 
-function writeMsg(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
-
-let buffer = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", async (chunk) => {
-  buffer += chunk;
-  let idx;
-  while ((idx = buffer.indexOf("\n")) >= 0) {
-    const line = buffer.slice(0, idx).trim();
-    buffer = buffer.slice(idx + 1);
-    if (!line) continue;
-    let msg = null;
-    try { msg = JSON.parse(line); } catch { continue; }
-    const out = await handleRpc(msg);
-    if (out) writeMsg(out);
+// stdio 传输只在「直接运行」时启动：被测试/嵌入方 import 时不得占用 stdin，
+// 更不能在 stdin end 时 process.exit(0)——那会杀掉宿主进程（真实测试踩到：
+// 测试里的 setImmediate 让出事件循环后，import 时注册的 end 处理器当场退出）。
+const isMain = (() => {
+  try {
+    return import.meta.main === true
+      || (Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)));
+  } catch {
+    return false;
   }
-});
-process.stdin.on("end", () => process.exit(0));
-process.on("SIGINT", () => process.exit(0));
-process.on("uncaughtException", (e) => {
-  try { process.stderr.write("[wechat-ai] uncaught: " + String(e?.stack ?? e) + "\n"); } catch { /* ignore */ }
-});
+})();
 
-// --selftest：不进入 stdio 循环，直接打印工具清单（供安装器/自检用）
-if (process.argv.includes("--list-tools")) {
-  process.stdout.write(JSON.stringify({ server: SERVER_NAME, version: SERVER_VERSION, count: TOOLS.length, tools: TOOLS.map((t) => t.name) }, null, 2) + "\n");
-  process.exit(0);
+if (isMain) {
+  function writeMsg(obj) {
+    process.stdout.write(JSON.stringify(obj) + "\n");
+  }
+
+  let buffer = "";
+  const MAX_BUFFER = 64 * 1024 * 1024; // 单条消息上限 64MB：防止无换行的超大输入把内存吃光
+  let inFlight = 0;
+  let stdinEnded = false;
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", async (chunk) => {
+    buffer += chunk;
+    if (buffer.length > MAX_BUFFER && !buffer.includes("\n")) {
+      buffer = "";
+      writeMsg({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "单条消息超过 64MB 上限，已丢弃" } });
+      return;
+    }
+    let idx;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+      if (line.length > MAX_BUFFER) {
+        writeMsg({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "单条消息超过 64MB 上限，已丢弃" } });
+        continue;
+      }
+      let msg = null;
+      try { msg = JSON.parse(line); } catch {
+        // JSON-RPC 2.0：解析失败要回 -32700（id 为 null），不能静默丢弃
+        writeMsg({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+        continue;
+      }
+      inFlight += 1;
+      try {
+        if (Array.isArray(msg)) {
+          // JSON-RPC batch：逐条处理，按规范回数组
+          const outs = [];
+          for (const m of msg) {
+            const o = await handleRpc(m);
+            if (o) outs.push(o);
+          }
+          if (outs.length) writeMsg(outs);
+        } else {
+          const out = await handleRpc(msg);
+          if (out) writeMsg(out);
+        }
+      } finally {
+        inFlight -= 1;
+        if (stdinEnded && inFlight === 0) process.exit(0);
+      }
+    }
+  });
+  // stdin 结束时不再立刻退出：等在途请求处理完，避免截断未完成的响应
+  process.stdin.on("end", () => {
+    stdinEnded = true;
+    if (inFlight === 0) process.exit(0);
+  });
+  process.on("SIGINT", () => process.exit(0));
+  process.on("uncaughtException", (e) => {
+    try { process.stderr.write("[wechat-ai] uncaught: " + String(e?.stack ?? e) + "\n"); } catch { /* ignore */ }
+  });
+
+  // --selftest：不进入 stdio 循环，直接打印工具清单（供安装器/自检用）
+  if (process.argv.includes("--list-tools")) {
+    process.stdout.write(JSON.stringify({ server: SERVER_NAME, version: SERVER_VERSION, count: TOOLS.length, tools: TOOLS.map((t) => t.name) }, null, 2) + "\n");
+    process.exit(0);
+  }
 }
 
 export { TOOLS, TOOL_MAP, toolList, handleRpc };

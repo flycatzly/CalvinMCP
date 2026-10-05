@@ -4,6 +4,8 @@ import path from "node:path";
 import {
   fmtLocal, fmtDay, toCsv, ensureDir, atomicWrite, writeJson, truncate, clamp, uniq,
 } from "../util.mjs";
+import { loadConfig } from "../config.mjs";
+import { maskPii, maskDeep } from "../analytics/core.mjs";
 import { loadProfile, PUBLIC_FOCUS_AREAS, isOwnerName } from "../profile.mjs";
 import { classifyChat, isLowValueChat } from "../signals.mjs";
 
@@ -70,9 +72,24 @@ function outFile(outDir, name) {
   return path.join(dir, name);
 }
 
-function writeText(file, content) {
-  atomicWrite(file, content.endsWith("\n") ? content : content + "\n");
+/** privacy.redactOutputs（默认开）：报告落盘前统一脱敏；可显式设 false 关闭 */
+function redactOn() {
+  try { return loadConfig().privacy?.redactOutputs !== false; } catch { return true; }
+}
+
+/**
+ * 报告正文/CSV 落盘边界：redactOutputs 开启时整体打码。
+ * 回复草稿是"人要照发"的正文，用 { mask:false } 显式豁免。
+ */
+function writeText(file, content, { mask = true } = {}) {
+  const body = content.endsWith("\n") ? content : content + "\n";
+  atomicWrite(file, mask && redactOn() ? maskPii(body) : body);
   return file;
+}
+
+/** JSON 报告落盘边界：只打码字符串值，数字/布尔保留（机器消费不受影响） */
+function writeJsonRedacted(file, payload) {
+  return writeJson(file, redactOn() ? maskDeep(payload) : payload);
 }
 
 /** 去掉 Markdown 报告里可能残留的原始 details 标签（digest 明确禁止出现） */
@@ -133,7 +150,7 @@ function groupRow(session, messages) {
     pending_reply: signals.includes("待回复"),
     low_value: Boolean(pick(session, ["low_value", "低价值"], false)) || isLowValueChat({ name, text }),
     entertainment: Boolean(pick(session, ["entertainment"], false)),
-    actionable: objPick(session, ["actionable"]) ?? {},
+    actionable: objPick(session, "actionable") ?? {},
     recap_count: num(pick(session, ["recap_count"], 0)),
     boost_count: num(pick(session, ["boost_count"], 0)),
     attachments: list.filter((m) => /^\[(图片|文件|语音|视频|image|file|voice|video)\]$/i.test(flat(pick(m, ["content", "内容"], "")))).length,
@@ -476,8 +493,8 @@ export function renderGroupDaily(analysis, options = {}) {
     cross_group_links: links,
   };
   if (allMessages.length) jsonPayload.messages = allMessages;
-  const jsonFile = writeJson(outFile(outDir, "group_daily.json"), jsonPayload);
-  const coverageFile = writeJson(outFile(outDir, "group_daily_coverage.json"), coverage ?? {
+  const jsonFile = writeJsonRedacted(outFile(outDir, "group_daily.json"), jsonPayload);
+  const coverageFile = writeJsonRedacted(outFile(outDir, "group_daily_coverage.json"), coverage ?? {
     requested: rows.length,
     succeeded: rows.length,
     failed: 0,
@@ -530,7 +547,7 @@ export function renderGroupDaily(analysis, options = {}) {
   const matrixCsvRows = matrixRows.map((row) => ({ ...row, 相关方向: row.相关方向.join("/") }));
   const matrixCsvFile = writeText(outFile(outDir, "group_selection_matrix.csv"), toCsv(matrixCsvRows, matrixCols));
   const basis = "按本机个人 Profile 校准，当前重点：" + dimensions.join("、") + "。建议级别只针对本时段，不等于永久排除。";
-  const matrixJsonFile = writeJson(outFile(outDir, "group_selection_matrix.json"), {
+  const matrixJsonFile = writeJsonRedacted(outFile(outDir, "group_selection_matrix.json"), {
     since,
     until,
     basis,
@@ -557,7 +574,7 @@ export function renderGroupDaily(analysis, options = {}) {
 
   // ---- group_daily_editorial_packet.json ----
   const packet = options.editorial ?? buildGroupEditorialPacket(rows, { since, until, links, coverage });
-  const editorialFile = writeJson(outFile(outDir, "group_daily_editorial_packet.json"), packet);
+  const editorialFile = writeJsonRedacted(outFile(outDir, "group_daily_editorial_packet.json"), packet);
 
   return {
     digest: digestFile,
@@ -802,7 +819,10 @@ function groupVerdict(item) {
 }
 
 function groupConclusion(item) {
-  const key = flat(pick(item, ["摘要候选", "关键发言"], ""));
+  // 摘要候选是对象 {商单,培训或项目,关键发言}：必须先下钻再取「关键发言」；
+  // pick 是平面键查找，pick(item, ["摘要候选", "关键发言"]) 第一个名字命中就返回整个对象，flat 会拼出 [object Object]
+  const summary = objPick(item, "摘要候选");
+  const key = flat(pick(summary ?? item, ["关键发言"], ""));
   if (/(但是|不过|不同意|有分歧|待定|不确定|纠结|再确认|还没定)/.test(key)) {
     return "群内存在待确认的分歧：" + cut(key, 120);
   }
@@ -1064,7 +1084,7 @@ export function renderContactDaily(rows, options = {}) {
     "- 回复建议是方向，不会发送微信；金额、排期和承诺必须人工确认。",
   );
   const digest = writeText(outFile(outDir, "contact_daily_digest.md"), lines.join("\n"));
-  const json = writeJson(outFile(outDir, "contact_daily.json"), { since, until, scope, contacts });
+  const json = writeJsonRedacted(outFile(outDir, "contact_daily.json"), { since, until, scope, contacts });
   return { digest, json };
 }
 
@@ -1479,7 +1499,7 @@ export function renderReply(draft, options = {}) {
   if (promises.length && replyNeeded) {
     lines.push("- 注意已有承诺：" + cut(pick(promises[promises.length - 1], ["content", "内容"], ""), 100));
   }
-  return writeText(outFile(outDir, "reply.md"), lines.join("\n"));
+  return writeText(outFile(outDir, "reply.md"), lines.join("\n"), { mask: false }); // 回复草稿：人要照发的正文，不做落盘打码
 }
 
 const TOPIC_EXPANSIONS = {
@@ -1571,12 +1591,19 @@ export function renderHome(state, options = {}) {
   const outDir = options.outDir ?? ".";
   const now = options.now instanceof Date ? options.now : new Date();
   const data = state ?? {};
-  const latest = String(pick(data, ["latest_message", "最新索引"], "")) || "无";
-  const freshness = String(pick(data, ["freshness", "新鲜度"], "")) || "暂无索引";
-  const totalMessages = num(pick(data, ["messages", "本地消息"], 0));
-  const openOpportunities = num(pick(data, ["open_opportunities", "高优先级推进中"], 0));
-  const dueOpportunities = num(pick(data, ["due_opportunities", "今日到期"], 0));
-  const inboxCount = num(pick(data, ["inbox", "待分流"], 0));
+  // homeState 的现行形状：freshness 是对象（freshnessLabel 才是给人看的文本）、计数在 counts 里；
+  // 此前按旧扁平形状 String(pick(["freshness"])) 直接把对象拼成 [object Object]（契约测试内容层扫描捕获）。
+  // 旧扁平形状（latest_message/messages/... 直挂顶层）仍兼容。
+  const fresh = objPick(data, "freshness");
+  const counts = objPick(data, "counts") ?? {};
+  const triage = objPick(data, "triage") ?? {};
+  const latest = flat(pick(data, ["latest_message", "最新索引"], "")) || flat(pick(fresh, ["last_message_at"], "")) || "无";
+  const freshness = flat(pick(data, ["freshnessLabel", "新鲜度"], "")) || flat(pick(fresh, ["last_message_at"], "")) || "暂无索引";
+  const totalMessages = num(counts.messages ?? pick(data, ["messages", "本地消息"], 0));
+  const openOpportunities = num(counts.opportunities_open ?? pick(data, ["open_opportunities", "高优先级推进中"], 0));
+  const dueOpportunities = num(counts.opportunities_due ?? pick(data, ["due_opportunities", "今日到期"], 0));
+  const inboxCount = num(counts.inbox ?? pick(data, ["inbox", "待分流"], 0));
+  const note = flat(pick(data, ["note"], ""));
 
   const lines = [
     "# 微信个人情报库｜入口",
@@ -1603,8 +1630,9 @@ export function renderHome(state, options = {}) {
     "",
     "- **立即处理**：" + dueOpportunities + " 个已到期跟进；优先运行 today。",
     "- **值得关注**：近 24 小时有 " + inboxCount + " 个高优先级待分流候选；运行 inbox。",
-    "- **仅供存档**：其余消息保留在本地索引，可通过 topic、person 或 db-search 按需检索。",
+    "- **仅供存档**：本时段归档 " + num(triage["仅供存档"]) + " 条，其余消息保留在本地索引，可通过 topic、person 或 db-search 按需检索。",
   ];
+  if (note) lines.splice(lines.indexOf("## 五个入口"), 0, "> 提示：" + note, "");
   return writeText(outFile(outDir, "home.md"), lines.join("\n"));
 }
 

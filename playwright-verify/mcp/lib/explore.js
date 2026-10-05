@@ -10,12 +10,14 @@
  *
  * 网络探活的诚实口径：
  *   - HTTP 4xx/5xx → 记「死链」（进 Fail）；
- *   - 网络不可达/超时 → 记「不可达」（只警告，不进 Fail）——
+ *   - 网络不可达/超时/总预算耗尽 → 记「不可达」（只警告，不进 Fail）——
  *     离线环境下外链必然不可达，把环境问题算成页面问题就是制造假警报，
- *     一个会假报警的巡检比没有巡检更糟。
+ *     一个会假报警的巡检比没有巡检更糟。预算耗尽的条目带 budgetExhausted 标记：
+ *     报告可见「没探到」而不是「探过没问题」，同样不许静默。
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { ARTIFACT_DIRS, safeSession } from './cli.js';
 
@@ -40,6 +42,7 @@ export const FACTS_EVAL_FN = `() => JSON.stringify({
     inputs: Array.from(f.querySelectorAll('input,select,textarea')).slice(0, 50).map((i) => ({
       name: i.name || i.id || '',
       type: i.type || i.tagName.toLowerCase(),
+      required: !!i.required,
     })),
   })),
 })`;
@@ -137,15 +140,21 @@ export function classifyLinks(links = [], { max = 20, skipHosts = [] } = {}) {
 /**
  * 探活（HEAD，405/501 回落 GET 一次）。判定口径见文件头注释：
  * HTTP ≥400 是死链；网络层失败是「不可达」，只警告。
+ *
+ * 总预算（budgetMs > 0 才启用）：单探测超时只兜单条，慢死主机会把并发批次串成
+ * 整分钟级的静默等待（实测 50 条上限 × 4 并发 × 5s ≈ 65s，调用方全程无反馈）。
+ * 预算兜的是**整个探测阶段**：在飞的探测把超时帽到剩余预算，排队中的不再发起 ——
+ * 但也不静默消失，逐条记 unreachable + budgetExhausted，报告可见（诚实 partial）。
  */
-export async function probeLinks(links, { fetchImpl, timeoutMs = 5000, concurrency = 4 } = {}) {
+export async function probeLinks(links, { fetchImpl, timeoutMs = 5000, concurrency = 4, budgetMs = 0 } = {}) {
   const doFetch = fetchImpl || globalThis.fetch;
   const out = [];
   const queue = [...links];
-  async function one(link) {
+  const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+  async function one(link, capMs) {
     const started = Date.now();
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctl.abort(), capMs);
     try {
       let res = await doFetch(link.href, { method: 'HEAD', redirect: 'follow', signal: ctl.signal });
       if (res.status === 405 || res.status === 501) {
@@ -172,7 +181,23 @@ export async function probeLinks(links, { fetchImpl, timeoutMs = 5000, concurren
     }
   }
   const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
-    while (queue.length) await one(queue.shift());
+    while (queue.length) {
+      const link = queue.shift();
+      if (deadline && Date.now() >= deadline) {
+        out.push({
+          ...link,
+          status: 0,
+          ok: false,
+          kind: 'unreachable',
+          detail: `探测总预算 ${budgetMs}ms 耗尽，未发起探测`,
+          budgetExhausted: true,
+          latencyMs: 0,
+        });
+        continue;
+      }
+      const cap = deadline ? Math.max(1, Math.min(timeoutMs, deadline - Date.now())) : timeoutMs;
+      await one(link, cap);
+    }
   });
   await Promise.all(workers);
   // 保持输入顺序，报告稳定可比
@@ -206,6 +231,120 @@ export function parseConsoleErrors(text) {
   return out.slice(0, 20);
 }
 
+/**
+ * 单表单稳定指纹（v1.8.12 表单指纹）：字段按 name|type|required 排序后进哈希 ——
+ * 字段顺序重排**不算漂移**（序变在两期对比里是噪声）；增删字段、改类型、必填位翻转、
+ * action/method 变化才是真信号。16 位十六进制足够当指纹用（同页冲突概率可忽略）。
+ */
+export function formHash(form) {
+  const fields = (form?.inputs || [])
+    .map((i) => `${i?.name || ''}|${i?.type || ''}|${i?.required ? 1 : 0}`)
+    .sort()
+    .join('\n');
+  return createHash('sha256')
+    .update(`${(form?.method || 'get').toLowerCase()}\n${form?.action || ''}\n${fields}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/** 整页表单指纹：逐表单哈希按页面顺序串联 —— 一数回答「表单变没变」。 */
+export function formsSummary(forms = []) {
+  const hashes = (forms || []).map((f) => formHash(f));
+  return {
+    count: hashes.length,
+    formsHash: createHash('sha256').update(hashes.join('\n')).digest('hex').slice(0, 16),
+  };
+}
+
+/**
+ * 两期表单对比（explore_page diffAgainst）：表单按（method+action+同类序号）配对、
+ * 字段按 name 配对。检出三类：字段新增/删除、必填位变化（required 布尔翻转）、表单级增删。
+ * 字段顺序变化不算变更（与 formHash 同一口径）；表单重排（同 action 多表单换位）按变更计 ——
+ * 页面结构变化本身就是漂移。判定是对比不是质检：有变更不改 verdict（可能是有意改版）。
+ * 明细各类截前 20 条 + *Total 诚实计数 —— 对比结果回灌上下文，也要有界。
+ */
+export function diffForms(prevForms = [], currForms = []) {
+  const CAP = 20;
+  const idOf = (f) => `${(f?.method || 'get').toLowerCase()} ${f?.action || ''}`;
+  const withOcc = (forms) => {
+    const seen = new Map();
+    return (forms || []).map((f) => {
+      const id = idOf(f);
+      const occ = seen.get(id) || 0;
+      seen.set(id, occ + 1);
+      return { f, key: `${id}#${occ}`, id, occ };
+    });
+  };
+  const prev = withOcc(prevForms);
+  const curr = withOcc(currForms);
+  const prevByKey = new Map(prev.map((e) => [e.key, e]));
+  const currByKey = new Map(curr.map((e) => [e.key, e]));
+  const formRef = (e) => ({ method: e.id.split(' ')[0], action: e.id.slice(e.id.indexOf(' ') + 1), occurrence: e.occ });
+
+  // 明细各截前 CAP 条，*Total 独立计数 —— total 取截后数组长度是「静默少计数」
+  // （钉抓过：25 条新增会报成 20/20），诚实口径两者必须分开。
+  const formsAdded = [];
+  const formsRemoved = [];
+  const fieldsAdded = [];
+  const fieldsRemoved = [];
+  const requiredChanged = [];
+  let formsAddedTotal = 0;
+  let formsRemovedTotal = 0;
+  let fieldsAddedTotal = 0;
+  let fieldsRemovedTotal = 0;
+  let requiredChangedTotal = 0;
+  for (const e of curr) {
+    const p = prevByKey.get(e.key);
+    if (!p) {
+      formsAddedTotal++;
+      if (formsAdded.length < CAP) formsAdded.push(formRef(e));
+      continue;
+    }
+    const pFields = new Map((p.f?.inputs || []).map((i) => [i?.name || '', i]));
+    for (const i of e.f?.inputs || []) {
+      const name = i?.name || '';
+      const pi = pFields.get(name);
+      if (!pi) {
+        fieldsAddedTotal++;
+        if (fieldsAdded.length < CAP) fieldsAdded.push({ form: e.id, name, type: i?.type || '', required: !!i?.required });
+        continue;
+      }
+      if (!!pi?.required !== !!i?.required) {
+        requiredChangedTotal++;
+        if (requiredChanged.length < CAP) requiredChanged.push({ form: e.id, name, from: !!pi?.required, to: !!i?.required });
+      }
+    }
+  }
+  for (const e of prev.values()) {
+    if (!currByKey.has(e.key)) {
+      formsRemovedTotal++;
+      if (formsRemoved.length < CAP) formsRemoved.push(formRef(e));
+      continue;
+    }
+    const cFields = new Map((currByKey.get(e.key).f?.inputs || []).map((i) => [i?.name || '', i]));
+    for (const i of e.f?.inputs || []) {
+      const name = i?.name || '';
+      if (!cFields.has(name)) {
+        fieldsRemovedTotal++;
+        if (fieldsRemoved.length < CAP) fieldsRemoved.push({ form: e.id, name, type: i?.type || '', required: !!i?.required });
+      }
+    }
+  }
+  return {
+    changed: formsAddedTotal + formsRemovedTotal + fieldsAddedTotal + fieldsRemovedTotal + requiredChangedTotal > 0,
+    formsAdded,
+    formsRemoved,
+    fieldsAdded,
+    fieldsRemoved,
+    requiredChanged,
+    formsAddedTotal,
+    formsRemovedTotal,
+    fieldsAddedTotal,
+    fieldsRemovedTotal,
+    requiredChangedTotal,
+  };
+}
+
 /** 读 eval 落盘件并解析（统一入口，含缺失容错）。 */
 export function readFacts(file) {
   if (!file || !fs.existsSync(file)) return null;
@@ -214,5 +353,5 @@ export function readFacts(file) {
 
 export default {
   FACTS_EVAL_FN, parseFactsFile, judgeImages, classifyLinks, probeLinks,
-  judgeExplore, parseConsoleErrors, readFacts,
+  judgeExplore, parseConsoleErrors, readFacts, formHash, formsSummary, diffForms,
 };

@@ -1,13 +1,15 @@
 {
   "name": "calvin-db-mcp",
-  "version": "1.6.2",
+  "version": "1.6.25",
   "private": true,
   "type": "module",
   "description": "MySQL + PostgreSQL + SQLite MCP server, LLM-friendly with read-only guard and data verification tools",
   "main": "server.mjs",
   "scripts": {
     "selftest": "node selftest.mjs",
-    "validate:sqlite": "node sqlite-validate.mjs"
+    "validate:sqlite": "node sqlite-validate.mjs",
+    "validate:e2e": "node e2e-validate.mjs",
+    "validate:protocol": "node protocol-validate.mjs"
   },
   "engines": {
     "node": ">=18.17"

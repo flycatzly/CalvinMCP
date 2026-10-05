@@ -49,6 +49,7 @@ function pageHtml({ title, body }) {
 }
 
 const sockets = new Set();
+let formHits = 0; // /form 命中计数：第 1 次出 v1，之后出 v2（两期表单靶）
 const site = http.createServer((req, res) => {
   // 路由直接切 req.url（不用 URL 对象取路径字段 —— H15 盲钉禁止那种写法）
   const p = (req.url || '/').split('?')[0];
@@ -75,6 +76,17 @@ const site = http.createServer((req, res) => {
   } else if (p === '/ok.png') {
     res.writeHead(200, { 'Content-Type': 'image/png' });
     res.end(PNG_1x1);
+  } else if (p === '/form') {
+    // 表单两期靶：第 1 次命中出 v1，之后出 v2（删 pass / 加 mobile / email 变必填）
+    formHits++;
+    const input = (name, type, required) => `<input name="${name}" type="${type}"${required ? ' required' : ''}>`;
+    const v = formHits <= 1 ? 1 : 2;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(pageHtml({
+      title: `Form ${v}`,
+      body: `<form action="/submit" method="post">${input('user', 'text')}${input('email', 'text', v === 2)}`
+        + `${v === 1 ? input('pass', 'password', true) : input('mobile', 'number')}<button type="button">go</button></form>`,
+    }));
   } else if (p === '/dead' || p === '/broken.png') {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('not found');
@@ -117,6 +129,10 @@ process.env.OLLAMA_MODEL = 'qwen3-e2e';
 
 const call = (name, args) => handleMessage({ id: 1, method: 'tools/call', params: { name, arguments: args } });
 const ts = Date.now().toString(36);
+// 会话名登记：收尾时只关自己开过的会话。绝不用 close-all —— 那会把 --parallel
+// 并发兄弟套件的会话一起杀掉（并行假失败的踩踏面之一，见 verify-all 调度注释）。
+const usedSessions = [];
+const sess = (name) => { usedSessions.push(name); return name; };
 
 log(`靶站：${SITE}　stub LLM：${LLM_BASE}\n`);
 
@@ -127,7 +143,7 @@ log('=== A) nl_test_goal：LLM 规划 + 真浏览器执行 ===');
     goal: '输入关键词并点击搜索后，结果区应显示 "RESULT-OK"',
     url: `${SITE}/`,
     cwd: ROOT,
-    session: `nl-e2e-a-${ts}`,
+    session: sess(`nl-e2e-a-${ts}`),
     maxSteps: 12,
   });
   check('全链路判定 Pass 且不报 isError', !r.result.isError && r.result.structuredContent?.verdict === 'Pass',
@@ -153,7 +169,7 @@ log('=== B) nl_test_goal：llm=off 降级骨架 ===');
     goal: '打开首页应能看到 "Welcome E2E"',
     url: `${SITE}/`,
     cwd: ROOT,
-    session: `nl-e2e-b-${ts}`,
+    session: sess(`nl-e2e-b-${ts}`),
     llm: 'off',
   });
   check('骨架判定 Pass（引号断言被抽取）', !r.result.isError && r.result.structuredContent?.verdict === 'Pass',
@@ -168,7 +184,7 @@ log('=== C) nl_test_goal：断言不成立必须 Fail ===');
     goal: '页面应显示 "MISSING-TEXT-XYZ"',
     url: `${SITE}/`,
     cwd: ROOT,
-    session: `nl-e2e-c-${ts}`,
+    session: sess(`nl-e2e-c-${ts}`),
     llm: 'off',
   });
   check('断言不成立 → isError 且 verdict=Fail', r.result.isError === true
@@ -183,7 +199,7 @@ log('=== D) explore_page：死链/坏图巡检 ===');
   const bad = await call('explore_page', {
     url: `${SITE}/`,
     cwd: ROOT,
-    session: `nl-e2e-d1-${ts}`,
+    session: sess(`nl-e2e-d1-${ts}`),
     maxLinks: 10,
   });
   check('问题页 → isError 且 verdict=Fail', bad.result.isError === true
@@ -200,7 +216,7 @@ log('=== D) explore_page：死链/坏图巡检 ===');
   const good = await call('explore_page', {
     url: `${SITE}/clean`,
     cwd: ROOT,
-    session: `nl-e2e-d2-${ts}`,
+    session: sess(`nl-e2e-d2-${ts}`),
     maxLinks: 10,
   });
   check('干净页 → Pass 且不报 isError', !good.result.isError
@@ -210,14 +226,59 @@ log('=== D) explore_page：死链/坏图巡检 ===');
     (good.result.structuredContent?.links?.total || 0) >= 1
     && (good.result.structuredContent?.images?.total || 0) >= 1,
     JSON.stringify(good.result.structuredContent?.links));
+
+  /* ---- D 续：表单指纹与两期对比真跑（v1.8.12）---- */
+  const f1 = await call('explore_page', {
+    url: `${SITE}/form`,
+    cwd: ROOT,
+    session: sess(`nl-e2e-d3-${ts}`),
+    checkLinks: false,
+  });
+  const fr1 = f1.result.structuredContent || {};
+  check('D 续 一期报告带表单指纹与 facts 指针：formsHash/逐表单 hash/factsFile 落盘可读',
+    f1.result.isError !== true && /^[0-9a-f]{16}$/.test(fr1.formsHash || '')
+    && /^[0-9a-f]{16}$/.test(fr1.forms?.[0]?.hash || '')
+    && typeof fr1.factsFile === 'string' && fs.existsSync(fr1.factsFile),
+    `formsHash=${fr1.formsHash}`);
+  const f2 = await call('explore_page', {
+    url: `${SITE}/form`,
+    cwd: ROOT,
+    session: sess(`nl-e2e-d3-${ts}`),
+    checkLinks: false,
+    diffAgainst: fr1.factsFile,
+  });
+  const fr2 = f2.result.structuredContent || {};
+  const fd = fr2.formsDiff || {};
+  check('D 续 两期对比真跑：靶站翻版后 formsHash 变化 + 三分检出（删 pass/加 mobile/email 变必填）+ verdict 不因对比翻 Fail',
+    f2.result.isError !== true && fr2.formsHash !== fr1.formsHash
+    && fd.changed === true && fd.fieldsRemovedTotal === 1 && fd.fieldsRemoved?.[0]?.name === 'pass'
+    && fd.fieldsAddedTotal === 1 && fd.fieldsAdded?.[0]?.name === 'mobile'
+    && fd.requiredChangedTotal === 1 && fd.requiredChanged?.[0]?.name === 'email'
+    && fd.requiredChanged?.[0]?.from === false && fd.requiredChanged?.[0]?.to === true
+    && fr2.verdict === 'Pass',
+    JSON.stringify({ removed: fd.fieldsRemoved, added: fd.fieldsAdded, req: fd.requiredChanged }));
+  const badDiff = await call('explore_page', {
+    url: `${SITE}/form`,
+    cwd: ROOT,
+    session: sess(`nl-e2e-d3-${ts}`),
+    checkLinks: false,
+    diffAgainst: 'C:/definitely/not/here-facts.json',
+  });
+  check('D 续 diffAgainst 不可读 → 诚实报错 DIFF_TARGET_INVALID（绝不静默当「无对比」）',
+    badDiff.result.isError === true && badDiff.result.structuredContent?.errorCode === 'DIFF_TARGET_INVALID',
+    badDiff.result.structuredContent?.errorCode);
 }
 
 /* ---- 收尾 ---- */
 // 浏览器会话必须收：不收会留下 playwright-cli daemon 与 headless 浏览器孤儿进程，
 // 它们带着文件句柄，会让后续整树打包（distribute 的 rmSync）报 EPERM —— 实测踩过。
+// 但只关**自己登记过的**会话：close-all 会把 --parallel 并发兄弟套件的会话一起杀掉
+// （那正是并行假失败的踩踏面之一）。真有漏网孤儿时，由 verify-all 收尾的 kill-all 统一收割。
 try {
   const { runCli } = await import('../lib/cli.js');
-  await runCli({ cwd: ROOT, subcommand: 'close-all', args: [], session: 'nl-e2e-cleanup', timeoutMs: 30_000 });
+  for (const s of usedSessions) {
+    await runCli({ cwd: ROOT, subcommand: 'close', args: [], session: s, timeoutMs: 30_000 });
+  }
 } catch { /* 清理尽力而为：失败不影响判定 */ }
 for (const s of sockets) s.destroy();
 await new Promise((r) => site.close(() => r()));

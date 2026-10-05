@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const BASE = fs.mkdtempSync(path.join(os.tmpdir(), "robust-"));
 let passed = 0, failed = 0;
@@ -198,11 +199,11 @@ await t("两个连接同时写入不丢数据、不报锁错误（WAL + busy_tim
 
 await t("重复运行同一报告不产生重复计数", async () => {
   await withHome("idempotent", async ({ sc }) => {
-    const src = path.join(BASE, "..", "samples", "export-demo");
+    const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "samples", "export-demo");
     const target = path.join(process.env.WECHAT_AI_HOME, "vault");
     fs.mkdirSync(target, { recursive: true });
-    for (const f of fs.readdirSync(path.resolve("D:/Users/DeepSeekWeb/wechat-ai/samples/export-demo"))) {
-      fs.copyFileSync(path.join("D:/Users/DeepSeekWeb/wechat-ai/samples/export-demo", f), path.join(target, f));
+    for (const f of fs.readdirSync(src)) {
+      fs.copyFileSync(path.join(src, f), path.join(target, f));
     }
     const a = await sc("wai_vault_scan", { dirs: [target] });
     const after1 = (await sc("wai_status")).messages;
@@ -263,6 +264,112 @@ await t("非法参数给出可读错误而不是崩溃", async () => {
         ok(!/Cannot read propert|is not a function|undefined is not/.test(msg), name + " 暴露了内部错误：" + msg);
       }
     }
+  });
+});
+
+// =====================================================================================
+console.log("\n8) 参数边界与写预览契约（轮8修复）");
+
+await t("limit 负值报错而非无界查询，limit:0 返回空", async () => {
+  await withHome("bounds-limit", async ({ call, sc }) => {
+    await sc("wai_db_index", { source: "mock", scope: "sessions", sessionLimit: 5, allowDemo: true });
+    const bad = await call("wai_db_search", { query: "的", limit: -5 });
+    ok(bad.isError, "limit:-5 应报错");
+    ok(/不能小于 0/.test(String(bad.structuredContent?.error ?? "")), "错误信息应说明下界：" + JSON.stringify(bad.structuredContent));
+    const zero = await call("wai_db_search", { query: "的", limit: 0 });
+    ok(!zero.isError, "limit:0 应正常返回");
+    eq(zero.structuredContent.count, 0, "limit:0 应返回 0 行");
+    const type = await call("wai_db_search", { query: "的", limit: "5" });
+    ok(type.isError && /类型应为 integer/.test(String(type.structuredContent?.error ?? "")), "limit 非整数应报类型错误");
+  });
+});
+
+await t("空/纯空白 query 报错而非全量匹配", async () => {
+  await withHome("bounds-query", async ({ call }) => {
+    for (const q of ["", "   ", "\t\n"]) {
+      const r = await call("wai_db_search", { query: q, limit: 5 });
+      ok(r.isError, "query=" + JSON.stringify(q) + " 应报错");
+      ok(/不能为空/.test(String(r.structuredContent?.error ?? "")), "错误信息应说明不能为空");
+    }
+  });
+});
+
+await t("config_set：settings 非对象/未知键/嵌套值被拒绝且不落盘", async () => {
+  await withHome("bounds-config", async ({ call, home }) => {
+    for (const [args, re] of [
+      [{ settings: "oops" }, /必须是键值对象/],
+      [{ settings: [1, 2] }, /必须是键值对象/],
+      [{ settings: { badKeyUnknown: 1 } }, /未知键/],
+      [{ settings: { defaultHours: { nested: 1 } } }, /只能是字符串\/数字\/布尔值/],
+      [{ targets: [{ enabled: true }] }, /非空 id/],
+      [{ scenes: [{ name: "无 id 场景" }] }, /非空 id/],
+    ]) {
+      const r = await call("wai_config_set", args);
+      ok(r.isError, JSON.stringify(args).slice(0, 60) + " 应报错");
+      ok(re.test(String(r.structuredContent?.error ?? "")), "错误信息应匹配 " + re + "：" + JSON.stringify(r.structuredContent).slice(0, 120));
+    }
+    const good = await call("wai_config_set", { settings: { defaultHours: 48 } });
+    ok(!good.isError && good.structuredContent.saved, "合法 patch 应成功：" + (good.structuredContent?.error ?? ""));
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    ok(!("badKeyUnknown" in (cfg.settings ?? {})), "被拒绝的键不落盘");
+    ok(!Object.keys(cfg.settings ?? {}).some((k) => /^\d+$/.test(k)), "settings 不应出现索引垃圾键");
+    eq(cfg.settings.defaultHours, 48, "合法 patch 应生效");
+  });
+});
+
+await t("负时间窗报错，不再退化成「未来窗口」", async () => {
+  await withHome("bounds-window", async ({ call }) => {
+    for (const [name, args] of [["wai_signals", { days: -3 }], ["wai_brief", { hours: -1 }], ["wai_group_daily", { days: -0.5 }]]) {
+      const r = await call(name, args);
+      ok(r.isError, name + " " + JSON.stringify(args) + " 应报错");
+      ok(/不能小于 0/.test(String(r.structuredContent?.error ?? "")), "错误信息应说明下界");
+    }
+    // days:0 仍按既有约定落默认窗（不报错）
+    const z = await call("wai_signals", { days: 0 });
+    ok(!z.isError, "days:0 应保持既有默认窗行为：" + (z.structuredContent?.error ?? ""));
+  });
+});
+
+await t("opportunity_sync dryRun:true 零改库，dryRun:false 才落库", async () => {
+  await withHome("bounds-dryrun", async ({ call, sc }) => {
+    await sc("wai_db_index", { source: "mock", scope: "sessions", sessionLimit: 8, allowDemo: true });
+    const storeMod = await import(new URL("../lib/store.mjs", import.meta.url).href + "?h=dryrun");
+    const snap = () => {
+      const db = storeMod.store();
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name).sort();
+      const c = Object.fromEntries(tables.map((t) => [t, db.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get().n]));
+      db.close();
+      return c;
+    };
+    const before = snap();
+    const dry = await call("wai_opportunity_sync", { days: 400, dryRun: true });
+    ok(!dry.isError, "dryRun 预览应成功：" + (dry.structuredContent?.error ?? ""));
+    eq(snap(), before, "dryRun:true 不得改库");
+    const wet = await call("wai_opportunity_sync", { days: 400, dryRun: false });
+    ok(!wet.isError, "显式关闭 dryRun 应成功：" + (wet.structuredContent?.error ?? ""));
+    ok(JSON.stringify(snap()) !== JSON.stringify(before), "dryRun:false 应落库");
+  });
+});
+
+await t("deliver dryRun:true 零改库（history/delivery 表也不落），dryRun:false 才留痕", async () => {
+  await withHome("bounds-dryrun-deliver", async ({ call, sc }) => {
+    await sc("wai_db_index", { source: "mock", scope: "sessions", sessionLimit: 8, allowDemo: true });
+    const storeMod = await import(new URL("../lib/store.mjs", import.meta.url).href + "?h=dryrun-deliver");
+    const snap = () => {
+      const db = storeMod.store();
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name).sort();
+      const c = Object.fromEntries(tables.map((t) => [t, db.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get().n]));
+      db.close();
+      return c;
+    };
+    const before = snap();
+    const dry = await call("wai_deliver", { body: "轮9 dryRun 契约探针正文", title: "轮9-dryrun", target: "clipboard", dryRun: true });
+    ok(!dry.isError, "dryRun 预览应成功：" + (dry.structuredContent?.error ?? ""));
+    eq(dry.structuredContent?.dryRun, true, "dryRun 标记应回传 true");
+    eq(snap(), before, "dryRun:true 不得写 history/delivery 或任何表");
+    const wet = await call("wai_deliver", { body: "轮9 dryRun 契约探针正文", title: "轮9-dryrun", target: "clipboard", dryRun: false });
+    ok(!wet.isError, "显式关闭 dryRun 应成功：" + (wet.structuredContent?.error ?? ""));
+    ok(JSON.stringify(snap()) !== JSON.stringify(before), "dryRun:false 应写 history/delivery 留痕");
   });
 });
 

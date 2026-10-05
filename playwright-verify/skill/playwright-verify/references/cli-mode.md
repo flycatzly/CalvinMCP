@@ -121,6 +121,22 @@ playwright-cli -s=regression click e8
 
 **默认无头是硬约定**，免得有人把有头窗口带进夜间回归——有头模式在无人值守的 CI 上要么起不来，要么拖慢整批、要么留下没人看的窗口。调试完请确认交付的命令行里没有 `--headed`。
 
+### 浏览器通道怎么定：显式 `--browser` > 配置文件 > CLI 默认
+
+启动哪个浏览器，按三级优先（这条链由参数回归机械钉住，见 args-check D 节）：
+
+1. **命令行 `--browser`**（显式意图最高）：`playwright-cli -s=x open <url> --browser msedge`
+2. **工作区配置 `.playwright/cli.config.json`** 的 `browser.launchOptions.channel`：
+   `setup-cli-config.mjs` / 装机（install.mjs）按平台生成的就是这层（Windows 默认 `msedge`）
+3. **CLI 默认**：都不指定时用 Playwright 自带 `chromium`
+
+要点：
+
+- 两级**同时**存在时，`--browser` 覆盖配置文件（实测：配置里写不存在的通道 + `--browser msedge`，照常打开 msedge）。`--config <路径>` 可以把任意配置文件显式指给一次调用，每次调用都生效，不被已预热的 daemon 缓存住。
+- 配置文件 channel 找不到时**报错点名**（`Unsupported chromium channel "..."`），不会静默换一个浏览器——「指了 A 却开了 B」是最难查的那类静默问题。
+- `PVMCP_BROWSER_CHANNEL` 环境变量只影响「生成什么配置」（setup/install 的决策），**不参与**每次执行的浏览器选择。
+- 换机器/换平台后配置怎么处理，见 `cli-config.mjs` 的决策矩阵（同平台保留手工调校、跨平台重生成、显式指定最优先）。
+
 ### YAML / PNG / Trace 当失败证据进制品库
 
 CLI 产出的三类文件（YAML 快照、PNG 截图、Trace）全部是**失败证据**，随 CI 产物一起归档进制品库：

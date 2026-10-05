@@ -62,7 +62,7 @@ wai_config_set 能写的内容只有本机配置：数据源（vaults / readers 
 | 配置 | wai_config_set { "readers": [{ "id": "rion", "name": "rion-wechat-cli", "command": "D:/tools/wechat-cli.exe", "args": [] }] } |
 | 数据源 id | cli:<id> |
 | 验证 | wai_compat_check（status / sessions / timeline 三层冒烟）、wai_self_test |
-| 能力 | 由 CLI 决定；wai_reader 的 30 个子命令会映射到该 CLI 的对应方法，未实现的方法返回明确说明 |
+| 能力 | 由 CLI 决定；wai_reader 的 29 个子命令会映射到该 CLI 的对应方法，未实现的方法返回明确说明 |
 | 边界 | 本项目只调用它并解析输出，不安装、不打包、不生成密钥；CLI 自身的合规性由用户负责 |
 
 ### 1.5 演示数据（mock）

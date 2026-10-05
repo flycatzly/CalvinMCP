@@ -115,6 +115,26 @@ async function main() {
     if (r.content[0].text.indexOf('不存在') < 0) throw new Error('错误信息不明确: ' + r.content[0].text);
   });
 
+  check('structuredContent 纯增量：成功带结构化字段且与 text 内 JSON 同源一致', () => {
+    const r = fl.result;
+    if (!('structuredContent' in r)) throw new Error('成功结果应带 structuredContent');
+    if (r.isError !== false) throw new Error('isError 应为 false，实际 ' + r.isError);
+    if (!r.content || !r.content[0] || r.content[0].type !== 'text') throw new Error('content 文本回退必须保留');
+    const textJson = JSON.parse(r.content[0].text.slice(r.content[0].text.indexOf('{')));
+    if (JSON.stringify(r.structuredContent) !== JSON.stringify(textJson)) {
+      throw new Error('structuredContent 应与 text 内 JSON 同源一致: ' + JSON.stringify(r.structuredContent));
+    }
+  });
+
+  check('isError:true 形状不变：失败结果恰为 {content,isError}，不带 structuredContent', () => {
+    const r = bad.result;
+    if (!r || !r.isError) throw new Error('应 isError=true');
+    if ('structuredContent' in r) throw new Error('失败结果不该带 structuredContent（isError:true 形状不变）');
+    if (!r.content || !r.content[0] || r.content[0].type !== 'text') throw new Error('content 必须保留');
+    const keys = Object.keys(r).sort().join(',');
+    if (keys !== 'content,isError') throw new Error('isError:true 形状应恰为 {content,isError}，实为 ' + JSON.stringify(Object.keys(r)));
+  });
+
   const unknown = await call('tools/call', { name: '__no_such_tool__', arguments: {} });
   check('未知工具报 JSON-RPC 错误', () => { if (!unknown.error) throw new Error('应当返回 error，实际: ' + JSON.stringify(unknown)); });
 
@@ -128,6 +148,80 @@ async function main() {
   check('config_get 对 webhook 做了掩码', () => {
     const text = lintCall.result.content[0].text;
     if (text.indexOf('webhook') < 0) throw new Error('缺少 webhook 字段');
+  });
+
+  const negBudget = await call('tools/call', { name: 'flow_run', arguments: { flowId: '__不存在的流程__', maxDurationMs: -1 } });
+  check('负数 maxDurationMs 被入口校验拦下（INVALID_ARGUMENT 点名参数）', () => {
+    const r = negBudget.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('maxDurationMs') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+    if (text.indexOf('流程不存在') >= 0) throw new Error('应先于 handler 校验，不该走到流程查找');
+  });
+
+  const badItems = await call('tools/call', { name: 'chain_run', arguments: { items: [{ flow: 'a' }, {}] } });
+  check('chain_run items 缺 flow 报 items[1].flow', () => {
+    const text = badItems.result && badItems.result.content[0].text;
+    if (!text || text.indexOf('items[1].flow') < 0) throw new Error('未点名嵌套参数路径: ' + String(text).slice(0, 200));
+  });
+
+  const missRequired = await call('tools/call', { name: 'flow_run', arguments: {} });
+  check('缺必填参数 flowId 报可读错误', () => {
+    const text = missRequired.result && missRequired.result.content[0].text;
+    if (!missRequired.result || !missRequired.result.isError) throw new Error('应当 isError=true');
+    if (text.indexOf('缺少必填参数 flowId') < 0) throw new Error('错误信息不明确: ' + String(text).slice(0, 200));
+  });
+
+  const coerced = await call('tools/call', { name: 'runs_prune', arguments: { dryRun: 'true', keepCount: '3' } });
+  check('数字/布尔字符串被兼容转换（不报 INVALID_ARGUMENT）', () => {
+    const r = coerced.result;
+    if (!r || r.isError) throw new Error('应当成功，实际: ' + JSON.stringify(r).slice(0, 300));
+    if (r.content[0].text.indexOf('预演') < 0) throw new Error('dryRun 未按 true 处理: ' + r.content[0].text.slice(0, 200));
+  });
+
+  const trav1 = await call('tools/call', { name: 'flow_show', arguments: { flowId: '../web-rpa.config' } });
+  check('flow_show 穿越 id 被 INVALID_ARGUMENT 拦下且不泄露 webhook', () => {
+    const r = trav1.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('webhook') >= 0) throw new Error('泄露了 webhook 配置: ' + text.slice(0, 200));
+    if (text.indexOf('flowId') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+  });
+
+  const trav2 = await call('tools/call', { name: 'flow_delete', arguments: { flowId: '..\\probe-trav' } });
+  check('flow_delete 穿越 id 被拒（不可删 flows/ 之外文件）', () => {
+    const r = trav2.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    if (r.content[0].text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + r.content[0].text.slice(0, 200));
+  });
+
+  const trav3 = await call('tools/call', { name: 'run_history', arguments: { flowId: '..\\..\\x' } });
+  check('run_history 穿越 id 被拒', () => {
+    const r = trav3.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    if (r.content[0].text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + r.content[0].text.slice(0, 200));
+  });
+
+  const trav4 = await call('tools/call', { name: 'run_report', arguments: { flowId: '__不存在的流程__', stamp: '../latest' } });
+  check('run_report 穿越 stamp 被拒（stamp 也是路径段）', () => {
+    const r = trav4.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('stamp') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+  });
+
+  // TOOL_ERROR stack 是回给外部客户端的错误回显——路径必须脱敏（日志脱敏红线），但行:列要留着可定位
+  const leak = await call('tools/call', { name: 'flow_show', arguments: { flowId: '__不存在的流程__' } });
+  check('TOOL_ERROR stack 已脱敏：保留 at 帧结构与行列号，无本地绝对路径', () => {
+    const r = leak.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('TOOL_ERROR') < 0) throw new Error('缺少 TOOL_ERROR 形状: ' + text.slice(0, 200));
+    if (!/at \S+ \(.+:\d+:\d+\)/.test(text)) throw new Error('stack 帧结构/行列号丢失: ' + text.slice(0, 300));
+    if (/([A-Za-z]:[\\/]|file:\/\/\/|\/(?:home|Users|work)\/)/.test(text)) throw new Error('泄露本地路径: ' + text.slice(0, 300));
   });
 
   child.stdin.end();

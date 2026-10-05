@@ -95,6 +95,12 @@ export function parseWhen(input, now = new Date(), opts = {}) {
       : new Date(+y, +mo - 1, +da, +h, +(mi ?? 0), +(se ?? 0), 0);
   }
 
+  // 带时区后缀（Z / ±HH:MM）的 ISO 串必须走 new Date：下面的 ymd 正则会把时区静默丢掉、当成北京时间
+  if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}T\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const iso = new Date(s);
+    if (!Number.isNaN(iso.getTime())) return iso;
+  }
+
   const ymd = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (ymd) {
     const [, y, mo, da, h, mi, se] = ymd;

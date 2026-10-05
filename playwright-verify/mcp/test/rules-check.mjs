@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RULES } from '../lib/lint.js';
+import { RULES, adversarialCorpus } from '../lib/lint.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -41,6 +41,24 @@ check('PW105 不存在（该编号已废弃，不得被实现）', !ids.includes
 const coreN = RULES.filter((r) => r.tier === 'core').length;
 const extN = RULES.filter((r) => r.tier === 'ext').length;
 check('核心/补充分档合理', coreN === 14 && extN >= 4, `core ${coreN} / ext ${extN}`);
+
+/* ---- 1b) 属性化对抗语料覆盖门（v1.8.13）----
+ * 每条规则必须自带 bad/good 样例（samples 属性）—— 手写清单只给「咬过人的规则」配语料
+ * （实测 6/20），新规则不带语料就进不了表。展开与真 lint 判定在 lint-check（行为层），
+ * 这里只钉结构：语料在不在、展开数对不对。 */
+check('属性化语料覆盖门：每条规则都带 samples.bad/good（新规则不带语料进不了表）',
+  RULES.every((r) => typeof r.samples?.bad === 'string' && r.samples.bad.trim()
+    && typeof r.samples?.good === 'string' && r.samples.good.trim()),
+  RULES.filter((r) => !r.samples?.bad || !r.samples?.good).map((r) => r.id).join(',') || '全覆盖');
+check('属性化语料展开数一致：adversarialCorpus() = 规则数 × 2 且案案带规则 id',
+  (() => {
+    const c = adversarialCorpus();
+    return c.length === RULES.length * 2
+      && c.every((x) => ids.includes(x.id) && (x.kind === 'bad' || x.kind === 'good'))
+      && c.filter((x) => x.kind === 'bad').every((x) => x.expectIds?.[0] === x.id)
+      && c.filter((x) => x.kind === 'good').every((x) => x.forbidIds?.[0] === x.id);
+  })(),
+  `${adversarialCorpus().length} 案`);
 
 /* ---- 2) 文档引用一致性 ---- */
 check('references 目录存在', fs.existsSync(REFS));

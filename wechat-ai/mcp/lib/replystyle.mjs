@@ -154,13 +154,56 @@ export function resolveChatName(query) {
   const rows = db
     .prepare("SELECT session_name AS name, COUNT(*) AS n, MAX(ts) AS last_ts FROM messages WHERE session_name LIKE ? GROUP BY session_name ORDER BY last_ts DESC LIMIT 12")
     .all("%" + q + "%");
-  if (!rows.length) throw new Error("情报库里找不到联系人或会话：" + q);
+  if (!rows.length) throw noSessionError(db, q);
   const exact = rows.filter((r) => String(r.name).toLowerCase() === q.toLowerCase());
   if (exact.length) return String(exact[0].name);
   const exactLoose = rows.filter((r) => String(r.name).replace(/\s+/g, "") === q.replace(/\s+/g, ""));
   if (exactLoose.length) return String(exactLoose[0].name);
   if (rows.length === 1) return String(rows[0].name);
   throw new Error("“" + q + "”匹配多个会话，请使用更完整的名字：" + rows.slice(0, 8).map((r) => r.name).join("、"));
+}
+
+/** 找不到会话时，区分「完全不存在」与「是发送者但没有同名会话」，给出可执行的下一步。
+ *  带 code='no_session' 标记，供 resolvePerson 判定是否走发送者回退（不依赖错误文案）。 */
+function noSessionError(db, q) {
+  const senders = db
+    .prepare("SELECT sender AS name, COUNT(*) AS n FROM messages WHERE sender LIKE ? GROUP BY sender ORDER BY n DESC LIMIT 12")
+    .all("%" + q + "%");
+  const hit = senders.find((r) => String(r.name).toLowerCase() === q.toLowerCase())
+    ?? senders.find((r) => String(r.name).replace(/\s+/g, "") === q.replace(/\s+/g, ""))
+    ?? (senders.length === 1 ? senders[0] : null);
+  const e = hit
+    ? new Error("「" + q + "」是消息发送者但没有同名会话（出现 " + hit.n + " 条）。按会话查询请用群名/私聊会话名；查这个人说过什么用 wai_chat_search 或 wai_topic，查联系人档案用 wai_person（支持按发送者建档）。")
+    : new Error("情报库里找不到联系人或会话：" + q);
+  e.code = "no_session";
+  return e;
+}
+
+/**
+ * 按名字解析「人或会话」：先按会话名解析（精确 → 松散精确 → 唯一模糊），
+ * 没有会话时回退按发送者解析（同名唯一命中）。返回 { name, by }：
+ * by='session' 表示 name 是会话名，by='sender' 表示 name 是跨会话的发送者。
+ * 仍然找不到（或模糊命中多个）时抛出可执行的错误信息。
+ */
+export function resolvePerson(query) {
+  const q = String(query == null ? "" : query).trim();
+  if (!q) throw new Error("请提供联系人或会话名称");
+  try {
+    return { name: resolveChatName(q), by: "session" };
+  } catch (e) {
+    if (e?.code !== "no_session") throw e; // 多会话命中等歧义错误照常上抛，不做发送者回退
+  }
+  const db = store();
+  const rows = db
+    .prepare("SELECT sender AS name, COUNT(*) AS n, MAX(ts) AS last_ts FROM messages WHERE sender LIKE ? GROUP BY sender ORDER BY last_ts DESC LIMIT 12")
+    .all("%" + q + "%");
+  const exact = rows.filter((r) => String(r.name).toLowerCase() === q.toLowerCase());
+  if (exact.length) return { name: String(exact[0].name), by: "sender" };
+  const exactLoose = rows.filter((r) => String(r.name).replace(/\s+/g, "") === q.replace(/\s+/g, ""));
+  if (exactLoose.length) return { name: String(exactLoose[0].name), by: "sender" };
+  if (rows.length === 1) return { name: String(rows[0].name), by: "sender" };
+  if (rows.length > 1) throw new Error("“" + q + "”匹配多个发送者，请使用更完整的名字：" + rows.slice(0, 8).map((r) => r.name).join("、"));
+  throw new Error("情报库里找不到联系人或会话：" + q);
 }
 
 /**

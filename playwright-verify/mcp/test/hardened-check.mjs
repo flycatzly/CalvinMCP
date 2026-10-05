@@ -20,10 +20,13 @@
  *   H13 安装时 CLI 通道配置的决策矩阵（保留/重生成/显式优先/字节确定）
  *   H14 Python 字节码（__pycache__/*.pyc）四层排除：入库/复制/分发/比对一个都不能漏
  *   H15 路径解析禁用 URL 的 pathname（中文/空格路径被百分号编码，静默指错位置）
- *   H16 版本/文档同步：版本号唯一源 package.json，五份文档的版本记录与自然语言使用示例缺一即发版未完成
+ *   H16 版本/文档同步：版本号唯一源 package.json，四份文档的版本记录与自然语言使用示例缺一即发版未完成
  *   H17 智能体线守门：凭据只走环境变量、危险目标拒绝表非空、白名单外动作不静默丢弃
  *   H18 纯净发布包口径：实跑 distribute 验产物 —— 无 node_modules、无 . 前缀内容
  *   H19 发版门禁：distribute 收尾自动一次性副本 verify-all + 终态哈希终查（发版不可能忘）
+ *   H20 CLI 失败摘要：根因行优先于堆栈噪声（daemon 崩溃时不能只剩 daemonPid）
+ *   H21 并行调度与收尾：部署副本独占末波、只关自己的会话、kill-all 先于产物清理
+ *   H22 断言数单一源：suites.mjs 声明是唯一真相，README 表/§15.3/verify-all/CI 全部机械对账
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -453,33 +456,71 @@ log('=== H15) 路径解析不得取 URL 的 pathname（编码后静默指错位�
 /*
  * 发版纪律是「每次版本更新，版本号 + 版本说明同步到全部对应文档，缺一处即视为
  * 发版未完成」。纪律靠人记就一定会漏 —— 版本号在文档间漂移是静默的：没人报错，
- * 只是读者拿着对不上的版本号来问。所以钉三件事：版本号唯一源是 package.json
- * （server 运行时读它，不另存副本）、五份文档都带当前版本号与两节固定内容
- * （版本记录 + 自然语言使用示例）、README 的同步规范写明「缺一处」的后果。
+ * 只是读者拿着对不上的版本号来问。所以钉四件事：版本号唯一源是 package.json
+ * （server 运行时读它，不另存副本）、四份文档都带当前版本号与两节固定内容
+ * （版本记录 + 自然语言使用示例）、**每份**文档的版本记录首条都是当前版本且
+ * 不写超前版本号（「README 更新了、别的文档忘了」是实测常态）、
+ * §15.3 判据行的核心数与 suites.mjs 的 coreCounts 同步（判据行与代码漂移=判据形同虚设）。
  */
 log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const V = String(pkg.version || '');
-  const docs = ['README.md', '使用文档.md', '部署说明.md', '部署说明.详细版.md', 'skill/playwright-verify/SKILL.md'];
+  const docs = ['README.md', '部署说明.md', '部署说明.详细版.md', 'skill/playwright-verify/SKILL.md'];
   const texts = new Map(docs.map((d) => [d, fs.readFileSync(path.join(ROOT, d), 'utf8')]));
+  // 版本记录节切片：从「## 版本记录」标题到下一个二级标题/文末（正文里提到「版本记录」的散文不算）
+  const recordSection = (t) => {
+    const m = /\n## 版本记录/.exec(t);
+    if (!m) return '';
+    const next = t.indexOf('\n## ', m.index + 5);
+    return t.slice(m.index, next === -1 ? undefined : next);
+  };
 
   const missingVer = docs.filter((d) => !texts.get(d).includes(`v${V}`));
-  check('H16 五份文档都带当前版本号（唯一源 package.json）',
+  check('H16 四份文档都带当前版本号（唯一源 package.json）',
     /^\d+\.\d+\.\d+$/.test(V) && missingVer.length === 0,
     `v${V}${missingVer.length ? ` 缺：${missingVer.join(', ')}` : ' 全部在位'}`);
 
   const missingRecord = docs.filter((d) => !texts.get(d).includes('版本记录'));
-  check('H16 五份文档都有「版本记录」节（版本说明同步落点）',
+  check('H16 四份文档都有「版本记录」节（版本说明同步落点）',
     missingRecord.length === 0, missingRecord.length ? `缺：${missingRecord.join(', ')}` : '全部在位');
 
   const missingNl = docs.filter((d) => !texts.get(d).includes('自然语言使用示例'));
-  check('H16 五份文档都有「自然语言使用示例」（说人话就能用）',
+  check('H16 四份文档都有「自然语言使用示例」（说人话就能用）',
     missingNl.length === 0, missingNl.length ? `缺：${missingNl.join(', ')}` : '全部在位');
 
-  const firstEntry = (texts.get('README.md').match(/###\s*v(\d+\.\d+\.\d+)/) || [])[1];
-  check('H16 README 版本记录首条就是当前版本（记录跟得上版本）',
-    firstEntry === V, `记录首条 ${firstEntry || '(无)'} / 当前 ${V}`);
+  // 每份文档的版本记录首条都得是当前版本 —— 只查 README 不够：实测常态是
+  // 「README 更新了、另外三份忘了」，读者拿的往往是部署/安装文档而不是 README。
+  const staleFirst = [];
+  for (const [d, t] of texts) {
+    const first = (recordSection(t).match(/v(\d+\.\d+\.\d+)/) || [])[1];
+    if (first !== V) staleFirst.push(`${d}(${first || '无'})`);
+  }
+  check('H16 四份文档版本记录首条都是当前版本（记录跟得上版本）',
+    staleFirst.length === 0, staleFirst.length ? staleFirst.join(', ') : `四份首条均为 v${V}`);
+
+  // 超前版本号（文档写了还没发的版本）会把读者引向不存在的行为 —— 只在版本记录节里查，
+  // 全文查会被示例里的第三方版本号（如 Node v24.x）误伤。
+  const [vmaj, vmin, vpat] = V.split('.').map(Number);
+  const ahead = [];
+  for (const [d, t] of texts) {
+    for (const m of recordSection(t).matchAll(/v(\d+)\.(\d+)\.(\d+)/g)) {
+      const cmp = (Number(m[1]) - vmaj) || (Number(m[2]) - vmin) || (Number(m[3]) - vpat);
+      if (cmp > 0) ahead.push(`${d} ${m[0]}`);
+    }
+  }
+  check('H16 版本记录无超前版本号（不写还没发的版本）',
+    ahead.length === 0, ahead.length ? ahead.join(', ') : '四份均无超前');
+
+  // 判据行与代码的 CORE 漂移是静默的：verify-all 自己按 CORE 判「一致 ✅」，
+  // 文档里那行数没人复核 —— 所以让机器来对：§15.3 核心数 == suites.mjs 的 coreCounts（数字单一源）。
+  const { coreCounts } = await import('./suites.mjs');
+  const core = coreCounts();
+  const codeVals = [core[1], core[2], core[3]].map(String);
+  const docLine = /核心断言 mode 1 = (\d+)、mode 2 = (\d+)、mode 3 = (\d+)/.exec(texts.get('部署说明.详细版.md'));
+  check('H16 §15.3 核心判据数与 suites.mjs 的 coreCounts 一致（判据行不与代码漂移）',
+    !!docLine && codeVals[0] === docLine[1] && codeVals[1] === docLine[2] && codeVals[2] === docLine[3],
+    `代码 CORE ${codeVals.join('/')} / §15.3 ${docLine ? docLine.slice(1).join('/') : '(无)'}`);
 
   const readme = texts.get('README.md');
   check('H16 同步规范在位且写明「缺一处即视为发版未完成」',
@@ -643,6 +684,186 @@ log('=== H20) CLI 失败摘要：根因行优先，daemonPid 噪声让位 ===');
   const s3 = extractRootCause('line-a\nline-b\nline-c', '');
   check('H20 无任何 Error 行时回退尾部行（原兜底行为不变）',
     s3.split('\n').length === 3 && s3.endsWith('line-c'), s3);
+
+  // 崩溃取证（2026-10 实测踩过）：套件进程 0xC0000409 崩溃时一行 FAIL 都没有，
+  // 旧口径 detail 只剩「? 项失败（退出码 …）」、stderr 里的 FATAL ERROR 整段丢弃 ——
+  // 偶发崩溃查不出根因，门禁报了失败却没留证据。归类在 suites.summarizeSuiteExit，
+  // 这里钉住两个方向：有 FAIL 行 FAIL 优先（断言取证不被尾部顶掉），
+  // 无 FAIL 行的异常退出保留输出尾部（崩溃根因不丢）。
+  const { summarizeSuiteExit } = await import('./suites.mjs');
+  const crashCls = summarizeSuiteExit(3221226505,
+    'PASS H0 前半段\nPASS H1 中段\n',
+    '\nFATAL ERROR: v8::ToLocalChecked Empty MaybeLocal\n----- Native stack trace -----\n');
+  const failCls = summarizeSuiteExit(1, 'FAIL 用例 A 断言炸了\nPASS 用例 B\n', '');
+  check('H20 退出取证：FAIL 行优先，崩溃（无 FAIL 行）保留输出尾部不丢根因',
+    crashCls.detail.includes('无 FAIL 行')
+    && crashCls.failedLines.some((l) => l.includes('FATAL ERROR'))
+    && crashCls.failedLines.some((l) => l.includes('Native stack'))
+    && failCls.detail.startsWith('1 项失败')
+    && failCls.failedLines.length === 1 && failCls.failedLines[0].startsWith('FAIL'),
+    crashCls.detail);
+}
+
+/* ---------------- H21:并行调度与收尾不得静默回归 ---------------- */
+/*
+ * --parallel 的安全性完全依赖三件事，全都是「不报错但结论错」的静默面：
+ *   1) 调度结构：部署副本验证（整树哈希比对）必须独占末波 —— 与任何写盘并发都会报假漂移；
+ *   2) 套件收尾只关自己的会话：close-all 会把并发兄弟套件的会话一起杀掉（实测踩踏面）；
+ *   3) harness 收尾统一 kill-all 收割孤儿浏览器：残留句柄会让 distribute 的 rmSync 报 EPERM（实测踩过）。
+ * 另钉临时生成目录（args-check 的 demo/generated-argscheck）进三处排除表 ——
+ * 它在并行波内正建正删，漏排除就是「偶发假漂移/偶发打包失败」。
+ * 这些被「优化」掉的症状都是偶发假失败，最难查的回归类，所以机械钉住而不是靠注释。
+ */
+log('=== H21) 并行调度与收尾不得静默回归 ===');
+{
+  const { SUITES, planWaves } = await import('./suites.mjs');
+  const waves = planWaves(SUITES);
+  const last = waves[waves.length - 1];
+  check('H21 部署副本验证独占末波（整树比对不容并发写入）',
+    waves.length >= 2 && last.length === 1 && last[0].file.includes('deployed-check'),
+    `波次 ${waves.map((w) => w.length).join('+')}`);
+  check('H21 其余套件同波（并发收益不被误砍）',
+    waves[0].length === SUITES.length - 1 && !waves[0].some((s) => s.file.includes('deployed-check')),
+    `首波 ${waves[0].length}/${SUITES.length - 1}`);
+
+  const nlSrc = fs.readFileSync(path.join(ROOT, 'mcp/test/nl-agent-e2e.mjs'), 'utf8');
+  check('H21 套件收尾只关自己的会话（close-all 会杀并发兄弟会话）',
+    !/subcommand:\s*'close-all'/.test(nlSrc) && nlSrc.includes('usedSessions'),
+    /subcommand:\s*'close-all'/.test(nlSrc) ? 'nl-agent-e2e 仍在调 close-all' : '按 usedSessions 逐个 close');
+
+  const vaSrc = fs.readFileSync(path.join(ROOT, 'mcp/test/verify-all.mjs'), 'utf8');
+  const reapAt = vaSrc.indexOf("subcommand: 'kill-all'");
+  check('H21 harness 收尾 kill-all 收割孤儿，且先于产物清理（防 rmSync EPERM 回潮）',
+    reapAt !== -1 && reapAt < vaSrc.indexOf('ARTIFACT_DIRS.filter'),
+    reapAt === -1 ? 'verify-all 收尾缺 kill-all' : 'kill-all 在产物清理之前');
+
+  const distSrc = fs.readFileSync(path.join(ROOT, 'skill/playwright-verify/scripts/distribute.mjs'), 'utf8');
+  const depSrc = fs.readFileSync(path.join(ROOT, 'mcp/test/deployed-check.mjs'), 'utf8');
+  check('H21 临时生成目录三处排除（分发/整树比对/收尾清理，防并行波内建删成假漂移）',
+    distSrc.includes("'generated-argscheck'") && depSrc.includes("'generated-argscheck'")
+    && vaSrc.includes("'demo/generated-argscheck'"),
+    'distribute / deployed-check / verify-all 排除表');
+}
+
+/* ---------------- H22:断言数单一源与 CI 定义不得漂移 ---------------- */
+/*
+ * README 套件表、§15.3 判据行、verify-all 判据各抄一份断言数的话，漂移是静默的：
+ * 改了套件忘了文档 → 读者拿错数；改了声明忘了判据 → 「一致 ✅」变成空话。
+ * 所以数字只有一个源：suites.mjs 的声明字段（assertions / assertionsNoDep / dotPins），
+ * 其余全部机械对账 —— README 表逐行对声明；verify-all 真的逐套校验（接线在位）；
+ * 声明字段自身完备（缺字段会静默用错基准数）；expectedAssertions 环境矩阵行为正确
+ * （混合态不校验、. 前缀钉按在位加）；CI 工作流三 job 定义与 §15.3 口径一致
+ * （CI 是判据的常驻执行者，定义漂移 = 三态验收悄悄缩水）。
+ */
+log('=== H22) 断言数单一源与 CI 定义不得漂移 ===');
+{
+  const { SUITES, expectedAssertions, PIN_FILES } = await import('./suites.mjs');
+
+  // 1) README 套件表逐行断言数 == 声明（表格是给人看的那份「数」）
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const tIdx = readme.indexOf('| 套件 | 验证什么 | 断言数 |');
+  const rows = [];
+  if (tIdx !== -1) {
+    for (const l of readme.slice(tIdx).split('\n')) {
+      if (l.trim().startsWith('|')) rows.push(l);
+      else if (rows.length) break;
+    }
+  }
+  const tableNums = rows.slice(2)
+    .map((l) => l.split('|').map((c) => c.trim()).filter(Boolean).pop());
+  const declared = SUITES.map((s) => String(s.assertions));
+  check('H22 README 套件表断言数与 suites.mjs 声明逐行一致（末行为矩阵形态）',
+    tableNums.length === SUITES.length + 1
+    && declared.every((n, i) => tableNums[i] === n)
+    && /矩阵/.test(tableNums[SUITES.length] || ''),
+    `表 ${tableNums.join('/') || '(无)'} / 声明 ${declared.join('/')}`);
+
+  // 2) verify-all 逐套校验接线在位 —— 只导出不调用等于没对账
+  const vaSrc = fs.readFileSync(path.join(ROOT, 'mcp/test/verify-all.mjs'), 'utf8');
+  check('H22 verify-all 逐套件断言数校验接线在位（数字单一源真被对账）',
+    vaSrc.includes('expectedAssertions') && vaSrc.includes('countDrift') && vaSrc.includes('coreCounts'),
+    'expectedAssertions / countDrift / coreCounts 在位');
+
+  // 3) 声明字段完备：browser 套件零依赖态部分执行必须声明 assertionsNoDep，
+  //    否则 expectedAssertions 会静默拿全量数当基准去比零依赖态的半截结果
+  const badDecls = SUITES.filter((s) => !Number.isInteger(s.assertions) || s.assertions <= 0
+    || (s.dotPins !== undefined && (!Number.isInteger(s.dotPins) || s.dotPins < 0 || s.dotPins > s.assertions))
+    || (s.browser && !s.needs && !Number.isInteger(s.assertionsNoDep)));
+  check('H22 声明字段完备（缺字段会静默用错基准数）',
+    badDecls.length === 0, badDecls.length ? badDecls.map((s) => s.name).join(', ') : `${SUITES.length} 套声明完备`);
+
+  // 4) expectedAssertions 纯函数环境矩阵：全量/零依赖/混合三态 × 存在性钉在位数
+  const dotted = SUITES.find((s) => s.dotPins);
+  check('H22 expectedAssertions 环境矩阵行为正确（混合态不校验、存在性钉按在位数加）',
+    !!dotted && PIN_FILES.length === dotted.dotPins
+    && expectedAssertions(dotted, { fullDeps: true, noDeps: false, pins: 0 }) === dotted.assertions
+    && expectedAssertions(dotted, { fullDeps: true, noDeps: false, pins: dotted.dotPins }) === dotted.assertions + dotted.dotPins
+    && expectedAssertions(dotted, { fullDeps: false, noDeps: true, pins: 1 }) === dotted.assertions + 1
+    && expectedAssertions(dotted, { fullDeps: true, noDeps: true, pins: 0 }) === null,
+    `纯函数环境矩阵（PIN_FILES ${PIN_FILES.length} == dotPins ${dotted ? dotted.dotPins : '?'}）`);
+
+  // 5) CI 工作流三 job 定义与判据口径一致（缺 job/漏命令 = 三态验收悄悄缩水）。
+  //    存在性守卫（同 H10/H14）：纯净发布包按口径不含 . 前缀内容，包里诚实 SKIP 不误报缺失。
+  const ciPath = path.join(ROOT, '.github', 'workflows', 'ci.yml');
+  if (fs.existsSync(ciPath)) {
+    const ciSrc = fs.readFileSync(ciPath, 'utf8');
+    const jobBlock = (name) => {
+      const m = new RegExp(`^  ${name}:`, 'm').exec(ciSrc);
+      if (!m) return '';
+      const rest = ciSrc.slice(m.index + m[0].length);
+      const next = /^ {2}\S/m.exec(rest);
+      return rest.slice(0, next ? next.index : undefined);
+    };
+    const zero = jobBlock('zero-dep');
+    const full = jobBlock('full');
+    const gate = jobBlock('release-gate');
+    check('H22 CI 三 job 在位且口径不漂移（零依赖裸跑 mode 1/2、双平台全量 mode 3、门禁 needs 双 job）',
+      !!zero && !/run:.*npm ci/.test(zero) && /--mode 1/.test(zero) && /--mode 2/.test(zero)
+      && /run:.*npm ci/.test(full) && /npx playwright install/.test(full) && /install-browser/.test(full)
+      && /--mode 3/.test(full) && /ubuntu-latest/.test(full) && /windows-latest/.test(full)
+      && /distribute\.mjs/.test(gate) && /needs:\s*\[[^\]]*zero-dep[^\]]*full[^\]]*\]/.test(gate),
+      'zero-dep（裸跑）/ full（双平台+双装浏览器）/ release-gate（distribute）');
+  } else {
+    log('SKIP  CI 三 job 定义（纯净发布包不含 . 前缀内容 —— 该钉在源码树验证）');
+  }
+}
+
+log('=== H23) 安装器镜像式复制：陈旧残留默认自愈，--force 整目录重置 ===');
+{
+  // 沙箱真装：USERPROFILE/HOME 重定向到临时目录 —— install.mjs 的 INSTALL_ROOT、
+  // SKILL_LINK、客户端注册全部落进沙箱，不碰真机部署副本。
+  const os = await import('node:os');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-install-h23-'));
+  const sInstall = path.join(tmpHome, '.agents', 'skills', 'playwright-verify-mcp');
+  const sSkill = path.join(tmpHome, '.agents', 'skills', 'playwright-verify');
+  const staleA = path.join(sInstall, 'mcp', 'lib', 'stale-old.js');
+  const staleB = path.join(sSkill, 'references', 'stale-old.md');
+  const stray = path.join(sInstall, 'my-notes.txt');
+  // 预置旧账：假装上一版留下了这些文件（源码已删、部署副本还留的形态）+ 用户杂散根文件
+  fs.mkdirSync(path.join(sInstall, 'mcp', 'lib'), { recursive: true });
+  fs.writeFileSync(staleA, '// stale');
+  fs.mkdirSync(path.join(sSkill, 'references'), { recursive: true });
+  fs.writeFileSync(staleB, '# stale');
+  fs.writeFileSync(stray, 'user file');
+  const instEnv = { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome };
+  const r1 = spawnSync(process.execPath, [path.join(ROOT, 'skill', 'playwright-verify', 'install.mjs')],
+    { cwd: ROOT, encoding: 'utf8', timeout: 300000, env: instEnv });
+  const ok1 = r1.status === 0 && (r1.stdout || '').includes('INSTALL_STATUS=OK');
+  check('H23 沙箱默认安装成功（镜像式：先清后拷）', ok1,
+    ok1 ? 'INSTALL_STATUS=OK' : `status=${r1.status} ${(r1.stderr || '').slice(0, 100)}`);
+  check('H23 默认安装清掉两处陈旧残留（部署副本子树 + 现役 Skill 目录），新文件在位，用户杂散根文件不动',
+    !fs.existsSync(staleA) && !fs.existsSync(staleB)
+    && fs.existsSync(path.join(sInstall, 'mcp', 'server.mjs'))
+    && fs.existsSync(path.join(sSkill, 'SKILL.md'))
+    && fs.existsSync(stray),
+    `deploy-stale=${fs.existsSync(staleA)} skill-stale=${fs.existsSync(staleB)} stray=${fs.existsSync(stray)}`);
+  const r2 = spawnSync(process.execPath, [path.join(ROOT, 'skill', 'playwright-verify', 'install.mjs'), '--force'],
+    { cwd: ROOT, encoding: 'utf8', timeout: 600000, env: instEnv });
+  check('H23 --force 整目录重置：杂散根文件被清、安装仍成功（node_modules 重拷）',
+    r2.status === 0 && (r2.stdout || '').includes('INSTALL_STATUS=OK')
+    && !fs.existsSync(stray) && fs.existsSync(path.join(sInstall, 'mcp', 'server.mjs')),
+    `status=${r2.status} stray=${fs.existsSync(stray)}`);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
 }
 
 log('');

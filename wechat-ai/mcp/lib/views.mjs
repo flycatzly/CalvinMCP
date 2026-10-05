@@ -1,11 +1,11 @@
 // 分析视图：联系人档案 / 主题检索 / 今日行动 / 待分流 / 联系人日报 / 共同群 / 跨群链接 / 商单雷达 / 首页
 // 对应上游 intelligence_views.py + wechat_intelligence_hub.py 的 build_contact_daily_rows 等视图。
 // 全部视图复用 store()（node:sqlite 本地索引）与 signals.mjs（情报引擎），不重复实现信号规则。
-import { store, rowToMessage, messagesInWindow, listSessions, labelsOf, storeStats, crossGroupLinks as storeCrossGroupLinks, linkAppearances } from "./store.mjs";
+import { store, rowToMessage, messagesInWindow, messagesForAnalyze, listSessions, labelsOf, storeStats, crossGroupLinks as storeCrossGroupLinks, linkAppearances } from "./store.mjs";
 import { analyze, classifyChat, extractAmounts, isAck, isClosing, isOwnerName } from "./signals.mjs";
 import { freshness } from "./ingest.mjs";
 import { listInbox, listOpportunities, listToday, countByStatus } from "./opportunities.mjs";
-import { draftReply, learnChatStyle, learnStyle, resolveChatName, resolveSelfNames, isSelfSender } from "./replystyle.mjs";
+import { draftReply, learnChatStyle, learnStyle, resolveChatName, resolvePerson, resolveSelfNames, isSelfSender } from "./replystyle.mjs";
 import { loadProfile } from "./profile.mjs";
 import { clamp, extractUrls, fmtDay, fmtLocal, isHeatLink, normalizeUrl, truncate, uniq } from "./util.mjs";
 
@@ -101,6 +101,25 @@ function chatMessages(chat, { sinceMs, untilMs, limit = 500, order = "asc" } = {
     .map(rowToMessage);
 }
 
+/** 发送者视角取行：没有同名会话的联系人按 sender 跨会话归集（wai_person 建档回退路径） */
+function senderMessages(sender, { sinceMs, untilMs, limit = 500, order = "asc" } = {}) {
+  const where = ["sender=?"];
+  const args = [String(sender)];
+  if (sinceMs) {
+    where.push("ts>=?");
+    args.push(Number(sinceMs));
+  }
+  if (untilMs) {
+    where.push("ts<=?");
+    args.push(Number(untilMs));
+  }
+  args.push(Math.max(1, Number(limit) || 500));
+  return store()
+    .prepare("SELECT * FROM messages WHERE " + where.join(" AND ") + " ORDER BY ts " + (order === "desc" ? "DESC" : "ASC") + " LIMIT ?")
+    .all(...args)
+    .map(rowToMessage);
+}
+
 function shortText(value, limit) {
   return truncate(String(value == null ? "" : value).replace(/\s+/g, " ").trim(), limit || 220);
 }
@@ -180,15 +199,22 @@ function promiseEntries(messages, { selfNames, now } = {}) {
 
 // ---------------- 联系人档案 ----------------
 export function personDossier(name, { sinceMs, untilMs, limit = 500, selfNames, now } = {}) {
-  const chat = resolveChatName(name);
+  // 先按会话名解析；没有同名会话时回退按发送者跨会话建档（matched_by 标明命中方式）
+  const resolved = resolvePerson(name);
+  const chat = resolved.name;
+  const by = resolved.by;
   const names = resolveSelfNames(selfNames);
   const nowMs = now instanceof Date ? now.getTime() : Number(now) || Date.now();
-  const messages = chatMessages(chat, { sinceMs, untilMs, limit, order: "asc" });
-  const kind = messages.length
-    ? messages[messages.length - 1].session_kind === "group" || classifyChat(chat) === "group"
-      ? "group"
-      : "private"
-    : classifyChat(chat);
+  const messages = by === "sender"
+    ? senderMessages(chat, { sinceMs, untilMs, limit, order: "asc" })
+    : chatMessages(chat, { sinceMs, untilMs, limit, order: "asc" });
+  const kind = by === "sender"
+    ? "private"
+    : messages.length
+      ? messages[messages.length - 1].session_kind === "group" || classifyChat(chat) === "group"
+        ? "group"
+        : "private"
+      : classifyChat(chat);
   const owner = messages.filter((m) => m.is_owner || isSelfSender(m.sender, names));
   const others = messages.filter((m) => !(m.is_owner || isSelfSender(m.sender, names)));
   const latest = messages.length ? messages[messages.length - 1] : null;
@@ -200,7 +226,9 @@ export function personDossier(name, { sinceMs, untilMs, limit = 500, selfNames, 
 
   const commercial = messages.filter((m) => COMMERCIAL_TERMS.test(String(m.content || "")));
   const requests = others.filter((m) => REQUEST_TERMS.test(String(m.content || ""))).slice(-5);
-  const opportunities = listOpportunities({ chat, includeCandidates: true, limit: 10 });
+  const opportunities = by === "sender"
+    ? listOpportunities({ includeCandidates: true, limit: 50 }).filter((o) => String(o.contact || "") === chat || String(o.chat || "") === chat).slice(0, 10)
+    : listOpportunities({ chat, includeCandidates: true, limit: 10 });
   const openPromises = openPromisesOf(messages, { selfNames: names, now: nowMs });
   const promises = promiseEntries(messages, { selfNames: names, now: nowMs });
   const deals = messages.filter((m) => m.links && m.links.length).slice(-5);
@@ -208,6 +236,7 @@ export function personDossier(name, { sinceMs, untilMs, limit = 500, selfNames, 
   return {
     chat,
     kind,
+    matched_by: by,
     counts: {
       messages: messages.length,
       owner: owner.length,
@@ -362,7 +391,8 @@ function priorityOfItem(item) {
 export function todayActions({ now = new Date(), minPriority = 3, limit = 10, days = 7 } = {}) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now) || Date.now();
   const sinceMs = nowMs - Math.max(1, Number(days) || 7) * 86400000;
-  const messages = messagesInWindow({ sinceMs, untilMs: nowMs, limit: 50000 });
+  // 只喂 analyze：走 6 列瘦身行（跳过 attachments 等未消费列的读取与解析）
+  const messages = messagesForAnalyze({ sinceMs, untilMs: nowMs, limit: 50000 });
   const analysis = analyze({ messages, sinceMs, untilMs: nowMs, now: new Date(nowMs) });
   const items = [];
 
@@ -827,7 +857,7 @@ export function dealRadar(analysis, { messages, sinceMs, untilMs, now } = {}) {
   const a =
     analysis ||
     analyze({
-      messages: messages || messagesInWindow({ sinceMs: sinceMs || nowMs - 72 * 3600000, untilMs: untilMs || nowMs, limit: 50000 }),
+      messages: messages || messagesForAnalyze({ sinceMs: sinceMs || nowMs - 72 * 3600000, untilMs: untilMs || nowMs, limit: 50000 }),
       sinceMs: sinceMs || nowMs - 72 * 3600000,
       untilMs: untilMs || nowMs,
       now: new Date(nowMs),

@@ -1,11 +1,11 @@
 ---
 name: wechat-ai
-description: 用于把本机微信记录变成可核查、可执行情报的场合：询问过去 24/48 小时发生了什么、指定日期范围复盘、某个产品/项目/事件的来龙去脉、某个微信标签联系人的进展、今日微信群日报、品牌方私聊日报、某主题出现在哪些会话、我和某人聊到哪、某人刚回复该怎么接、查看原始上下文、精确关键词检索、商单/培训/咨询/项目合作机会、跨群重复链接、今天先处理什么、新线索、是否值得复联、两人是否在共同群、合作进度、清理候选、纠正误报；也包括把选中的微信内容转发给 Codex/Claude Code/DeepSeek Harness 等 Agent、归档进 Obsidian、批量采集。触发词：微信个人情报库、微信流、微信商单雷达、群聊日报、私聊日报、微信标签、复联雷达。本 MCP 服务器只读微信：不发送、不回复、不转发、不获取密钥、不解密、不注入、不 Hook。
+description: 用于把本机微信记录变成可核查、可执行情报的场合：询问过去 24/48 小时发生了什么、指定日期范围复盘、某个产品/项目/事件的来龙去脉、某个微信标签联系人的进展、今日微信群日报、品牌方私聊日报、某主题出现在哪些会话、我和某人聊到哪、某人刚回复该怎么接、查看原始上下文、精确关键词检索、商单/培训/咨询/项目合作机会、跨群重复链接、今天先处理什么、新线索、是否值得复联、两人是否在共同群、合作进度、清理候选、纠正误报；也包括聊天记录分析：年度/月度聊天报告、社交关系分析、情绪与心理趋势、时间与任务管理、财务与消费记录、个人记忆与知识库、内容分析问答、工作/团队复盘、安全风控线索；以及把选中的微信内容转发给 Codex/Claude Code/DeepSeek Harness 等 Agent、归档进 Obsidian、批量采集。触发词：微信个人情报库、微信流、微信商单雷达、群聊日报、私聊日报、微信标签、复联雷达、年度聊天报告、聊天分析。本 MCP 服务器只读微信：不发送、不回复、不转发、不获取密钥、不解密、不注入、不 Hook。
 ---
 
 # wechat-ai：微信个人情报库 + 微信流
 
-本技能包把本机微信记录变成可核查、可行动的个人情报，并把「选中的微信内容」按场景转发给本机 Agent、Obsidian 或剪贴板。全部能力通过 MCP 服务器 wechat-ai 的 63 个 wai_ 工具暴露；本目录的 references/ 与 workflows/ 是它们的规则手册与操作剧本。
+本技能包把本机微信记录变成可核查、可行动的个人情报，并把「选中的微信内容」按场景转发给本机 Agent、Obsidian 或剪贴板。全部能力通过 MCP 服务器 wechat-ai 的 73 个 wai_ 工具暴露；本目录的 references/ 与 workflows/ 是它们的规则手册与操作剧本。
 
 ## Mission
 
@@ -88,13 +88,13 @@ description: 用于把本机微信记录变成可核查、可执行情报的场�
 - 时间参数有四种口径：hours、days、since、until（week、month 是便捷开关）。同一次调用只给一种口径，不要混用。
 - 返回通常是结构化 JSON；失败时为 ok:false 并带 error 字段。失败必须如实转述，不得伪造成成功或空白。
 - 写类工具默认预览：wai_deliver（dryRun:true）、wai_opportunity_sync（dryRun:true）、wai_opportunity_maintain（apply:false）、wai_cleanup（apply:false）、wai_inbox_maintain（apply:false）。
-- wai_reader 是统一只读入口（30 个子命令），其余 62 个工具是语义化封装；两者读的是同一批只读数据源。
+- wai_reader 是统一只读入口（29 个子命令），其余 71 个工具是语义化封装；两者读的是同一批只读数据源。
 
 ## 工具总表
 
-63 个工具全部由本 MCP 服务器提供，名称一律以 wai_ 开头。下表「只读」列的含义是**是否只读微信**：全部工具都不会写入、发送或修改微信；标「写本机」的工具会在本机写文件或状态（索引、报告、Inbox、投递产物、商机库），这些写入都不会触碰微信客户端。
+73 个工具全部由本 MCP 服务器提供，名称一律以 wai_ 开头。下表「只读」列的含义是**是否只读微信**：全部工具都不会写入、发送或修改微信；标「写本机」的工具会在本机写文件或状态（索引、报告、Inbox、投递产物、商机库），这些写入都不会触碰微信客户端。
 
-（本表按功能面拆成 9 组；README.md 的 8 组视图把「隐私与配置」与「只读 Reader 入口」并为一组。两种分法的工具总数都是 63。）
+（本表按功能面拆成 10 组；README.md 的 9 组视图把「隐私与配置」与「只读 Reader 入口」并为一组。两种分法的工具总数都是 72。）
 
 ### 一、接入与状态（9）
 
@@ -194,7 +194,7 @@ description: 用于把本机微信记录变成可核查、可执行情报的场�
 
 使用要点：任何对外产物在分享前先跑 wai_privacy_scan；wai_config_get 返回的配置不含任何凭据；wai_config_set 中数据源（vaults / readers / sqliteSources）是追加语义，新增时给新 id；targets 按 id 合并、scenes 按 id 覆盖，用来启用 Obsidian/文件夹目标或调整场景。
 
-### 八、微信流转发（13）
+### 八、微信流转发（14）
 
 | 工具 | 用途 | 只读 |
 | --- | --- | --- |
@@ -210,19 +210,38 @@ description: 用于把本机微信记录变成可核查、可执行情报的场�
 | wai_history_rerun | 把某条历史记录再次投递到另一个目标 | 写本机（投递） |
 | wai_batch_create | 批量采集：把多条选中内容登记为一批，进入状态机 | 写本机（批次） |
 | wai_batch_status | 查看批次状态与逐条进度（失败条目保留原始载荷） | 是 |
-| wai_batch_deliver | 投递整个批次；支持重试失败项 | 写本机（投递） |
+| wai_batch_stage | 暂存批次条目并标记可交付（→ staging → ready）；省略 index 处理全部未交付条目 | 写本机（批次） |
+| wai_batch_deliver | 投递批次的 ready 条目；失败条目用 wai_batch_stage 重新暂存即重试 | 写本机（投递） |
 
-使用要点：场景 = 任务提示词 + 默认目标，先 wai_scene_match 预览将要发给 Agent 的完整提示词；wai_deliver 默认 dryRun；wai_history_rerun 可以把历史载荷改投到另一个目标，不需要重新抓取内容；批次有独立状态机，失败条目会保留原始载荷以便重试。
+使用要点：场景 = 任务提示词 + 默认目标，先 wai_scene_match 预览将要发给 Agent 的完整提示词；wai_deliver 默认 dryRun；wai_history_rerun 可以把历史载荷改投到另一个目标，不需要重新抓取内容；批次有独立状态机（wai_batch_stage 暂存并标记 ready），失败条目会保留原始载荷以便重试。
 
 ### 九、只读 Reader 入口（1）
 
 | 工具 | 用途 | 只读 |
 | --- | --- | --- |
-| wai_reader | 统一的只读微信读取器命令入口（对应 rion-wechat-cli 命令面，30 个子命令） | 是 |
+| wai_reader | 统一的只读微信读取器命令入口（对应 rion-wechat-cli 命令面，29 个子命令） | 是 |
 
 使用要点：先用 wai_reader 的 status / doctor / schema 判断数据源是否 ready，再做精确取证（search、context、timeline、members）；同一条数据源既可以被语义工具使用，也可以被 wai_reader 直接读到。
 
 wai_reader 的子命令：version、status、self-test、doctor、access-plan、tools、schema、sessions、contacts、resolve-chat、timeline、history、context、search、search-context、unread、stats、members、announcements、favorites、sns-feed、sns-search、media、transfers、red-packets、forward-history、export、sql、agent。
+
+### 十、聊天记录分析（9）
+
+对应「微信聊天记录分析提示词全集」A–I 模块，规则手册见 references/analysis-prompts.md。统计与抽取全部由确定性规则引擎完成（证据带 msg_id，不臆测），LLM 只做解读；输出统一脱敏（手机号/身份证/银行卡/住址/验证码/密码/未成年人信息）。
+
+| 工具 | 用途 | 只读 |
+| --- | --- | --- |
+| wai_period_report | A 年度/月度聊天报告：消息量与类型、活跃时段/星期/月份、Top 联系人与群、关键词/口头禅/emoji、回复间隔、连续天数、关系升温降温、5-10 条洞察 | 是 |
+| wai_social_graph | B 社交关系：谁主动找我/我主动找谁、回复时差、互惠度、关系变化、群核心/边缘/桥梁成员（近似）、社群聚类 | 是 |
+| wai_sentiment_trend | C 情绪与心理趋势：情绪日线、压力话题、冲突/安慰词、深夜低落消息、高风险时段；**不是心理或医疗诊断** | 是 |
+| wai_task_extract | D 时间与任务管理：待办/约定/缴费/行程抽取（我答应别人 vs 别人答应我）、截止时间、状态、可导出 ICS | 是 |
+| wai_finance | E 财务与消费记录：转账/红包/AA 台账、月度收支净额、类别、异常线索；默认金额打码为区间（showAmounts 才给数字），无投资建议 | 是 |
+| wai_memory | F 个人记忆与知识库：知识卡（时间/人物/地点/摘要/标签/来源 msg_id）、时间线、检索问答（不编造） | 是 |
+| wai_content_analysis | G 内容分析：词频、主题聚类、意图分布、实体（时间/地点/人物/金额/组织/事件）、抽取式摘要、带 msg_id 引用的问答 | 是 |
+| wai_team_review | H 工作/团队分析：决策记录、任务归属、风险（延期/阻塞/冲突/信息缺失）、服务质量、销售需求与异议、FAQ | 是 |
+| wai_risk_scan | I 安全/风控线索：诈骗话术/敏感信息/合规/异常线索，证据脱敏，**只是线索不是认定，必须人工复核**（needs_review） | 是 |
+
+使用要点：九个工具共用时间窗参数（hours/days/since/until/week/month，默认 30 天），都支持 `out` 落盘（md+json，拒绝写入仓库内）；分析结果默认与情报工具共享消息缓存；合规底线——只分析本人数据或已获明确授权的数据，企业使用需合规存档与员工告知。J（数据产品）不是工具，是用这 9 个工具组装的提示词剧本（年度报告生成器/聊天机器人/记忆助手/个人助理），见 references/analysis-prompts.md 第 12 节。
 
 ## Intent Router
 
@@ -254,9 +273,17 @@ wai_reader 的子命令：version、status、self-test、doctor、access-plan、
 | 用户纠正误报/假商单/低优先级 | wai_feedback_add（必要时查 wai_feedback_list） | 立即持久化，避免同类误报反复出现 |
 | 把选中的内容转发给 Agent | wai_inbox_push → wai_scene_match → wai_deliver（dryRun 先预览） | 场景决定任务提示词与默认目标 |
 | 沉淀到 Obsidian | wai_obsidian_write 或 wai_deliver(target: obsidian) | frontmatter + 附件复制语义见 references/delivery.md |
-| 批量收集（多条内容） | wai_batch_create → wai_batch_status → wai_batch_deliver | 状态机与失败重试见 workflows/08 |
+| 批量收集（多条内容） | wai_batch_create → wai_batch_stage → wai_batch_deliver | 状态机与失败重试见 workflows/08 |
 | 重发历史内容到别的 Agent | wai_history_list → wai_history_rerun | 复用原载荷，不重新抓取 |
 | 生成/查看报告 | wai_render_bundle / wai_report_list | 只展示当前交付模式的最终产物 |
+| 年度/月度聊天报告 | wai_period_report（days: 365 或 month） | 消息量/类型/活跃时段/热词/口头禅/关系趋势 + 5-10 条洞察（带证据） |
+| 我和谁互动最多/群里谁是核心 | wai_social_graph | 主动方向、回复时差、互惠度、群核心与桥梁成员（近似） |
+| 最近情绪/氛围怎么样 | wai_sentiment_trend | 情绪趋势与压力话题；只做趋势描述，不做心理/医疗诊断 |
+| 说过的事哪些没办/日程梳理 | wai_task_extract（includeIcs 可导出） | 任务清单（谁答应、何时到期、状态），模糊时间标「需确认」 |
+| 转账红包收支整理 | wai_finance | 台账与月度净额；默认金额打码，不给投资建议 |
+| 我们聊过的 XX 结论是什么 | wai_memory / wai_content_analysis（query） | 检索式问答，引用 msg_id，不臆测 |
+| 项目复盘/决策与分工梳理 | wai_team_review | 决策记录、任务归属、风险、FAQ |
+| 发出去前有没有敏感信息/诈骗风险 | wai_risk_scan（goal 可限定目标） | 风险线索清单（证据脱敏），必须人工复核 |
 | 发布前检查 | wai_privacy_scan | ok=false 时按清单逐项处理 |
 
 路由原则：
@@ -269,22 +296,7 @@ wai_reader 的子命令：version、status、self-test、doctor、access-plan、
 
 ### 自然语言使用示例
 
-用户以自然语言提出请求（示例人名、群名、金额均虚构），路由到最窄入口：
-
-| 你这样说 | 背后调用 | 得到什么 |
-|---|---|---|
-| 今天有什么要处理的？ | wai_today | 最多 10 项行动清单：待回复、逾期承诺、临近截止、待结算 |
-| 昨天说要报价的那个客户回消息了吗？ | wai_person | 聊天进展、承诺清单与下一步 |
-| 我和王总的合作聊到哪了？我答应过他什么？ | wai_person | 承诺、待回应要求、商业时间线（逾期项单独标出） |
-| 帮我看看「AI 内训群」今天聊了什么重点 | wai_group_daily | 群日报：重点话题分层，闲聊与纯加热不混入 |
-| 上个月说预算 3000 的内训机会现在什么状态？ | wai_opportunities | 商机阶段、下一步与到期提醒 |
-| 谁好久没联系、值得问候一下？ | wai_reactivation | 复联雷达分档（下一批 / 复购保温 / 暂缓…） |
-| 他刚回了我，怎么回比较合适？ | wai_person → wai_reply_draft | 贴合历史语气的短草稿 |
-| 搜一下我们聊过 API 对接的事 | wai_chat_search | 命中消息 [会话｜时间｜发言人] |
-| 把今天的进展整理成日报 | wai_group_daily + wai_contact_daily + wai_brief → wai_render_bundle | Markdown + 交互 HTML 双产物 |
-| 这几条帮我转给 Codex 处理 | wai_inbox_push → wai_scene_match → wai_deliver | 场景化提示词与投递预览（默认 dryRun） |
-| 把这段结论存到我的知识库 | wai_obsidian_write | frontmatter 笔记预览，确认后才落盘 |
-| 发出去之前检查一下隐私 | wai_privacy_scan | 发布门禁：敏感命中清单与处理建议 |
+用户以自然语言提出请求（示例人名、群名、金额均虚构），按上述「路由原则」路由到最窄入口。**完整使用自然语言示例（按使用场景分类 · 覆盖全部 73 个工具，一工具一场景）见 `部署说明.详细版.md`「完整使用自然语言示例」**——8 个使用场景模块、每个工具一句场景，读该节即可把用户原话映射到具体工具；示例只保留那一份，此处不再复制。
 
 「帮我回复他」类请求只产出草稿——不发送任何消息；写操作默认 dryRun 预览，显式确认后才落盘。
 
@@ -606,7 +618,8 @@ wai_reader 的子命令：version、status、self-test、doctor、access-plan、
 
 - 项目总览与上游关系：README.md；Windows 安装与部署：部署说明.md（速查）+ 部署说明.详细版.md（数据源配置 / 排障 / 卸载）；样例与演示数据：samples/README.md。
 - 接口契约与模块边界：../mcp/DESIGN.md（内部文档，只读参考）。
-- 逐条命令参考（63 个工具的参数、默认值、返回要点、常见组合）：references/commands.md。
+- 逐条命令参考（73 个工具的参数、默认值、返回要点、常见组合）：references/commands.md。
+- 聊天记录分析提示词全集（A–I 模块提示词骨架、J 数据产品提示词、分块处理、合规底线）：references/analysis-prompts.md。
 - 信号与状态规则（证据等级、商机类型、链接与跨群、角色归属、任务状态、复联、日报质量）：references/signal-rules.md。
 - 回复风格（是否需要回、语域、学习范围、禁用套话、事实闸门）：references/reply-style.md。
 - 群聊编辑规则（编辑包 → 话题日报 + 重点群聊）：references/group-editorial.md。
@@ -640,9 +653,4 @@ wai_reader 的子命令：version、status、self-test、doctor、access-plan、
 
 ## 版本记录
 
-| 版本 | 日期 | 版本说明 |
-|---|---|---|
-| v1.0.1 | 2026-10-03 | 纯净发布包口径收紧：无 `node_modules`、无 `.` 前缀目录；部署说明拆分为速查版 + 详细版；对齐五包「版本与文档同步规范」（「版本记录」+「自然语言使用示例」两节齐全）。 |
-| v1.0.0 | 2026-10-03 | 首个发布版本：63 个只读工具全量（只读红线，无发送/密钥/解密/注入）；12 套件 / 368 断言全绿；句柄随调用释放 + store.db 删库自愈；性能优化（按连接语句缓存、复联雷达单遍扫描、承诺检测 O(n)、wai_today / 群日报约 -20%~-35%）；自检与安装在中文路径下正常（fileURLToPath）；隐私门禁发布视角 0 findings。 |
-
-**同步规范**：见 README「版本与文档同步规范」——每次更新版本（`mcp/server.mjs` 的 `SERVER_VERSION`）必须把版本号与版本说明同步到全部对应文档，缺一处即视为发版未完成。
+见 README.md「版本记录」——唯一一份完整版本记录（含全部历史版本说明与「版本与文档同步规范」），此处不再复制副本。

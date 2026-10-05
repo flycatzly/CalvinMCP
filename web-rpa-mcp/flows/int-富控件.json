@@ -2,14 +2,14 @@
   "id": "int-富控件",
   "name": "int-富控件",
   "version": 1,
-  "createdAt": "2026-10-04T01:12:18.096Z",
-  "updatedAt": "2026-10-04T01:12:18.099Z",
-  "startUrl": "http://127.0.0.1:61539/form",
+  "createdAt": "2026-10-04T09:32:28.212Z",
+  "updatedAt": "2026-10-04T09:32:28.216Z",
+  "startUrl": "http://127.0.0.1:53256/form",
   "params": [],
   "steps": [
     {
       "op": "goto",
-      "url": "http://127.0.0.1:61539/form",
+      "url": "http://127.0.0.1:53256/form",
       "seq": 1
     },
     {
@@ -321,7 +321,7 @@
       ],
       "warning": "浏览器安全限制无法获取文件绝对路径，请在步骤里补全 path",
       "seq": 6,
-      "path": "C:\\Users\\CalvinZly\\AppData\\Local\\Temp\\webrpa-int-Jqb6Lr\\附件-测试.txt"
+      "path": "C:\\Users\\CalvinZly\\AppData\\Local\\Temp\\webrpa-int-EqhoOR\\附件-测试.txt"
     },
     {
       "op": "hover",
@@ -419,7 +419,7 @@
       },
       "tag": "button",
       "text": "导出明细",
-      "time": 1791076335153,
+      "time": 1791106345240,
       "seq": 8
     },
     {
@@ -475,7 +475,7 @@
       },
       "tag": "button",
       "text": "页面底部按钮",
-      "time": 1791076335586,
+      "time": 1791106345673,
       "seq": 9
     },
     {
@@ -531,7 +531,7 @@
       },
       "tag": "button",
       "text": "提交工单",
-      "time": 1791076336021,
+      "time": 1791106346109,
       "seq": 10,
       "waitForNav": "load"
     }
@@ -544,14 +544,14 @@
     }
   ],
   "recording": {
-    "sessionId": "rec-f4e09a1f",
-    "startedAt": "2026-10-04T01:12:12.535Z",
-    "finishedAt": "2026-10-04T01:12:18.096Z",
+    "sessionId": "rec-c0e38d32",
+    "startedAt": "2026-10-04T09:32:22.648Z",
+    "finishedAt": "2026-10-04T09:32:28.212Z",
     "notes": [
       "录到上传文件步骤：附件-测试.txt，需手动补 path"
     ],
     "downloads": [],
-    "finalUrl": "http://127.0.0.1:61539/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
+    "finalUrl": "http://127.0.0.1:53256/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
     "browserShape": {
       "rowCounts": {
         "table tbody tr": 0,
@@ -562,7 +562,7 @@
         ".vxe-body--row": 0
       },
       "emptyHit": null,
-      "url": "http://127.0.0.1:61539/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
+      "url": "http://127.0.0.1:53256/form-result?orderNo=SO-999&reason=refund&priority=normal&agree=on&note=%E8%AF%B7%E5%B0%BD%E5%BF%AB%E5%A4%84%E7%90%86&attach=%E9%99%84%E4%BB%B6-%E6%B5%8B%E8%AF%95.txt",
       "title": "工单结果"
     }
   }

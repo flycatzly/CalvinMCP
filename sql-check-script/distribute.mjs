@@ -310,8 +310,8 @@ const lines = [
   '纯净发布包口径：**无 node_modules、无任何 . 前缀文件/目录**（开发机残留已剔除）。',
   '解压 / 拷贝即可部署；验收目标默认指向同级 ../calvin-db-mcp/mcp（可用 DBMCP_MCP_DIR 覆盖）：',
   `  拷贝 "${OUT}" 与 calvin-db-mcp 到目标机器同级目录`,
-  '  node tests/run_all.mjs    # 一键全量验收（selftest + 全链路 E2E，机器可读汇总行）',
-  '（live 段随环境变量门控：FULLCHAIN_MYSQL=1 / FULLCHAIN_PG=1；无源时诚实 SKIP 明示）',
+  '  node tests/run_all.mjs    # 一键全量验收（selftest + sqlite-validate + mysql-validate门控 + docsync + config-lint + E2E，机器可读汇总行）',
+  '（live 段自动门控：配置有 mysql/PG 源即跑；FULLCHAIN_MYSQL=1/FULLCHAIN_PG=1 强开、=0 关；无源干净 SKIP）',
   '',
   ...gateLines,
 ].join('\n');
