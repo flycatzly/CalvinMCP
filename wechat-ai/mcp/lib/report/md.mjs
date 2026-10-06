@@ -2,7 +2,7 @@
 // 全部输出为中文 Markdown/CSV/JSON；只读本地数据，不发送任何微信消息。
 import path from "node:path";
 import {
-  fmtLocal, fmtDay, toCsv, ensureDir, atomicWrite, writeJson, truncate, clamp, uniq,
+  fmtLocal, fmtDay, toCsv, ensureDir, atomicWrite, writeJson, truncate, truncateOutsideUrl, clamp, uniq,
 } from "../util.mjs";
 import { loadConfig } from "../config.mjs";
 import { maskPii, maskDeep } from "../analytics/core.mjs";
@@ -250,7 +250,7 @@ function linkRow(link) {
     firstTs: num(pick(link, ["first_ts", "首次出现"], 0)),
     lastTs: num(pick(link, ["last_ts", "最后出现"], 0)),
     reason: String(pick(link, ["note", "判断依据"], heat ? "存在付费加热/红包/三连等证据" : "多个群重复出现")),
-    evidence: contexts.slice(0, 3).map((c) => String(pick(c, ["chat", "群聊"], "")) + "｜" + timeText(pick(c, ["ts", "时间"], 0)) + "｜" + String(pick(c, ["sender", "发言人"], "")) + "：" + cut(pick(c, ["content", "内容"], ""), 120)),
+    evidence: contexts.slice(0, 3).map((c) => String(pick(c, ["chat", "群聊"], "")) + "｜" + timeText(pick(c, ["ts", "时间"], 0)) + "｜" + String(pick(c, ["sender", "发言人"], "")) + "：" + truncateOutsideUrl(flat(pick(c, ["content", "内容"], "")), 120)),
   };
 }
 
@@ -1659,6 +1659,35 @@ export function renderChatHistory(rows, options = {}) {
     lines.push("- **" + timeText(pick(message, ["ts", "time"], 0)) + "｜" + String(pick(message, ["sender", "发言人"], "")) + "**：" + cut(pick(message, ["content", "内容"], ""), 320));
   }
   return writeText(outFile(outDir, "chat_history.md"), lines.join("\n"));
+}
+
+/**
+ * 渲染跨会话搜索结果（wai_chat_search 的 out 产物）。
+ * 与 renderChatHistory 的差别：标题是检索而非会话记录，每条命中带会话归属
+ * （search 可跨群命中，只显示发送者会丢证据上下文）。
+ * @param {Array<object>} rows 命中消息行（含 session_name/chat、sender、ts、content）
+ * @param {{query?:string, chat?:string, source?:string, outDir:string}} options
+ * @returns {string} chat_search.md 绝对路径
+ */
+export function renderChatSearch(rows, options = {}) {
+  const outDir = options.outDir ?? ".";
+  const list = arr(rows).slice().sort((a, b) => num(pick(a, ["ts", "time"], 0)) - num(pick(b, ["ts", "time"], 0)));
+  const lines = [
+    "# 微信搜索结果：" + String(options.query ?? ""),
+    "",
+    "- 命中消息：" + list.length + " 条",
+    "- 检索范围：" + (options.chat ? "会话「" + options.chat + "」" : "全部会话"),
+  ];
+  if (options.source) lines.push("- 数据源：" + String(options.source));
+  lines.push(
+    "- 时间范围：" + (list.length ? timeText(pick(list[0], ["ts", "time"], 0)) + " 至 " + timeText(pick(list[list.length - 1], ["ts", "time"], 0)) : "无"),
+    "",
+  );
+  if (!list.length) lines.push("没有符合条件的消息。");
+  for (const message of list) {
+    lines.push("- **" + timeText(pick(message, ["ts", "time"], 0)) + "｜" + String(pick(message, ["session_name", "chat"], "未知会话")) + "｜" + String(pick(message, ["sender", "发言人"], "")) + "**：" + cut(pick(message, ["content", "内容"], ""), 320));
+  }
+  return writeText(outFile(outDir, "chat_search.md"), lines.join("\n"));
 }
 
 /**

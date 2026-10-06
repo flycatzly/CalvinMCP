@@ -22,8 +22,9 @@
  * 复制后默认逐文件哈希自校验（无排除项泄漏 + 与源码字节一致），
  * 失败以退出码 2 结束 —— 「不验证不写盘」在分发环节同样成立。
  *
- * 自校验通过后自动跑「发版门禁」（加固 H19）：把产物拷成一次性副本、在副本里跑
- * 家族验收（npm ci → selftest → tools → integration）、终态哈希终查（门禁前后产物树
+ * 自校验通过后自动跑「发版门禁」（加固 H19）：并发预检（有并发跑批就拒跑，防互踩假判）
+ * → 把产物拷成一次性副本、在副本里跑
+ * 家族验收（npm ci → selftest → tools → integration → live 68 链路实测）、终态哈希终查（门禁前后产物树
  * 哈希一致 + 纯净复扫）、副本验后整目录删除。
  * 发版 = 跑 distribute，门禁不可能忘。显式跳过：--no-gate（或环境变量
  * PV_SKIP_RELEASE_GATE=1 —— 嵌套防递归）；加固自检用 PV_GATE_SKIP_VERIFY=1：
@@ -41,6 +42,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { preflight, scanProcesses, sceneLine } from './verify/gate-preflight.mjs';
+import { redactPath } from './mcp/lib/core.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));       // <pkg>
 const PROJECT_ROOT = HERE;
@@ -82,24 +85,35 @@ const EXCLUDE_FILE_RES = [
   /^accounts\.json$/i,   // 凭据文件：绝不入库、绝不入包（项目红线）
 ];
 
-function shouldSkip(name, isDir) {
+/* 测试残件流程：套件/实测往 flows/ 落的 t-/int-/e2e-/live- 前缀流程（运行数据面残件）。
+ * 发布包只带演示/真实流程——残件随包发等于把测试现场发给用户。
+ * 只匹配 flows/ 直属条目（其它目录的同名文件不受影响）；排除动作在打包报告逐个列名，不静默丢。
+ * 待确认：更严的白名单口径（只带 seed 演示流程）暂缓——前缀排除是保守面，真实流程名撞前缀才会误伤。 */
+const TEST_FLOW_RE = /^(?:t-|int-|e2e-|live-)/;
+const isTestFlowResidue = (rel, name) => rel === 'flows' && TEST_FLOW_RE.test(name);
+
+function shouldSkip(name, isDir, rel = '') {
   // 发布规范：纯净包不含**任何** . 前缀内容 —— 开发机基础设施，不随包走。
   if (name.startsWith('.')) return true;
+  if (isTestFlowResidue(rel, name)) return true;
   if (isDir) return EXCLUDE_DIRS.has(name);
   return EXCLUDE_FILE_RES.some((re) => re.test(name));
 }
 
-const stats = { files: 0, bytes: 0, skippedDirs: [], skippedFiles: 0 };
+const stats = { files: 0, bytes: 0, skippedDirs: [], skippedFiles: 0, skippedFlows: [] };
 const skippedDirSet = new Set();
+const skippedFlowSet = new Set();
 
 // count=false 供门禁一次性副本用：副本拷贝不进统计，报告里的文件数就是交付树的文件数
 function copyTree(src, dst, rel = '', count = true) {
   fs.mkdirSync(dst, { recursive: true });
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
     const r = rel ? `${rel}/${e.name}` : e.name;
-    if (shouldSkip(e.name, e.isDirectory())) {
+    if (shouldSkip(e.name, e.isDirectory(), rel)) {
       if (count) {
-        if (e.isDirectory()) skippedDirSet.add(r);
+        // 测试残件流程单列计数（逐个列名）：排除必须可见，不混进「散文件」一笔糊涂账
+        if (isTestFlowResidue(rel, e.name)) skippedFlowSet.add(r);
+        else if (e.isDirectory()) skippedDirSet.add(r);
         else stats.skippedFiles++;
       }
       continue;
@@ -125,13 +139,22 @@ function copyTree(src, dst, rel = '', count = true) {
  * 机械链路：目标树 → 一次性副本（纯净过滤拷贝）→ 副本里跑验收（退出码 0/3=判过，
  * 3=诚实 SKIP 明示记录）→ 删副本 → 终态哈希终查（门禁前后目标树哈希一致 + 纯净复扫）。
  */
+/* 判定面谓词（treeHash 与归因扫描共用同一份口径，永不漂移）：
+ * 跳过 = 运行现场/装机生成物（shouldSkip 名单）与 flows/（运行时数据面，
+ * MCP 工具随时增删、测试套件也会落 t-/int-/e2e-/live- 前缀残件）不参与「门禁把树跑脏」判定——
+ * 否则任何无关活动都让终查假红（--gate-only 源树实测踩过：并发 e2e 落残件致哈希漂移，
+ * 家族验收 5/5 全过仍判不可交付）。源码/文档中途改动仍判红：交付面变了就是不该发版。 */
+const hashSkip = (name, isDir) => (isDir ? (name === 'flows' || shouldSkip(name, true)) : shouldSkip(name, false));
+
 const treeHash = (dir) => {
   const h = createHash('sha256');
   const walk = (d, rel = '') => {
     for (const name of fs.readdirSync(d).sort()) {
       const p = path.join(d, name);
       const r = rel ? `${rel}/${name}` : name;
-      if (fs.statSync(p).isDirectory()) walk(p, r);
+      const st = fs.statSync(p);
+      if (hashSkip(name, st.isDirectory())) continue;
+      if (st.isDirectory()) walk(p, r);
       else { h.update(r); h.update(fs.readFileSync(p)); }
     }
   };
@@ -139,17 +162,82 @@ const treeHash = (dir) => {
   return h.digest('hex').slice(0, 16);
 };
 
+/* ---- 终查判红归因（只读报告，永不影响判定）：门禁窗口内写树文件分组点名 ----
+ * 红因从「人工 find -newermt 归因」变报告自解释：
+ *  运行现场/数据面残写（不判红类）= 判定面谓词会跳过的路径（flows/、runs/、.work 等）；
+ *  交付面变更（真红类）= 进入树哈希的路径——判红时这些就是嫌疑变更。
+ * 清单逐条走 redactPath（日志脱敏红线）；扫描失败只降级为「归因不可用」，绝不改判。 */
+const ATTR_CAP = 20;
+function scanWindowWrites(dir, windowStart, rel = '', out = { benign: [], red: [] }) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return out; }
+  for (const name of names) {
+    const p = path.join(dir, name);
+    const r = rel ? `${rel}/${name}` : name;
+    let st;
+    try { st = fs.lstatSync(p); } catch { continue; }
+    if (st.isSymbolicLink()) continue;              // 与 copyTree 同口径：软链不入包也不判
+    if (st.isDirectory()) { scanWindowWrites(p, windowStart, r, out); continue; }
+    if (!st.isFile()) continue;
+    if (!(st.mtimeMs >= windowStart)) continue;
+    // 路径任一段命中判定面谓词即「不判红类」：与 treeHash 的实际走树完全同口径
+    const segs = r.split('/');
+    const skipped = segs.some((seg, i) => hashSkip(seg, i < segs.length - 1));
+    (skipped ? out.benign : out.red).push(r);
+  }
+  return out;
+}
+
+function attributionLines(target, windowStart, hashChanged, purityDirty = []) {
+  try {
+    const { benign, red } = scanWindowWrites(target, windowStart);
+    benign.sort(); red.sort();
+    const fmt = (arr) => (arr.length <= ATTR_CAP
+      ? arr.map(redactPath).join('、')
+      : arr.slice(0, ATTR_CAP).map(redactPath).join('、') + `…（其余 ${arr.length - ATTR_CAP} 个省略）`);
+    const lines = [];
+    // 红因分述（纯净面）：判红来源=包内排除面残件——哈希按设计看不见它们，红因与「窗口写树」
+    // 维度无关；两类红因并存时各自解释（「不判红类」仅指不参与哈希判红），紧挨判红结论不误读。
+    if (purityDirty.length) lines.push(`  归因·红因（纯净复扫）= 包内排除面残件（哈希按设计不可见，与窗口写树无关）: ${fmt([...purityDirty].sort())}`);
+    if (!benign.length && !red.length) { lines.push('  归因: 门禁窗口内写树 0 个'); return lines; }
+    if (!red.length) { lines.push(`  归因: 门禁窗口内写树 ${benign.length} 个，全部为运行现场/数据面残写（不判红类）`); return lines; }
+    // 判定面内写树：判红时是嫌疑变更；判绿时是「写入同内容/仅触碰」（treeHash 按内容+相对名判，不含 mtime）
+    lines.push(`  归因·交付面变更（真红类）${red.length} 个${hashChanged ? '——判红嫌疑变更' : '——内容未变（触碰/同内容写入），不判红'}: ${fmt(red)}`);
+    if (benign.length) lines.push(`  归因·运行现场/数据面残写（不判红类）${benign.length} 个: ${fmt(benign)}`);
+    return lines;
+  } catch (e) {
+    return ['  归因: 不可用（窗口扫描失败：' + redactPath(String(e && e.message ? e.message : e)).slice(0, 120) + '）——不影响判定'];
+  }
+}
+
 function runGate(target, sourceMode = false) {
   const gateLines = [];
   let gateFailed = false;
+  // 并发预检（加固 H20）：验收套件与其它跑批共享全局态（计划任务名空间/浏览器/同仓库
+  // flows、runs、config），并发跑批会互相污染出假红假绿（实测两次实锤）——结论不可信
+  // 就拒跑，绝不产出假判。只判"本机是否有并发执行"，与目标树无关。
+  {
+    const pf = preflight();
+    gateLines.push('并发预检（防跑批互踩假判）: ' + (pf.ok ? '通过' : '发现并发执行，拒绝出结论'));
+    for (const w of pf.warnings) gateLines.push('  警告: ' + w);
+    for (const p of pf.problems) gateLines.push('  ' + p);
+    if (!pf.ok) {
+      gateLines.push('发版门禁: 失败 ❌（环境有并发执行，结果不可信；等它结束或停掉后再跑）');
+      return { gateFailed: true, gateLines };
+    }
+  }
   const gateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wrrpa-gate-'));
   const gateCopy = path.join(gateTmp, 'pkg');
+  const gateWindowStart = Date.now(); // 归因窗口起点：门禁窗口内写树 = 自此刻起 mtime 更新的文件
   const hashBefore = treeHash(target);
   gateLines.push('发版门禁: 一次性副本验收', `  副本: ${gateCopy}`);
+  // 纯净复扫谓词 = copyTree 过滤谓词（shouldSkip，含 flows 残件规则）同一份口径，永不漂移。
+  // 旧规则只抓「dot 前缀 + node_modules」：包里混进 logs/、runs/、accounts.json、*.log 等
+  // 排除面残件时哈希按设计跳过它们、复扫又不认 = 双盲区脏包放行；过滤面失灵即复扫判红。
   const walkDirty = (d, acc, rel = '') => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.name.startsWith('.') || e.name === 'node_modules') { acc.push(r); continue; }
+      if (shouldSkip(e.name, e.isDirectory(), rel)) { acc.push(r); continue; }
       if (e.isDirectory()) walkDirty(path.join(d, e.name), acc, r);
     }
   };
@@ -163,6 +251,14 @@ function runGate(target, sourceMode = false) {
       gateFailed = true;
       const ls = ((r.stdout || '') + (r.stderr || '')).split('\n').filter((l) => l.trim());
       gateLines.push(`    尾部: ${ls.slice(-3).map((l) => l.trim()).join(' ; ')}`);
+      // 失败「并发现场」快照（只读诊断，try/catch 内绝不动 gateFailed）：把互踩假红
+      // 从人工 tasklist 定性变报告自解释——只在失败时显示，成功不加输出
+      try {
+        const procs = scanProcesses();
+        gateLines.push(`    并发现场: ${sceneLine({ processes: procs || [], processScanFailed: procs === null })}`);
+      } catch (e) {
+        gateLines.push('    并发现场: 快照不可用（' + redactPath(String(e && e.message ? e.message : e)).slice(0, 80) + '）');
+      }
     }
   };
   // 用 node 直接跑 npm-cli.js，避免 shell 参数拼接（DEP0190）；找不到再退回 npm.cmd
@@ -187,15 +283,17 @@ function runGate(target, sourceMode = false) {
     if (process.env.PV_GATE_SKIP_VERIFY) {
       gateLines.push('  验收命令: 跳过（PV_GATE_SKIP_VERIFY —— 机械自检用；真实发版必跑）');
     } else {
-      // 家族验收：装依赖 → selftest → 工具面 → 全链路（缺浏览器/缺依赖时按统一诚实 SKIP 口径 exit 3 判过）
+      // 家族验收：装依赖 → selftest → 工具面 → 全链路 → live 实测（缺浏览器/缺依赖时按统一诚实 SKIP 口径 exit 3 判过）
       const env = { ...process.env, PV_SKIP_RELEASE_GATE: '1' };
       const mcpDir = path.join(gateCopy, 'mcp');
       npmCi(mcpDir);
       // 套件契约：selftest/tools/integration 都从 mcp/ 起跑（README 调用姿势：
-      // node test\integration.mjs —— runner CLI 用例按 process.cwd() 找 mcp/runner.mjs）
+      // node test\integration.mjs —— runner CLI 用例按 process.cwd() 找 mcp/runner.mjs）；
+      // live-fulltest 按 __dirname 定位包根（与 cwd 无关），黑盒走真实 MCP stdio 协议
       step('selftest 状态机自检', process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('tools 工具面 63 用例', process.execPath, [path.join(mcpDir, 'test', 'tools.mjs')], { cwd: mcpDir, env }, [0, 3]);
+      step('tools 工具面 65 用例', process.execPath, [path.join(mcpDir, 'test', 'tools.mjs')], { cwd: mcpDir, env }, [0, 3]);
       step('integration 全链路', process.execPath, [path.join(mcpDir, 'test', 'integration.mjs')], { cwd: mcpDir, env, timeout: 900_000 }, [0, 3]);
+      step('live 全流程实测 68 链路（真实 MCP stdio + 真实浏览器，覆盖 44 工具）', process.execPath, [path.join(gateCopy, 'verify', 'live-fulltest.mjs')], { cwd: mcpDir, env, timeout: 900_000 }, [0, 3]);
     }
   } finally {
     fs.rmSync(gateTmp, { recursive: true, force: true });
@@ -217,6 +315,9 @@ function runGate(target, sourceMode = false) {
     gateLines.push(`  终态哈希终查: ${hashOk ? '0 不一致' : `树哈希变了 ${hashBefore} → ${hashAfter}`}；纯净复扫 ${pure ? '干净' : '违例 ' + dirty.slice(0, 4).join('、')}`);
     if (!pure) gateFailed = true;
   }
+  // 归因输出：只读报告，try/catch 内绝不动 gateFailed —— 判定面口径与判定结果均不受影响
+  // 纯净面红因只在真正判红的口径下分述（源树口径 dirty=已知排除项、不判红，不作红因）
+  gateLines.push(...attributionLines(target, gateWindowStart, !hashOk, sourceMode ? [] : dirty));
   gateLines.push(`发版门禁: ${gateFailed ? '失败 ❌（发布包不可交付）' : '通过 ✅'}`);
   return { gateFailed, gateLines };
 }
@@ -244,6 +345,7 @@ if (fs.existsSync(OUT)) {
 
 copyTree(PROJECT_ROOT, OUT);
 stats.skippedDirs = [...skippedDirSet].sort();
+stats.skippedFlows = [...skippedFlowSet].sort();
 
 /* ---- 复制后自校验（--verify，兑现「不验证不写盘」的承诺）----
  * 查两件事，都查实证不查感觉：
@@ -262,10 +364,10 @@ if (verifySkipped) {
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
         // 泄漏检查：被排除的名字不该出现在 OUT 的任何层级
-        if (shouldSkip(e.name, true)) { verifyIssues.push(`排除的目录混进分发版：${r}`); continue; }
+        if (shouldSkip(e.name, true, rel)) { verifyIssues.push(`排除的目录混进分发版：${r}`); continue; }
         walkVerify(path.join(dir, e.name), r);
       } else if (e.isFile()) {
-        if (shouldSkip(e.name, false)) { verifyIssues.push(`排除的文件混进分发版：${r}`); continue; }
+        if (shouldSkip(e.name, false, rel)) { verifyIssues.push(`排除的文件混进分发版：${r}`); continue; }
         const src = path.join(PROJECT_ROOT, ...r.split('/'));
         if (!fs.existsSync(src)) { verifyIssues.push(`分发版多出源码没有的文件：${r}`); continue; }
         if (hash(path.join(dir, e.name)) !== hash(src)) verifyIssues.push(`与源码字节不一致：${r}`);
@@ -300,6 +402,8 @@ const lines = [
   `  排除的目录（${stats.skippedDirs.length} 类）:`,
   ...stats.skippedDirs.map((d) => `    - ${d}`),
   `  排除的散文件: ${stats.skippedFiles} 个（. 前缀 / *.log / 临时探查脚本 / 备份文件）`,
+  `  排除的测试残件流程: ${stats.skippedFlows.length} 个（t-/int-/e2e-/live- 前缀，flows/ 运行数据面残件不随包）` +
+    (stats.skippedFlows.length ? '：' + stats.skippedFlows.map((f) => f.replace(/^flows\//, '')).join('、') : ''),
   '',
   verifySkipped ? '  自校验: 跳过（--no-verify）'
     : realIssues.length === 0 ? `  自校验: 通过（${stats.files} 个文件哈希一致，无排除项泄漏）`

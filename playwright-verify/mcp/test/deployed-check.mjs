@@ -255,12 +255,13 @@ check('握手成功', byId(1)?.result?.serverInfo?.name === 'playwright-verify',
   JSON.stringify(byId(1)?.result?.serverInfo));
 
 const tools = byId(2)?.result?.tools || [];
-check('tools/list 返回 14 个工具', tools.length === 14, `${tools.length} 个`);
-const EXPECTED = ['check_config', 'lint_spec', 'summarize_report', 'run_verify', 'cli_health', 'cli_session',
+check('tools/list 返回 16 个工具', tools.length === 16, `${tools.length} 个`);
+const EXPECTED = ['check_config', 'lint_spec', 'summarize_report', 'run_verify', 'setup-browser-config',
+  'cli_health', 'cli_session', 'cli_batch',
   'explore_page', 'nl_test_goal', 'collect_table',
   'generate_scripts', 'check_standards', 'orchestrate_excel', 'explain_rules', 'selfcheck'];
 const missingTools = EXPECTED.filter((t) => !tools.some((x) => x.name === t));
-check('14 个工具名齐全', missingTools.length === 0, missingTools.join(','));
+check('16 个工具名齐全', missingTools.length === 0, missingTools.join(','));
 check('每个工具都有 description 与 inputSchema',
   tools.every((t) => t.description && t.inputSchema?.type === 'object'));
 

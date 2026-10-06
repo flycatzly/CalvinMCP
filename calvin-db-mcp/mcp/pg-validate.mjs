@@ -245,6 +245,30 @@ try {
   const ecs = fs.readFileSync(path.join(exportDir, "row4.csv"), "utf8");
   check("导出 CSV 内容与直连一致（含 丁）", !ec.isError && ecs.includes("丁") && /4/.test(ecs), ecs.slice(0, 120));
 
+  // ⑫-b v1.6.32 CSV 行集流式（pg 游标消费）：与 JSON 物化再格式化逐字节恒等 + limit 截断边界
+  {
+    const esl = `SELECT id, 数量 FROM ${T} ORDER BY id`;
+    await call("export_data", { source: PG_ID, sql: esl, format: "json", filename: "stream_ref.json", overwrite: true });
+    const esRows = JSON.parse(fs.readFileSync(path.join(exportDir, "stream_ref.json"), "utf8")).rows || [];
+    const esc = await call("export_data", { source: PG_ID, sql: esl, format: "csv", filename: "stream_cmp.csv", overwrite: true });
+    const esWant = "id,数量\r\n" + esRows.map((r) => r.id + "," + r.数量).join("\r\n") + "\r\n";
+    const esGot = fs.readFileSync(path.join(exportDir, "stream_cmp.csv"), "utf8");
+    check("导出 CSV 行集流式与 JSON 物化再格式化逐字节恒等（v1.6.32）",
+      !esc.isError && esRows.length > 0 && esGot === esWant
+        && Number(esc.data?.row_count) === esRows.length && esc.data?.truncated === false
+        && "formula_cells_neutralized" in (esc.data || {}),
+      esc.text.slice(0, 140) + " | bytes " + esGot.length + " vs " + esWant.length);
+    const est = await call("export_data", { source: PG_ID, sql: esl, limit: 2, format: "csv", filename: "stream_cut.csv", overwrite: true });
+    const estLines = fs.readFileSync(path.join(exportDir, "stream_cut.csv"), "utf8").trim().split(/\r?\n/);
+    check("导出 limit 截断边界：limit=2 → truncated=true 且只落 2 行（游标停消费）",
+      !est.isError && Number(est.data?.row_count) === 2 && est.data?.truncated === true && estLines.length === 3,
+      est.text.slice(0, 140) + " | lines=" + estLines.length);
+    const esx = await call("export_data", { source: PG_ID, sql: esl + " LIMIT 2", limit: 2, format: "csv", filename: "stream_exact.csv", overwrite: true });
+    check("导出恰好等量不误报截断（流式边界）",
+      !esx.isError && Number(esx.data?.row_count) === 2 && esx.data?.truncated === false,
+      esx.text.slice(0, 140));
+  }
+
   /* ⑬ 全工具面钉测（v1.6.18，对标 mysql-validate）：画像/发现类/查询类/计划写入建表/事务。
         PG 方言分支此前只在纯函数单测验证——information_schema $n 占位符、EXPLAIN (FORMAT JSON)、
         COUNT(*)::bigint 字符串化、ILIKE 子串匹配、括号复合不包外层 LIMIT，此处全部真实端到端执行。 */

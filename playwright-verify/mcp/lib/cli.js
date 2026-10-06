@@ -19,6 +19,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { runToFiles, resolveCliRunner, stripKnownNoise } from './runner.js';
 
 /** 产出目录约定：证据落盘到约定目录，不散在临时路径。 */
@@ -129,6 +130,69 @@ export function safeSession(s) {
  * @param {number}  [o.timeoutMs]
  * @returns {Promise<object>}
  */
+/**
+ * 超时收割会话：runToFiles 超时时客户端进程已被整树收掉，但 playwright-cli 的 daemon
+ * 是 detached+unref 的设计，**不会**跟着走 —— daemon 连浏览器一起留在机器上
+ * （实测孤儿 chrome-headless-shell 整棵树就是这么来的）。失败路径没人收，这里必须收。
+ *
+ * 两段式，只收**本会话**，绝不碰别人：
+ *   1) 先优雅 close（限时 15s）—— daemon 还活着时秒关，不影响 --parallel 兄弟会话；
+ *   2) close 也超时/失败 → daemon 已经卡死（典型：渲染器冻结、管道不回），
+ *      按会话名**定点**强杀 cliDaemon 进程树（含其浏览器子进程）。
+ * 绝不用 close-all / kill-all 当兜底：那是全机收割，会把并发兄弟套件的活会话一起带走
+ * （并行假失败的踩踏面之一）。会话名已过 safeSession，通配/正则字符不参与匹配。
+ */
+const REAP_SKIP = new Set(['list', 'close-all', 'kill-all']);
+
+async function reapSession(cli, cwd, sess, { hardOnly = false, logDir } = {}) {
+  if (!hardOnly) {
+    const graceful = await runToFiles({
+      command: cli.command,
+      args: [...cli.prefix, `-s=${sess}`, 'close'],
+      cwd,
+      timeoutMs: 15_000,
+      logDir,
+      logName: `reap-${sess}-close`,
+      shell: !!cli.needsShell,
+    });
+    if (!graceful.timedOut && graceful.code === 0) return;
+  }
+  hardKillSession(sess);
+}
+
+/** 定点强杀某会话的 daemon 树（连同它的浏览器子进程）。 */
+function hardKillSession(sess) {
+  if (process.platform === 'win32') {
+    // 扫命令行找 `cliDaemon.js <sess>`（带参数边界，不误伤名字更长的兄弟会话），taskkill /T /F 连树收。
+    const script = 'Get-CimInstance Win32_Process | Where-Object { $_.Name -like \'node*\''
+      + ` -and ($_.CommandLine -like '*cliDaemon.js ${sess}'`
+      + ` -or $_.CommandLine -like '*cliDaemon.js ${sess} --*') }`
+      + ' | ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }';
+    try {
+      spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, stdio: 'ignore', timeout: 20_000 });
+      return;
+    } catch { /* 落到下面兜底 */ }
+  }
+  const esc = sess.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try {
+    spawnSync('pkill', ['-f', `cliDaemon\\.js ${esc}( |$)`],
+      { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+  } catch { /* 收割尽力而为 */ }
+}
+
+/**
+ * 浏览器通道环境适配（纯函数）：部分机器的 Defender 会拦 ms-playwright 缓存里**新下载的**
+ * chromium 二进制（spawn UNKNOWN / 沙箱 0x5 拒绝访问），此时可用系统自带的 msedge 通道：
+ * 设 PVMCP_CLI_BROWSER=msedge。只在会话创建点 open 注入 —— 通道是会话属性，
+ * 后续命令附着到既有会话；环境不设则零变化（默认 chromium 语义不变）。
+ */
+export function browserChannelFlags(subcommand, env = process.env) {
+  const v = String(env.PVMCP_CLI_BROWSER || '').trim();
+  if (!v) return [];
+  return subcommand === 'open' ? ['--browser', v] : [];
+}
+
 export async function runCli(o) {
   const {
     cwd, session = 'default', subcommand, args = [], headed = false,
@@ -213,6 +277,7 @@ export async function runCli(o) {
     // 限制深度，避免一次拉出整棵可访问性树撑爆上下文
     optionArgs.push('--depth', '12');
   }
+  optionArgs.push(...browserChannelFlags(subcommand));
 
   // 顺序：会话 → 子命令 → 选项 → 位置参数 → 全局选项
   const finalArgs = [`-s=${sess}`, subcommand, ...optionArgs, ...positionalArgs];
@@ -229,6 +294,19 @@ export async function runCli(o) {
     logName: `cli-${sess}-${subcommand}`,
     shell: !!cli.needsShell,
   });
+
+  // 超时 ≠ 只有客户端死了：daemon 还挂着，必须一并收（见 reapSession 注释）。
+  // close 自己超时说明 daemon 已卡死 → 直接定点强杀；其余业务子命令先试优雅 close。
+  // CLI_ERROR 分支**不**收：失败现场要留给调用方处置（截图/归档），漏网由
+  // 测试入口与 verify-all 的收尾 kill-all 兜底。
+  if (res.timedOut && !REAP_SKIP.has(subcommand)) {
+    try {
+      await reapSession(cli, cwd, sess, {
+        hardOnly: subcommand === 'close' || subcommand === 'delete-data',
+        logDir: dirs.logs,
+      });
+    } catch { /* 收割尽力而为，不影响判定 */ }
+  }
 
   // 若 CLI 自己把产物写到了别处，这里把它找出来（--filename 是我们给的绝对路径）
   const parsedJson = tryParseJson(res.stdout);
@@ -375,6 +453,9 @@ export async function cliHealthCheck({ cwd, session = 'healthcheck' }) {
   const open = await runCli({ cwd, session, subcommand: 'open', args: [url] });
   steps.push({ step: 'open', ok: open.ok, summary: open.summary, artifacts: open.artifacts });
   if (!open.ok) {
+    // 失败≠没开：open 失败时 daemon/浏览器多半已经拉起来了。不收就漏在这里。
+    // 尽力而为地关掉，但**不进 steps** —— 返回形状（步骤数与内容）是已测契约。
+    try { await runCli({ cwd, session, subcommand: 'close', args: [], timeoutMs: 15_000 }); } catch { /* 尽力而为 */ }
     const raw = `${open.stderrTail || ''}\n${open.summary || ''}`;
     const distMatch = /(?:Chromium distribution '([^']+)' is not found|Executable doesn't exist at)\s*:?\s*([^\n]*)/i.exec(raw);
     let hint = '';

@@ -30,7 +30,7 @@ import {
   sanitizeSql, stripComments, stripLeadingComments, guardReadOnly, guardWrite, extractWriteTarget,
   enforceLimit, checkWhereFragment, createTableGuard, createTableName, ToolError,
 } from "./guard.mjs";
-import { createPoolManager } from "./pool.mjs";
+import { createPoolManager, pgStreamable } from "./pool.mjs";
 // v1.6.9 观测面打点（可选）：DBMCP_ERR_LOG 未设置时零行为，写失败静默，契约零侵入
 import { setScrub, logToolCall } from "./observe.mjs";
 export {
@@ -47,7 +47,7 @@ function pkgVersion(fallback) {
     return JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8")).version || fallback;
   } catch { return fallback; }
 }
-export const VERSION = pkgVersion("1.6.25");
+export const VERSION = pkgVersion("1.6.32");
 
 /* ------------------------- v1.2.0 SQLite 支持（助手） ------------------------- */
 
@@ -130,6 +130,22 @@ export function intArg(v, name, min, max, dflt) {
   }
   if (n < min) throw new ToolError("E_PARAM", `Invalid '${name}': must be >= ${min}, got ${n}.`);
   return Math.min(max, n);
+}
+
+/**
+ * v1.6.26: 校验「枚举型」字符串参数（与 intArg 同一设计哲学）。
+ * 旧版 format:"xml" 会被静默兜底成默认格式（query_plan→text、export_data→csv），
+ * 调用方以为拿到了 xml 却得到另一种格式，且毫无提示——与 limit 静默夹断同一类误导。
+ * 规则：缺失（undefined/null/""）→ 用默认值；命中允许值（去首尾空白、大小写不敏感）→ 归一为小写；
+ * 其它 → E_PARAM（no-retry）报错并列出允许值。
+ * 只接受字符串命中——类型混淆（数字/布尔/数组/对象）一律拒绝：单元素数组 String(["json"])==="json"
+ * 会绕过校验被静默执行（实测 bug），任何非字符串都不参与匹配。
+ */
+export function enumArg(v, name, allowed, dflt) {
+  if (v === undefined || v === null || v === "") return dflt;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : null;
+  if (s !== null && s !== "" && allowed.includes(s)) return s;
+  throw new ToolError("E_PARAM", `Invalid '${name}': ${JSON.stringify(v)} is not one of [${allowed.join(", ")}].`);
 }
 
 const cfg = loadConfig();
@@ -218,6 +234,199 @@ export function getConfiguredSecrets() {
 export function scrub(text) {
   return scrubWith(text, SECRET_LIST);
 }
+
+/**
+ * v1.6.27: scrub 的字节域形态——逐 key 在 UTF-8 字节流上把口令替换为 ***，直出 Buffer。
+ * 动机：export_data 落盘旧链路是 scrub(content) 的 split/join + Buffer.from，content 与 join
+ * 产物两份完整字符串同时在堆上，scrub 段堆峰 76MB、进程 RSS 峰 204MB（30k 行/16CSV 实测）。
+ *
+ * 形态是原地压实（in-place compaction），不是「输入+输出双缓冲」：双缓冲版本实测把堆省下的
+ * 又还给外部内存（RSS 204→208，无收益）。*** 恒为 3 字节，凡 key ≥3 字节时输出指针永远落后或
+ * 等于读指针（每次命中净消耗 |key|-3 字节），可在同一块 Buffer 上边扫边压实，全程零额外分配；
+ * 扫描始终看压实前的原区（write ≤ read 保证未读区不被改写），与字符串链匹配集一致。
+ * |key|<3 的罕见形态（替换后输出可能增长）回落片段拼接。多个 key 逐 pass 进行，
+ * pass 间用收窄视图衔接——与字符串链「上一 key 的产物是下一 key 的输入」语义一致，
+ * 跨替换边界的匹配（如 ["X","a***b"] 遇 "aXb"）不丢失。
+ *
+ * 恒等性（与 Buffer.from(scrubWith(t, list), "utf8") 逐字节相同，自测差分钉死）：
+ * 替换串 "***" 是 ASCII，任何位置都不会切碎 UTF-8 多字节序列；UTF-8 自同步且 key 良构，
+ * 字节域匹配集与字符串域一一对应。
+ *
+ * 回落：文本或任一 key 含孤立代理项时走 scrubWith 旧链路再转 Buffer——孤立代理在 UTF-8 编码中
+ * 变成 U+FFFD，与字面 U+FFFD 同字节，字节域匹配集会与字符串域分叉；回落保证这种退化输入下
+ * 字节仍与旧行为恒等。
+ *
+ * 明确偏离 scrubWith 的退化输入（SECRET_LIST 不会产生，语义钉在自测里）：空 key 跳过
+ * （scrubWith 对 "" 会在每个码元间插 "***"，无产品语义）；非字符串 key 跳过（scrubWith 会隐式强转）。
+ */
+const SCRUB_STAR = Buffer.from("***", "utf8");
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+// v1.6.31: 逐格哨兵预筛——孤立代理必然先是代理码元，普通格一步类正则失败即免掉 lookaround 正则
+//（30k 行微基准：无预筛 14.1-15.3ms vs 预筛 13.8-15.2ms，预筛恒不更慢且省掉无谓 lookaround）
+const ANY_SURROGATE = /[\uD800-\uDFFF]/;
+
+/** 单 key 原地压实：把 buf[0,len) 中的 kb 替换为 ***（要求 kb.length ≥ 3），返回新长度。write ≤ read 不变式保证未读区不被改写。 */
+function scrubPassInPlace(buf, len, kb) {
+  let read = 0, write = 0, idx;
+  while ((idx = buf.indexOf(kb, read)) !== -1) {
+    const gap = idx - read;
+    if (gap > 0) { buf.copy(buf, write, read, idx); write += gap; }
+    SCRUB_STAR.copy(buf, write); write += 3;
+    read = idx + kb.length;
+  }
+  if (len > read) { buf.copy(buf, write, read, len); write += len - read; }
+  return write;
+}
+
+/**
+ * scrub 的字节域入口（输入已是 UTF-8 Buffer）：逐 key 原地压实替换为 ***。
+ * 前置：buf 与 list 均不含孤立代理项痕迹（Buffer 侧不可检测——孤立代理编码后与字面 U+FFFD
+ * 同字节；字符串入口 scrubToBuffer 自动守门，直调本函数的组装链由 exportToCsvBuffer 的
+ * saw_lone_surrogate 哨兵守门）。返回可能是原 Buffer 的收窄视图，调用方按 .length 计量。
+ */
+export function scrubBuffer(buf, list) {
+  const keys = (list || []).filter((k) => typeof k === "string" && k.length > 0);
+  let cur = buf;
+  let len = buf.length;
+  for (const k of keys) {
+    const kb = Buffer.from(k, "utf8");
+    if (kb.length >= 3) {
+      len = scrubPassInPlace(cur, len, kb);
+      cur = cur.subarray(0, len);   // 收窄视图（不拷贝），下一个 key 在压实产物上再扫
+    } else {
+      // |key|<3：替换后输出可能增长，原地压实不再安全，走片段拼接
+      const view = cur.subarray(0, len);
+      const parts = [];
+      let start = 0, idx;
+      while ((idx = view.indexOf(kb, start)) !== -1) {
+        if (idx > start) parts.push(view.subarray(start, idx));
+        parts.push(SCRUB_STAR);
+        start = idx + kb.length;
+      }
+      if (start === 0) continue;   // 无命中：直通
+      if (start < view.length) parts.push(view.subarray(start));
+      cur = Buffer.concat(parts);
+      len = cur.length;
+    }
+  }
+  return cur;
+}
+
+export function scrubToBuffer(text, list) {
+  const s = String(text);
+  const keys = (list || []).filter((k) => typeof k === "string" && k.length > 0);
+  if (LONE_SURROGATE.test(s) || keys.some((k) => LONE_SURROGATE.test(k))) {
+    return Buffer.from(scrubWith(s, keys), "utf8");
+  }
+  return scrubBuffer(Buffer.from(s, "utf8"), keys);
+}
+
+/**
+ * v1.6.29: 流式清洗管线——把 scrubWith/scrubBuffer 的「整段逐 key 替换」摊平成可逐块喂入的
+ * 流式替换，供 export 整链流式写盘消掉 scrubbed 全量缓冲。每 key 一级：feed(chunk[, emit])
+ * 逐块喂入，emit 形态逐片流出当前可确定的输出（零拷贝视图），末尾 flush([emit]) 吐出尾随暂存。
+ * 恒等性（与 Buffer.from(scrubWith(t, list), "utf8") 逐字节相同，自测切分不变性钉死）：
+ * - 单级 = 左到右贪心非重叠全局替换，与 split/join 语义一致：凡完整落进已喂字节的匹配立即替换；
+ *   未确定区（尾部 < |k| 字节）整体暂存——尾部长度不足以藏完整匹配，下一块连同暂存重扫，
+ *   跨块边界与跨 UTF-8 多字节序列的匹配不丢，贪心次序与整段扫描一致（跨界候选最左优先）；
+ * - 多级串接：第 i 级吃第 i−1 级的完整输出流（flush 时先放行上级尾部再放行本级），与
+ *   「上一 key 的产物是下一 key 的输入」一致，跨替换边界的匹配（如 ["X","a***b"] 遇 "aXb"）不丢；
+ * - 替换串 "***" 可长于短 key（|k|<3），流式路径不做原地压实、无输出增长约束，短 key 同口径处理。
+ * 实现（v1.6.29 二版）：碎片原生零拷贝——尾部暂存是 ≤|k|-1 字节的小拷贝，未匹配间隙直接
+ * 流出调用方缓冲的视图、不做整块 concat。首版整块 concat 形态实测把分配抖动顶到 ~120MB，
+ * 流式链 RSS 反而高于缓冲链（145.6 vs 137.1，产品 201 vs 177.5），故改为零拷贝。
+ * 输出碎片契约：emit 收到的碎片是输入缓冲视图或共享常量 SCRUB_STAR，仅在回调期间有效、
+ * 回调内不得改写；需留存请自行 Buffer.from 拷贝。feed(chunk) 无 emit 时聚合返回单缓冲（供测试）。
+ * 前置（与 scrubBuffer 相同）：内容与 list 不含孤立代理项（字节域与字符串域匹配集会分叉），
+ * 产品路径由 doExportData 的哨兵门守着；空 key/非字符串 key 跳过（同 scrubBuffer 语义）。
+ */
+export function createScrubPipeline(list) {
+  const keys = (list || []).filter((k) => typeof k === "string" && k.length > 0);
+  const EMPTY = Buffer.alloc(0);
+  if (!keys.length) {
+    return {
+      feed(chunk, emit) {
+        if (emit) { if (chunk && chunk.length) emit(chunk); return undefined; }
+        return chunk || EMPTY;
+      },
+      flush(emit) { return emit ? undefined : EMPTY; },
+    };
+  }
+  // 逐级：kb = key 字节，m = |k|，hold = 尾部暂存上限 |k|-1，tail = 待定未匹配尾（独立小拷贝）
+  const stages = keys.map((k) => {
+    const kb = Buffer.from(k, "utf8");
+    return { kb, m: kb.length, hold: Math.max(0, kb.length - 1), tail: EMPTY };
+  });
+  // 发射虚拟流 V = tail ++ chunk 上的未匹配区间 [a,b)（跨 tail|chunk 边界拆两片视图）
+  const emitGap = (st, emit, a, b) => {
+    if (a >= b) return;
+    const tl = st.tail.length;
+    if (a < tl) emit(st.tail.subarray(a, Math.min(b, tl)));
+    if (b > tl) emit(st.chunk.subarray(Math.max(a, tl) - tl, b - tl));
+  };
+  const runStage = (st, chunk, emit) => {
+    st.chunk = chunk;   // emitGap 取片用（调用级生命周期）
+    const tl = st.tail.length, fl = chunk.length;
+    const Vlen = tl + fl;
+    let cur = 0;        // 虚拟流上的未匹配发射游标
+    let fpos = 0;       // chunk 内扫描起点（跨界命中后跳过已消费区）
+    // phase A：起点落在尾部暂存区的跨块匹配（≤ |k|-1 个候选，最左优先；命中即消费到 chunk 内）
+    for (let s = 0; s < tl; s++) {
+      if (s + st.m > Vlen) break;                       // 起点过晚、匹配不完整，留给下一块
+      const j = tl - s;                                 // 命中取自 tail 的字节数（≥1）
+      if (st.m - j <= fl
+          && Buffer.compare(st.tail.subarray(s), st.kb.subarray(0, j)) === 0
+          && Buffer.compare(chunk.subarray(0, st.m - j), st.kb.subarray(j)) === 0) {
+        emitGap(st, emit, cur, s);
+        emit(SCRUB_STAR);
+        cur = s + st.m;
+        fpos = st.m - j;
+        break;
+      }
+    }
+    // phase B：chunk 内匹配（贪心左到右非重叠）
+    let idx;
+    while ((idx = chunk.indexOf(st.kb, fpos)) !== -1) {
+      emitGap(st, emit, cur, tl + idx);
+      emit(SCRUB_STAR);
+      cur = tl + idx + st.m;
+      fpos = idx + st.m;
+    }
+    // 尾部暂存：只放行确定部分（其后再无完整匹配可能），其余留待下一块重扫
+    const cut = Math.max(cur, Vlen - st.hold);
+    emitGap(st, emit, cur, cut);
+    if (cut >= Vlen) st.tail = EMPTY;
+    else if (cut >= tl) st.tail = Buffer.from(chunk.subarray(cut - tl));   // 小拷贝：立即释放对 chunk 的引用
+    else st.tail = Buffer.concat([st.tail.subarray(cut), chunk]);          // 新尾跨界（短流首块）：≤ |k|-1 字节
+  };
+  const chain = (i, chunk, emit) => {
+    if (!chunk || !chunk.length) return;
+    if (i === stages.length) { emit(chunk); return; }
+    runStage(stages[i], chunk, (frag) => chain(i + 1, frag, emit));
+  };
+  const release = (fn) => {
+    // 尾部按流序放行：上级尾部先过下游各级（会更新下游 tail），再逐级放行本级
+    for (let i = 0; i < stages.length; i++) {
+      const t = stages[i].tail;
+      stages[i].tail = EMPTY;
+      if (t.length) chain(i + 1, t, fn);
+    }
+  };
+  return {
+    feed(chunk, emit) {
+      if (emit) { chain(0, chunk, emit); return undefined; }
+      const got = [];
+      chain(0, chunk, (b) => { if (b.length) got.push(b); });
+      return got.length ? (got.length === 1 ? got[0] : Buffer.concat(got)) : EMPTY;
+    },
+    flush(emit) {
+      if (emit) { release(emit); return undefined; }
+      const got = [];
+      release((b) => { if (b.length) got.push(b); });
+      return got.length ? (got.length === 1 ? got[0] : Buffer.concat(got)) : EMPTY;
+    },
+  };
+}
 // v1.6.9：观测日志的脱敏复用同一 scrub（单一真相源，防清洗规则漂移）
 setScrub(scrub);
 
@@ -275,7 +484,7 @@ function getSource(id) {
 // v1.4.0: 连接层拆分至 pool.mjs（依赖注入 cfg/getSource/clampInt/sqliteFilePath），此处构造单例
 // v1.5.3: 注入 scrub（慢查询日志的 SQL 预览同过输出清洗）+ 解构 withTransaction（import atomic）
 // v1.6.21: runCopyIn（import_data 的 PG COPY FROM STDIN 批路径）
-const { getPool, runQuery, runCopyIn, withTransaction } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub });
+const { getPool, runQuery, runQueryStream, runCopyIn, withTransaction } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub });
 
 /* ------------------------------ identifier utils ---------------------------- */
 
@@ -965,6 +1174,7 @@ async function doQuery(args) {
     guardReadOnly(args.sql, maskDialect(src.type));
   }
   const maxRows = intArg(args.max_rows, "max_rows", 1, 5000, cfg.maxRows);
+
   const finalSql = enforceLimit(args.sql, maxRows, maskDialect(src.type));
   let qres;
   try {
@@ -1257,16 +1467,17 @@ export function explainSql(dbType, sql, format) {
 
 async function doQueryPlan(args) {
   const src = getSource(args.source);
+  const format = enumArg(args.format, "format", ["text", "json"], "text");
   // 内层语句必须是合法只读语句（拦 FOR UPDATE / INTO OUTFILE / 行锁等），EXPLAIN 整句再过一次（纵深）
   const inner = String(args.sql).trim().replace(/;\s*$/, "");
   guardReadOnly(inner, maskDialect(src.type));
-  const sql = explainSql(src.type, inner, args.format);
+  const sql = explainSql(src.type, inner, format);
   guardReadOnly(sql, maskDialect(src.type));
   const { rows, fields, ms } = await runQuery(args.source, sql);
   return {
     source: args.source,
     sql_explained: inner,
-    plan_format: src.type === "sqlite" ? "text (EXPLAIN QUERY PLAN)" : args.format === "json" ? "json" : "text",
+    plan_format: src.type === "sqlite" ? "text (EXPLAIN QUERY PLAN)" : format === "json" ? "json" : "text",
     columns: fields,
     plan: rows,
     duration_ms: ms,
@@ -1921,6 +2132,84 @@ export function writeFileAtomic(file, content, overwrite) {
 }
 
 /**
+ * v1.6.29: writeFileAtomic 的流式形态——内容经 writeFn(fd) 逐块写入临时文件，全程不物化
+ * 整份内容缓冲（export CSV 流式直写路径用）。原子占位/覆盖/并发语义与 writeFileAtomic 一致：
+ * overwrite=true 走 rename；否则 link 原子占位，EEXIST 显式报「目标文件已存在」。
+ * 错误语义：writeFn 抛错时临时文件必删、目标文件不出现（rename/link 未让位），错误原样上抛。
+ * v1.6.32: writeFn 可返回 Promise（行集流式消费在 writeFn 内 await 驱动流）——返回 thenable 时
+ * 函数返回 Promise、消费完成后才做原子占位；同步 writeFn 的完成与报错面逐字不变（同步抛错仍同步）。
+ */
+export function writeFileStreamAtomic(file, writeFn, overwrite) {
+  const dir = path.dirname(file);
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid.toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`);
+  const fd = fs.openSync(tmp, "w");
+  const cleanup = () => {
+    try { fs.closeSync(fd); } catch { /* 已关闭或从未可用 */ }
+    try { fs.unlinkSync(tmp); } catch { /* 没写成的暂存不留残骸 */ }
+  };
+  const commit = () => {
+    try {
+      fs.closeSync(fd);
+    } catch (e) {
+      cleanup();
+      throw e;
+    }
+    try {
+      if (overwrite === true) {
+        renameWithRetry(() => fs.renameSync(tmp, file));
+        return;
+      }
+      try {
+        renameWithRetry(() => fs.linkSync(tmp, file));   // 原子占位：并发者只有一个成功
+      } catch (e) {
+        if (e?.code === "EEXIST") throw new ToolError("E_PARAM", `目标文件已存在: ${file}（overwrite: true 可覆盖）`);
+        throw e;
+      }
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* 目标位已让出或从未写成 */ }
+    }
+  };
+  let r;
+  try {
+    r = writeFn(fd);
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+  if (r && typeof r.then === "function") {
+    return Promise.resolve(r).then(commit, (e) => { cleanup(); throw e; });
+  }
+  commit();
+}
+
+/**
+ * v1.6.30: 集束写缓冲器——把高频小块写收成低频大块写（Windows 单次 WriteFile 开销 µs 级，
+ * 15.5MB/1856 片逐片 writeSync 实测拖慢 export ~9ms）。push(b) 同步消费碎片：拷入复用批缓冲
+ * （碎片若是短命视图——如 streamCsvLines 的 scratch 视图——该契约必须成立），批满时经
+ * write(批视图) 落出；flush() 吐出尾批。超大碎片（≥ batchBytes）零拷贝整块直写：先冲刷
+ * 现批再原缓冲 write。批块大小恒 ≤ batchBytes（超大碎片直写时块即碎片本身）；write 在
+ * push/flush 内同步调用。
+ */
+export function createBatchWriter(write, batchBytes = 262144) {
+  const BATCH = Math.max(4096, Math.floor(batchBytes));
+  const batch = Buffer.allocUnsafe(BATCH);
+  let off = 0;
+  const drain = () => {
+    if (off > 0) { write(batch.subarray(0, off)); off = 0; }
+  };
+  return {
+    push(b) {
+      if (!b || b.length === 0) return;
+      if (b.length >= BATCH) { drain(); write(b); return; }
+      if (off + b.length > BATCH) drain();
+      b.copy(batch, off);
+      off += b.length;
+    },
+    flush: drain,
+  };
+}
+
+/**
  * CSV 单元格转义（RFC 4180：引号/逗号/换行包引号；null 空串；Buffer 转十六进制）。
  * v1.5.0: CSV 公式注入中和（OWASP）——字符串单元格以 = + - @ TAB CR 开头时前置 '，
  * 否则 Excel/Sheets 打开导出文件即执行公式（"=cmd|' /C calc'!A0" 经典注入面）。
@@ -1952,70 +2241,250 @@ export function unneutralizeCell(v) {
 }
 
 /**
- * 组装 CSV。v1.5.1: 组装期逐行累计字节，超过 maxBytes 立即抛错（早停）——
- * 旧行为是整表拼完再查 20MB，超限导出会先把内存吃到峰值才拒；
- * 现在超限在组装中即中止，文案如实"未写盘"。JSON 路径无逐行结构，保留执行后检查。
+ * CSV 行发射器（字符串链真源/回落路径）：逐行格式化并 emit(line)，组装期逐行累计字节，超过
+ * maxBytes 立即抛错（早停）。v1.5.1 语义：旧行为是整表拼完再查 20MB，超限导出会先把内存吃到
+ * 峰值才拒；现在超限在组装中即中止，文案如实"未写盘"。emit 顺序 = 表头行 + 每数据行各一次。
+ * 返回 totalBytes = 最终内容字节数（行字节 + 每行 2 字节 CRLF，含尾行），neutralized = 中和计数。
+ * v1.6.31 分工调整：exportToCsv（回落/保真字符串链）继续走这里；measureCsv/exportToCsvBuffer/
+ * streamCsvLines 改走零物化融合循环（见各函数注释）。本函数保留行串物化形态即为差分钉的真源：
+ * 流式三链 vs 本函数的逐字节恒等由自测模糊钉锁定（非同义反复——两套实现）。
  */
-export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+function eachCsvLine(fields, rows, neutralize, maxBytes, emit) {
   let neutralized = 0;
   const cell = (v) => {
     if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
     return csvCell(v, neutralize);
   };
-  const lines = [fields.map((f) => cell(f)).join(",")];
-  let bytes = 0;
-  for (const line of lines) bytes += Buffer.byteLength(line, "utf8") + 2;
+  const header = fields.map((f) => cell(f)).join(",");
+  let bytes = Buffer.byteLength(header, "utf8") + 2;
   if (bytes > maxBytes) {
     throw new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
   }
+  emit(header);
   for (const r of rows) {
     const line = fields.map((f) => cell(r?.[f])).join(",");
     bytes += Buffer.byteLength(line, "utf8") + 2;
     if (bytes > maxBytes) {
       throw new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
     }
-    lines.push(line);
+    emit(line);
   }
+  return { neutralized, totalBytes: bytes };
+}
+
+/**
+ * 组装 CSV 字符串（v1.5.1 早停语义）。保留字符串形态作为保真真源：孤立代理项行（字节域会与
+ * 字面 U+FFFD 混同）的回落路径要维持旧版字符串级 scrub 语义时走这里。
+ */
+export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+  const lines = [];
+  const { neutralized } = eachCsvLine(fields, rows, neutralize, maxBytes, (line) => lines.push(line));
   return { content: lines.join("\r\n") + "\r\n", formula_cells_neutralized: neutralized };
 }
 
-async function doExportData(args) {
-  const t0 = Date.now();
-  // 目录门禁最先（配置级错误先于源查找/DB 访问暴露，未初始化部署也能得到明确指引）
-  const dir = process.env.DBMCP_EXPORT_DIR;
-  if (!dir) {
-    throw new ToolError("E_CONFIG", "export_data 未启用：在 MCP 服务的环境中设置 DBMCP_EXPORT_DIR=<允许导出的目录> 后重启（服务端白名单，防任意路径写盘）。");
+/**
+ * v1.6.28: CSV 组装直出 Buffer（两遍精确预铺）——pass 1 只计量行字节（顺带孤立代理哨兵），
+ * pass 2 逐格格式化直写预铺缓冲、格串即时丢弃，全程不物化行串与整表内容串（旧行为 lines[] +
+ * join 产物两份 15.8MB 驻留，30k 行实测堆峰被它顶起）。
+ * v1.6.31 零物化融合：pass 1 走 measureCsv 融合计数循环，pass 2 走本函数内联直写循环（逐格
+ * buf.write，省行串 join 与整行 UTF-8 二次扫描；30k 行微基准同场对照 fill 段 18-24ms → 17-18ms）。
+ * 逐字节恒等（vs exportToCsv 行串真源）由 UTF-8 整码位碎片可拼接性 + 自测差分钉锁定：
+ * 格间恒有 "," 分隔，代理对不跨碎片边界，逐格编码 ≡ 整行编码；pass 1/pass 2 字节账一致由
+ * 末尾 off === scan.totalBytes 守卫兜底（不一致抛 E_INTERNAL，防静默截断）。
+ * 前置：fields/rows 在两遍之间稳定（产品路径传普通数组，满足）。
+ * saw_lone_surrogate：任一格含孤立代理项时为 true——这种内容物化成字节后与字面 U+FFFD 不可分，
+ * 字节域口令匹配可能与字符串域分叉，调用方应回落字符串链（见 doExportData）。
+ */
+export function exportToCsvBuffer(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+  const scan = measureCsv(fields, rows, neutralize, maxBytes);
+  const buf = Buffer.allocUnsafe(scan.totalBytes);
+  const n = fields.length;
+  let off = 0;
+  for (let j = 0; j < n; j++) {
+    if (j) off += buf.write(",", off, "utf8");
+    off += buf.write(csvCell(fields[j], neutralize), off, "utf8");
   }
-  const src = getSource(args.source);
-  const format = args.format === "json" ? "json" : "csv";
-  const limit = intArg(args.limit, "limit", 1, 100000, 5000);
-  // v1.5.0: 公式注入中和默认开启；raw_formulas=true 显式关闭（仅 CSV 面临此风险）
-  const neutralizeFormulas = !(args.raw_formulas === true);
-  guardReadOnly(args.sql, maskDialect(src.type));
-  const finalSql = enforceLimit(args.sql, limit, maskDialect(src.type));
-  const { rows, fields } = await runQuery(args.source, finalSql);
-  const truncated = rows.length > limit;
-  const visible = truncated ? rows.slice(0, limit) : rows;
-  const cols = fields.length ? fields : (visible[0] ? Object.keys(visible[0]) : []);
-
-  let content;
-  let formulaCells = 0;
-  if (format === "json") {
-    // v1.3.1 修正：必须用 stringify()——原生 JSON.stringify 无法序列化 BigInt（sqlite 读出的
-    // INTEGER 经 setReadBigInts 是 BigInt，实测崩溃），且需要 Buffer 十六进制与 scrub 清洗。
-    // v1.6.3: export 模式不截断单元格、Buffer 全量 hex——导出文件要数据保真（见 stringify 注释）。
-    content = stringify({ row_count: visible.length, truncated, columns: cols, rows: visible }, { export: true });
-  } else {
-    const csv = exportToCsv(cols, visible, neutralizeFormulas);
-    content = csv.content;
-    formulaCells = csv.formula_cells_neutralized;
+  off += buf.write("\r\n", off, "utf8");
+  for (const r of rows) {
+    for (let j = 0; j < n; j++) {
+      if (j) off += buf.write(",", off, "utf8");
+      off += buf.write(csvCell(r?.[fields[j]], neutralize), off, "utf8");
+    }
+    off += buf.write("\r\n", off, "utf8");
   }
-  content = scrub(content);   // 落盘内容与工具响应同标准清洗
+  if (off !== scan.totalBytes) {
+    throw new ToolError("E_INTERNAL", `CSV 直写缓冲字节账不一致（计量 ${scan.totalBytes}，直写 ${off}）`);
+  }
+  return { content: buf, formula_cells_neutralized: scan.neutralized, saw_lone_surrogate: scan.saw_lone_surrogate };
+}
 
-  const ext = "." + format;
-  // v1.6.13 文件名归一：尾点/尾空格先剥（"report2.csv." 不再变成 "report2.csv..csv"），扩展名
-  // 判定大小写不敏感（"REPORT.CSV" 不再追加成 "REPORT.CSV.csv"）；清洗后为空的病态名字显式拒绝
-  //（旧行为会拼出 "....csv" 之类的垃圾文件名）
+/**
+ * v1.6.29: CSV pass 1 计量（单一真相源）。v1.6.31 零物化融合：逐格格式化只累加字节（Σ格字节 +
+ * 常量分隔符 + 2/行，与行串 byteLength 恒等）、顺带孤立代理哨兵（ANY_SURROGATE 预筛 →
+ * LONE_SURROGATE 精判；格间恒有 ","，代理对不跨格，逐格判定 ≡ 逐行判定），不物化行串
+ * （30k 行微基准同场对照 pass1 15.1-16.6ms → 14.1-14.6ms）。
+ * totalBytes = 内容字节数（行字节 + 每行 2 字节 CRLF，含尾行），neutralized = 公式中和计数。
+ * 超 maxBytes 抛 E_LIMIT（组装期早停，文案如实"未写盘"；逐行边界与 eachCsvLine 同点位）。
+ */
+export function measureCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+  let neutralized = 0;
+  let sawLone = false;
+  const n = fields.length;
+  let bytes = 0;
+  const overLimit = () => new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
+  let lb = 2;
+  for (let j = 0; j < n; j++) {
+    const v = fields[j];
+    if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
+    const s = csvCell(v, neutralize);
+    if (j) lb += 1;
+    lb += Buffer.byteLength(s, "utf8");
+    if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) sawLone = true;
+  }
+  bytes += lb;
+  if (bytes > maxBytes) throw overLimit();
+  for (const r of rows) {
+    lb = 2;
+    for (let j = 0; j < n; j++) {
+      const v = r?.[fields[j]];
+      if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
+      const s = csvCell(v, neutralize);
+      if (j) lb += 1;
+      lb += Buffer.byteLength(s, "utf8");
+      if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) sawLone = true;
+    }
+    bytes += lb;
+    if (bytes > maxBytes) throw overLimit();
+  }
+  return { totalBytes: bytes, neutralized, saw_lone_surrogate: sawLone };
+}
+
+/**
+ * v1.6.32: 行集流式路径的内容哨兵中止信号（内部协议，不外泄为工具错误）——CSV 行接收器在
+ * 流式直写途中发现孤立代理项格（该内容物化成字节后与字面 U+FFFD 不可分，字节域口令匹配会
+ * 与字符串域分叉）时抛出本信号：writeFileStreamAtomic 收到即清理临时文件（目标文件不出现），
+ * doExportData 回落旧物化链重新查询导出（与旧版"哨兵 → scrubToBuffer 字符串级清洗"语义逐字
+ * 节恒等；两遍快照在并发写库时不保证一致——与旧版两遍链同级的已知面，见 doExportData 注释）。
+ */
+export class ContentSentinelAbort extends Error {
+  constructor() {
+    super("content sentinel: lone surrogate cell in stream");
+    this.name = "ContentSentinelAbort";
+  }
+}
+export function isContentSentinelAbort(e) {
+  return e instanceof ContentSentinelAbort || e?.name === "ContentSentinelAbort";
+}
+
+/**
+ * v1.6.32: CSV 行接收器——逐行喂入、格式化经 scrub 管线直写（write 同步消费），行集/内容
+ * 缓冲全程不物化（query 侧行集流式：驱动行流 → row() → 集束写 → fd，单遍直通；对比
+ * exportToCsvBuffer+scrubBuffer 省掉预铺 Buffer 与清洗输入缓冲，对比旧 query 形态省掉驱动
+ * 行集驻留）。表头两种形态：fields 为数组（旧链形态）构造即发；fields 为 null 惰性——首个
+ * row() 以 Object.keys 定列并发表头，零行时 finish() 发空列表头（与 exportToCsv 空 fields
+ * 恒等）。账面与 eachCsvLine/measureCsv 逐格逐行对齐：neutralized 在**原始值**上按
+ * /^[=+\-@\t\r]/ 计数（含表头格），lb = 2 + Σ(格字节 + 逗号)，bytes 按行边界累计、超
+ * maxBytes 抛 E_LIMIT（文案与 eachCsvLine 逐字一致；行入 scratch 未冲刷即判限 → 小批量
+ * 早停零写盘，同旧 streamCsvLines）。v1.6.31 保守界沿用：格串 UTF-8 字节数恒 ≤ 3×UTF-16
+ * 码元数，能整格放入 scratch 即直写，否则先冲刷；超大格精确 byteLength、超 scratch 整格
+ * 独立成块直喂。哨兵：格式化后格串命中 LONE_SURROGATE（ANY_SURROGATE 预筛）记
+ * saw_lone_surrogate；opts.sentinel === "abort" 当场抛 ContentSentinelAbort（流式路径用），
+ * 默认只记旗不中止（旧链形态，调用方哨兵门已先挡）。
+ * write 契约同旧 streamCsvLines：必须同步消费碎片 b（b 是内部 scratch 的视图，仅在回调
+ * 期间有效、回调内不得改写；需留存请自行 Buffer.from 拷贝）。
+ */
+export function createCsvRowSink(write, fields, list, neutralize = true, maxBytes = MAX_EXPORT_BYTES, opts = {}) {
+  const pipeline = createScrubPipeline(list);
+  let written = 0;
+  const emit = (b) => { if (b.length) { write(b); written += b.length; } };
+  // 行碎片写入可复用 scratch（write 同步消费、管线只暂存小拷贝 → 整块可回收复用）：
+  // 消逐行小缓冲与攒批 concat 的分配抖动（v1.6.29 首版整块 concat 形态实测把流式链 RSS 反而顶高）。
+  const SCRATCH = 65536;
+  const scratch = Buffer.allocUnsafe(SCRATCH);
+  let off = 0;
+  const flushScratch = () => {
+    if (off > 0) { pipeline.feed(scratch.subarray(0, off), emit); off = 0; }
+  };
+  const put = (s) => {
+    if (off + s.length * 3 <= SCRATCH) { off += scratch.write(s, off, "utf8"); return; }
+    flushScratch();
+    if (s.length * 3 <= SCRATCH) { off += scratch.write(s, off, "utf8"); return; }
+    // 超大格（export 不截断长文本单元格）：精确核算，超 scratch 整格独立成块直喂
+    const need = Buffer.byteLength(s, "utf8");
+    if (need > SCRATCH) { pipeline.feed(Buffer.from(s, "utf8"), emit); return; }
+    off += scratch.write(s, off, "utf8");
+  };
+  let cols = null;             // null = 表头未定（惰性：首个 row() 以 Object.keys 定列）
+  let neutralized = 0;
+  let sawLone = false;
+  let bytes = 0;
+  const abortOnSentinel = opts.sentinel === "abort";
+  const overLimit = () => new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
+  const cell = (v) => {
+    if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
+    const s = csvCell(v, neutralize);
+    if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) {
+      sawLone = true;
+      if (abortOnSentinel) throw new ContentSentinelAbort();
+    }
+    return s;
+  };
+  const line = (get) => {
+    let lb = 2;
+    for (let j = 0; j < cols.length; j++) {
+      if (j) { put(","); lb += 1; }
+      const s = cell(get(j));
+      put(s);
+      lb += Buffer.byteLength(s, "utf8");
+    }
+    put("\r\n");
+    bytes += lb;
+    if (bytes > maxBytes) throw overLimit();
+  };
+  const emitHeader = () => { line((j) => cols[j]); };
+  const header = (names) => {
+    if (cols !== null) throw new ToolError("E_INTERNAL", "CSV 行接收器表头重复设置");
+    cols = names.slice();
+    emitHeader();
+  };
+  const row = (r) => {
+    if (cols === null) { cols = Object.keys(r ?? {}); emitHeader(); }
+    line((j) => r?.[cols[j]]);
+  };
+  const finish = () => {
+    if (cols === null) { cols = []; emitHeader(); }
+    flushScratch();
+    pipeline.flush(emit);
+    return { written, neutralized, saw_lone_surrogate: sawLone };
+  };
+  if (Array.isArray(fields)) header(fields);
+  return { header, row, finish };
+}
+
+/**
+ * v1.6.29: CSV 整链流式直写（旧链形态入口，v1.6.32 起为 createCsvRowSink 的薄封装——实现
+ * 收进行接收器，账面/scratch/管线契约不变，逐字节恒等由自测差分钉锁定）。返回实际写出的
+ * 清洗后字节数（= 旧链 scrubbed.length 口径，doExportData 的 bytes 响应字段语义不变）。
+ * 前置：fields/rows 在 measureCsv（pass 1）与本函数（pass 2）之间稳定；内容与 list 无孤立
+ * 代理项（doExportData 哨兵门守着）——与 scrubBuffer 同口径。早停：按行边界累计字节、超
+ * maxBytes 抛 E_LIMIT（文案与 eachCsvLine 逐字一致）；产品路径 pass 1 已先行封顶，pass 2
+ * 早停仅在两遍间行集被改的互斥场景触发，届时已刷出的批只落临时文件、目标文件不出现
+ *（原子占位未让位）。
+ */
+export function streamCsvLines(write, fields, rows, list, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+  const sink = createCsvRowSink(write, fields, list, neutralize, maxBytes);
+  for (const r of rows) sink.row(r);
+  return sink.finish().written;
+}
+
+/**
+ * v1.6.32: export 目标文件名解析（流式/物化两路共用，杜绝双份清洗逻辑漂移）。行为与历史
+ * 版本逐字一致：v1.6.13 文件名归一——尾点/尾空格先剥（"report2.csv." 不再变成
+ * "report2.csv..csv"），扩展名判定大小写不敏感（"REPORT.CSV" 不再追加成 "REPORT.CSV.csv"）；
+ * 清洗后为空的病态名字显式拒绝（旧行为会拼出 "....csv" 之类的垃圾文件名）；safeExportPath
+ * 拒绝 Windows 保留设备名/非法字符/越界。
+ */
+export function resolveExportTarget(dir, args, src, ext) {
   const nm = args.filename != null && String(args.filename).trim()
     ? String(args.filename).trim().replace(/[. ]+$/, "")
     : "";
@@ -2027,16 +2496,170 @@ async function doExportData(args) {
     : `export-${src.type}-${new Date().toISOString().replace(/[:.]/g, "-")}${ext}`;
   const file = safeExportPath(dir, filename);
   if (!file) throw new ToolError("E_PARAM", `Invalid export filename '${args.filename}'（含 Windows 保留设备名 CON/PRN/AUX/NUL/COM1-9/LPT1-9、非法字符或越界，被清洗拒绝；也可能 DBMCP_EXPORT_DIR 未正确设置）。`);
-  // 快速失败预检（省去无谓等待）；跨进程互斥由 writeFileAtomic 的原子占位最终强制
+  return file;
+}
+
+/**
+ * v1.6.32: CSV 行集流式导出（query 侧 → export 侧单遍直通）。驱动行流逐行喂 CSV 行接收器
+ *（格式化 → 口令清洗管线 → 集束写 → fd），rows[]/内容缓冲全程不物化（mysql2/pg 驱动结果行
+ * 集驻留是 e2e maxRSS 剩余大头，30k 行实测 ~50MB@142MB 峰——本函数消掉的就是它）。响应字段
+ * 与物化链逐字段一致（source/file/format/row_count/truncated/bytes/duration_ms/
+ * formula_cells_neutralized/note），语义对齐点：
+ *  - 截断：finalSql 已带 LIMIT limit+1（enforceLimit），第 limit+1 行到达即 truncated=true
+ *    并停消费（mysql/sqlite 收尾丢弃、pg 游标真停），row_count 只数可见行；不包裹的语句
+ *   （SHOW/括号复合）同样在 limit+1 行早停，响应面与物化链的 slice 截断恒等；
+ *  - E_LIMIT：行边界早停（文案与 eachCsvLine 逐字一致），临时文件随 writeFileStreamAtomic
+ *    清理、目标文件不出现（"未写盘"文案如实）；
+ *  - 哨兵：流式途中命中孤立代理项即 ContentSentinelAbort → 临时文件清理后由 doExportData
+ *    回落物化链重查导出；
+ *  - 连接释放时序由 runQueryStream 保证（mysql 完整消费 release / 出错 destroy；pg
+ *    CLOSE+COMMIT / 出错 ROLLBACK+release；sqlite 迭代器收尾）。
+ * 错误序（与物化链的差异，仅共现场合可观察）：文件名解析与存在预检先于查询（快速失败预检，
+ * 省去无谓等待）——E_PARAM → E_DB → E_LIMIT；物化链为 E_DB → E_LIMIT → E_PARAM。
+ */
+async function exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0) {
+  const file = resolveExportTarget(dir, args, src, ".csv");
+  // 快速失败预检（省去无谓等待）；跨进程互斥由 writeFileStreamAtomic 的原子占位最终强制
   if (fs.existsSync(file) && args.overwrite !== true) {
     throw new ToolError("E_PARAM", `目标文件已存在: ${file}（overwrite: true 可覆盖）`);
   }
-  const bytes = Buffer.byteLength(content, "utf8");
-  if (bytes > MAX_EXPORT_BYTES) {
-    throw new ToolError("E_LIMIT", `导出内容 ${bytes} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
-  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  writeFileAtomic(file, content, args.overwrite === true);
+  let rowCount = 0;
+  let truncated = false;
+  let formulaCells = 0;
+  let bytes = 0;
+  await writeFileStreamAtomic(file, async (fd) => {
+    // v1.6.30: 集束写——碎片经 createBatchWriter 攒批落盘；push 同步消费满足行接收器的
+    // 碎片生命周期契约。writeFn 为 async（writeFileStreamAtomic v1.6.32 混合形态）：驱动流
+    // 消费完成后才做原子占位。
+    const bw = createBatchWriter((b) => { fs.writeSync(fd, b); });
+    const sink = createCsvRowSink(bw.push, null, SECRET_LIST, neutralizeFormulas, MAX_EXPORT_BYTES, { sentinel: "abort" });
+    await runQueryStream(args.source, finalSql, {
+      onFields: (names) => sink.header(names),
+      onRow: (r) => {
+        console.error("TRACE server:2539 onRow rowCount=%d limit=%d", rowCount, limit);
+        if (rowCount >= limit) { truncated = true; console.error("TRACE server:2539 TRUNCATE rowCount=%d >= limit=%d", rowCount, limit); return false; }
+        sink.row(r);
+        rowCount++;
+        return true;
+      },
+    });
+    const fin = sink.finish();
+    bw.flush();
+    formulaCells = fin.neutralized;
+    bytes = fin.written;
+    // 保险丝（实际不可达：行接收器已按 MAX_EXPORT_BYTES 封顶，SECRET_LIST 口令 ≥4 字节清洗
+    // 只缩不涨）：保留旧链"超限拒写"语义——在临时文件让位于目标名之前中止，目标文件不会出现。
+    if (bytes > MAX_EXPORT_BYTES) {
+      throw new ToolError("E_LIMIT", `导出内容 ${bytes} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
+    }
+  }, args.overwrite === true);
+  return {
+    source: args.source, file, format: "csv", row_count: rowCount, truncated, bytes,  // TRACE rowCount=%d limit=%d at return  // TRACE rowCount=%d limit=%d at return
+    duration_ms: Date.now() - t0,
+    formula_cells_neutralized: formulaCells,
+    note: "文件已写入 MCP 服务所在机器的导出白名单目录。",
+  };
+}
+
+async function doExportData(args) {
+  const t0 = Date.now();
+  // 目录门禁最先（配置级错误先于源查找/DB 访问暴露，未初始化部署也能得到明确指引）
+  const dir = process.env.DBMCP_EXPORT_DIR;
+  if (!dir) {
+    throw new ToolError("E_CONFIG", "export_data 未启用：在 MCP 服务的环境中设置 DBMCP_EXPORT_DIR=<允许导出的目录> 后重启（服务端白名单，防任意路径写盘）。");
+  }
+  const src = getSource(args.source);
+  const format = enumArg(args.format, "format", ["csv", "json"], "csv");
+  const limit = intArg(args.limit, "limit", 1, 100000, 5000);
+  // v1.5.0: 公式注入中和默认开启；raw_formulas=true 显式关闭（仅 CSV 面临此风险）
+  const neutralizeFormulas = !(args.raw_formulas === true);
+  guardReadOnly(args.sql, maskDialect(src.type));
+  const finalSql = enforceLimit(args.sql, limit, maskDialect(src.type));
+  // v1.6.32 query 侧行集流式：CSV 快乐路径把驱动行流直接接进 CSV 行接收器 → 集束写 → 临时
+  // 文件，rows[]/内容缓冲全程不物化（mysql2/pg 驱动结果行集驻留是 e2e maxRSS 剩余大头，30k
+  // 行实测 ~50MB@142MB 峰）。回退物化链的条件（任一成立，物化链语义与历史版本逐字节恒等）：
+  //  - JSON 格式（stringify 需整行集，本轮不动）；
+  //  - 密钥含孤立代理项（keySentinel：字节域清洗会与字符串域分叉，须走字符串链）；
+  //  - pg 非 SELECT/WITH 家族（游标 DECLARE 只吃查询语句，EXPLAIN/SHOW 等走物化链；
+  //    括号复合 (SELECT…)UNION(…) 与 WITH 已真库实测游标可吃——pg_paren_check_v1632）；
+  //  - 流式途中内容哨兵命中（ContentSentinelAbort：临时文件已清理、目标未出现 → 物化链重查
+  //    导出）。已知面（待确认）：哨兵回落是"流式读到哨兵行 → 重查"两遍，两遍之间数据被并发
+  //    修改时第二遍快照可能与第一遍不同——与旧版 measureCsv/exportToCsv 两遍链同级，不新增
+  //    劣化。
+  const keySentinel = SECRET_LIST.some((k) => LONE_SURROGATE.test(k));
+  const pgStreamOk = src.type !== "postgres" || pgStreamable(finalSql);
+  if (format === "csv" && !keySentinel && pgStreamOk) {
+    try {
+      return await exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0);
+    } catch (e) {
+      if (!isContentSentinelAbort(e)) throw e;
+      // 内容哨兵命中：回落物化链（重查 → measureCsv 哨兵 → 字符串链 scrubToBuffer）
+    }
+  }
+  const { rows, fields } = await runQuery(args.source, finalSql);
+  const truncated = rows.length > limit;
+  const visible = truncated ? rows.slice(0, limit) : rows;
+  const cols = fields.length ? fields : (visible[0] ? Object.keys(visible[0]) : []);
+
+  let scrubbed;            // 落盘缓冲（v1.6.29: CSV 快乐路径改流式直写不再物化；此处仅 JSON/哨兵回落用）
+  let formulaCells = 0;
+  let csvStreaming = false;
+  if (format === "json") {
+    // v1.3.1 修正：必须用 stringify()——原生 JSON.stringify 无法序列化 BigInt（sqlite 读出的
+    // INTEGER 经 setReadBigInts 是 BigInt，实测崩溃），且需要 Buffer 十六进制与 scrub 清洗。
+    // v1.6.3: export 模式不截断单元格、Buffer 全量 hex——导出文件要数据保真（见 stringify 注释）。
+    // v1.6.28: JSON 路径无逐行结构，仍走 字符串 → scrubToBuffer（内部守孤立代理门）。
+    const content = stringify({ row_count: visible.length, truncated, columns: cols, rows: visible }, { export: true });
+    scrubbed = scrubToBuffer(content, SECRET_LIST);
+  } else {
+    // v1.6.29: pass 1 只计量（顺带孤立代理哨兵）——早停文案"未写盘"仍如实（此时零写盘）。
+    // 哨兵触发则回落字符串链（语义与旧版逐字节恒等，见 scrubToBuffer 注释）；
+    // 未触发走流式直写（逐行 → scrub 管线 → fd，消 scrubbed 全量缓冲）。
+    const scan = measureCsv(cols, visible, neutralizeFormulas);
+    formulaCells = scan.neutralized;
+    if (scan.saw_lone_surrogate || SECRET_LIST.some((k) => LONE_SURROGATE.test(k))) {
+      const content = exportToCsv(cols, visible, neutralizeFormulas).content;
+      scrubbed = scrubToBuffer(content, SECRET_LIST);
+    } else {
+      csvStreaming = true;
+    }
+  }
+
+  const ext = "." + format;
+  // v1.6.32: 文件名解析收敛 resolveExportTarget（与流式路径共用同一清洗逻辑，行为与历史逐字一致）
+  const file = resolveExportTarget(dir, args, src, ext);
+  // 快速失败预检（省去无谓等待）；跨进程互斥由 writeFileAtomic/writeFileStreamAtomic 的原子占位最终强制
+  if (fs.existsSync(file) && args.overwrite !== true) {
+    throw new ToolError("E_PARAM", `目标文件已存在: ${file}（overwrite: true 可覆盖）`);
+  }
+  let bytes;
+  if (csvStreaming) {
+    // v1.6.29: 流式直写——逐行格式化经 scrub 管线直写临时文件 fd，清洗后字节即写即弃，
+    // 全程不物化内容缓冲；原子占位/覆盖/并发语义与 writeFileAtomic 一致。
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    let written = 0;
+    writeFileStreamAtomic(file, (fd) => {
+      // v1.6.30: 集束写——碎片经 createBatchWriter 攒批落盘（1856 次 WriteFile → ~60 次），
+      // push 同步消费满足 streamCsvLines 的碎片生命周期契约。
+      const bw = createBatchWriter((b) => { fs.writeSync(fd, b); });
+      written = streamCsvLines(bw.push, cols, visible, SECRET_LIST, neutralizeFormulas);
+      bw.flush();
+      // 保险丝（实际不可达：pass 1 已按 MAX_EXPORT_BYTES 封顶，SECRET_LIST 口令 ≥4 字节清洗只缩
+      // 不涨）：保留旧链"超限拒写"语义——在临时文件让位于目标名之前中止，目标文件不会出现。
+      if (written > MAX_EXPORT_BYTES) {
+        throw new ToolError("E_LIMIT", `导出内容 ${written} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
+      }
+    }, args.overwrite === true);
+    bytes = written;
+  } else {
+    bytes = scrubbed.length;
+    if (bytes > MAX_EXPORT_BYTES) {
+      throw new ToolError("E_LIMIT", `导出内容 ${bytes} 字节超过上限 ${MAX_EXPORT_BYTES}（20MB）。请用 limit 参数缩小范围后重试。`);
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileAtomic(file, scrubbed, args.overwrite === true);
+  }
   return {
     source: args.source, file, format, row_count: visible.length, truncated, bytes,
     duration_ms: Date.now() - t0,

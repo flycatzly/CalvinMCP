@@ -2,7 +2,7 @@
 // 规则来源：上游 wechat-intelligence-hub 的 signal-rules.md 与打分口径，Windows 侧重新实现。
 import { isOwnerName, loadProfile } from "./profile.mjs";
 import { dayOfWeekCn, nextWeekday, parseDueDate } from "./duedate.mjs";
-import { isHeatLink, messageLinks, normalizeUrl, truncate } from "./util.mjs";
+import { isHeatLink, messageLinks, normalizeUrl, truncate, truncateOutsideUrl } from "./util.mjs";
 
 // ---------------- 词表 ----------------
 export const BRAND_DEAL_TERMS = [
@@ -391,7 +391,7 @@ export function analyze({ messages, sinceMs, untilMs, now = new Date(), extraExc
         rec.last_ts = Math.max(rec.last_ts, m.ts);
         rec.hits += 1;
         if (isHeatLink(url) || hasAny(m.content, HEAT_TERMS)) rec.heat = true;
-        if (rec.contexts.length < 4) rec.contexts.push({ chat, sender: m.sender, ts: m.ts, content: truncate(m.content, 160), is_owner: owner });
+        if (rec.contexts.length < 4) rec.contexts.push({ chat, sender: m.sender, ts: m.ts, content: truncateOutsideUrl(m.content, 160), is_owner: owner });
       }
     }
   }
@@ -703,7 +703,8 @@ const REACTIVATION_ANY_RE = new RegExp([
 
 export function reactivation({ messages, now = new Date(), inactiveDays = 21, maxPerBand = 20, label = null } = {}) {
   const profile = loadProfile();
-  // 「限定标签」：非空时只保留会话名命中任一标签的会话，且这些会话按重点标签待遇（不受沉默天数门槛限制）
+  // 「限定标签」：非空时只保留会话名命中任一标签的会话，且这些会话按重点标签待遇——
+  // 不受沉默天数门槛限制进入判定（F8 后「今天优先看」档仍要求沉默期满，未满落等待区）
   const limitLabels = (Array.isArray(label) ? label : [label]).map((l) => String(l ?? "").trim()).filter(Boolean);
   const byChat = new Map();
   for (const m of messages) {
@@ -753,8 +754,12 @@ export function reactivation({ messages, now = new Date(), inactiveDays = 21, ma
     if (handover) band = "待交接跟进";
     else if (commissionOnly) band = "纯佣低优先级";
     else if (abandoned && !laterPositive) band = "我方主动放弃";
-    else if (laterPositive) band = "今天优先看";
-    else if (inactive >= inactiveDays * 2 || labelMatch) band = "今天优先看";
+    // 「今天优先看」要求沉默期满（F8）：「待下一批跟进/复购保温」的折叠只对已沉默会话生效，
+    // 刚聊过的标签/「下一批」会话折进来就是「今日行动」谎言；未满落等待区——与既有口径
+    // 「近期明确拒绝→等待区」「最近刚聊过→进等待区而不是今日行动」一致。其余档位不受此限
+    //（交接/纯佣/放弃等 decisive 信号近期出现也要判定，准入闸在上面，这里只管「今天优先看」）。
+    else if (laterPositive && inactive >= inactiveDays) band = "今天优先看";
+    else if (inactive >= inactiveDays * 2 || (labelMatch && inactive >= inactiveDays)) band = "今天优先看";
     rows.push({
       chat, inactive_days: inactive, last_ts: last.ts, last_sender: last.sender,
       messages: msgs.length, owner_messages: owners, other_messages: others,
@@ -770,7 +775,7 @@ export function reactivation({ messages, now = new Date(), inactiveDays = 21, ma
   for (const b of order) bands[b] = rows.filter((r) => r.band === b).slice(0, maxPerBand);
   return {
     bands, all: rows, inactive_days: inactiveDays, immediate: bands["今天优先看"] ?? [],
-    // 「下一批」信号的会话（上游的「待下一批跟进」在本实现折叠进 今天优先看）
+    // 「下一批」信号的会话（上游的「待下一批跟进」折叠进 今天优先看——沉默期满者；未满在等待区，仍在本列表）
     nextBatch: rows.filter((r) => r.later_positive).slice(0, maxPerBand),
   };
 }

@@ -20,9 +20,11 @@ import {
 } from '../lib/ops.mjs';
 import { closeAll, getPlaywright } from '../lib/browser.mjs';
 import { formatDate, DIRS, readConfig, writeConfig } from '../lib/core.mjs';
+import { classifyProfileBusy } from './profile-busy.mjs';
 
 let pass = 0, fail = 0, skip = 0;
 const failures = [];
+const envSkips = [];
 // 诚实 SKIP 口径（同 mysql-validate 退出码 3）：缺 playwright 级联出来的失败降级为 SKIP ——
 // 签名直配 + 级联（上游缺依赖导致 null 解引用）两类。探针守卫：只有环境真的解析不到
 // playwright 才降级；装了仍报缺 = 产品缺陷 = 照旧 FAIL。
@@ -49,6 +51,11 @@ function groupActive() { return !onlyGroups.size || !curGroup || onlyGroups.has(
 
 async function A(name, fn) {
   if (!groupActive()) return;
+  // 每用例捕获 console 输出：'fail' !== 'pass' 型断言的错误详情（回放错误=profile 争用）只打在
+  // 日志里、不进异常消息——分类器需要它才能把「外部浏览器流占用」从真失败里分出来。
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => { logs.push(a.map((v) => String(v)).join(' ')); origLog(...a); };
   try { await fn(); pass++; console.log('  ok   ' + name); }
   catch (e) {
     const msg = e && e.message ? e.message : String(e);
@@ -58,10 +65,26 @@ async function A(name, fn) {
       skip++; console.log('  SKIP ' + name + '\n       （诚实 SKIP：' + (depSig.test(msg) ? '环境缺 playwright 依赖' : '级联自上游缺依赖，前置未跑') + '）');
       return;
     }
+    const busy = classifyProfileBusy(msg + '\n' + logs.join('\n'), process.pid);
+    if (busy.busy && busy.external) {
+      skip++; envSkips.push(name + ' -> 外部浏览器流占用 profile（pid ' + busy.holder + '）');
+      console.log('  SKIP ' + name + '\n       （诚实 SKIP：环境让行——外部浏览器流占用 profile，pid ' + busy.holder + ' ≠ 本进程，不计失败）');
+      return;
+    }
+    if (e && e.cascadeEnv) {
+      skip++; envSkips.push(name + ' -> ' + msg);
+      console.log('  SKIP ' + name + '\n       （诚实 SKIP：' + msg + '）');
+      return;
+    }
     fail++; failures.push(name + ' -> ' + msg); console.log('  FAIL ' + name + '\n       ' + msg);
-  }
+  } finally { console.log = origLog; }
 }
 function S(name, why) { if (!groupActive()) return; skip++; console.log('  skip ' + name + '  (' + why + ')'); }
+// 显式级联守卫：上游用例被环境让行（SKIP）后，依赖其产物的下游用例掷 cascadeEnv 错误 →
+// 下游也诚实 SKIP（不计失败）。守卫逐用例显式声明依赖，不做全局启发式（不洗白真失败）。
+function needUpstream(v, what) {
+  if (!v) { const e = new Error('级联自上游环境让行（' + what + ' 前置未跑）'); e.cascadeEnv = true; throw e; }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let DEMO = '';
@@ -174,6 +197,7 @@ async function main() {
   });
 
   await A('上传步骤缺少 path 时被静态检查阻断（L091）', async () => {
+    needUpstream(globalThis.__richFlowId, '录制富控件表单');
     const flow = loadFlow(globalThis.__richFlowId);
     const lint = lintFlow(flow, {});
     assert.ok(lint.errors.some((e) => e.code === 'L091'), '没有报 L091: ' + JSON.stringify(lint.errors));
@@ -181,6 +205,7 @@ async function main() {
   });
 
   await A('补上上传路径后静态检查通过，且能回放富控件流程', async () => {
+    needUpstream(globalThis.__richFlowId, '录制富控件表单');
     const flow = loadFlow(globalThis.__richFlowId);
     const up = flow.steps.find((s) => s.op === 'setInputFiles');
     up.path = uploadFile;
@@ -971,12 +996,14 @@ async function main() {
   G('12', '告警链路');
   const alarm = await startAlarmReceiver();
   await A('sendNotify 真能把消息 POST 出去', async () => {
+    // 判定面=「本次消息送达」。发件箱积压会由 sendNotify 合法 FIFO 补发（flushed）排在本次消息之前，
+    // 位置断言 got[0] 会被补发特性误伤；先清箱消除常态噪音，再按内容匹配收件箱（并发写箱也不受影响）。
+    clearOutbox();
     const cfg = { notify: { enabled: true, type: 'generic', webhook: alarm.url, on: ['failure', 'success'], timeoutMs: 5000 } };
     const res = await sendNotify({ title: 'T', text: 'hello', markdown: 'm', data: { flowId: 'x' } }, cfg, { force: true });
     console.log('      发送结果: ' + JSON.stringify(res));
     assert.ok(res.sent, '发送失败: ' + JSON.stringify(res));
-    assert.ok(alarm.got.length >= 1, '接收端没收到');
-    assert.equal(alarm.got[0].flowId, 'x');
+    assert.ok(alarm.got.some((m) => m.flowId === 'x'), '接收端没收到本次消息: ' + JSON.stringify(alarm.got).slice(0, 200));
   });
 
   await A('失败流程会触发告警并带上失败信息', async () => {
@@ -1376,6 +1403,66 @@ async function main() {
     assert.equal(again.consecutiveFailures, 0, '幂等且只读：' + N + ' 次 pass 不该有连续失败，实为 ' + again.consecutiveFailures);
   });
 
+  await A('总览：healedTotal 是全量自愈累计（不被 100 条摘要窗口封顶，同 totalRuns 封顶旧病）', async () => {
+    const f = F('t-healedtotal', [gt(DEMO + '/form')], {});
+    saveFlow(f); created.push(f.id);
+    fs.rmSync(path.join(DIRS.runs, f.id), { recursive: true, force: true }); // 用例自密封：残件会让累计翻倍
+    // 自愈只发生在窗口外（最旧 30 次各 1 次）、窗口内 0 次——封顶实现必报 0（探针实锤）
+    const N = 130;
+    for (let i = 0; i < N; i++) {
+      const stamp = '20260303-120000-' + String(i).padStart(3, '0');
+      saveRun({
+        flowId: f.id, stamp, status: 'pass', startedAt: '2026-03-03T12:00:00.000Z', durationMs: 1, trigger: 'manual',
+        healed: Array.from({ length: i < 30 ? 1 : 0 }, () => ({})),
+      });
+    }
+    const item = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(item.healedTotal, 30, '窗口外自愈不许丢失：应 30（旧实现封顶窗口报 0），实为 ' + item.healedTotal);
+    assert.equal(item.totalRuns, N, 'totalRuns 全量真值不受影响，实为 ' + item.totalRuns);
+    // 错误语义：索引损坏 → 自愈重建后口径取自 report.json 的 healed[] 长度，仍给全量真值
+    fs.writeFileSync(path.join(DIRS.runs, f.id, 'index.json'), '{corrupt-json', 'utf8');
+    const afterCorrupt = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(afterCorrupt.healedTotal, 30, '索引损坏时 healedTotal 仍应全量真值 30，实为 ' + afterCorrupt.healedTotal);
+    // 幂等：只读统计，重复调用给同样的真值
+    const again = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(again.healedTotal, 30, '幂等：重复调用 healedTotal 不变，实为 ' + again.healedTotal);
+  });
+
+  await A('总览：consecutiveFailures 是全量真值（不被 100 条摘要窗口封顶，同 totalRuns/healedTotal 封顶旧病）', async () => {
+    const f = F('t-consec-full', [gt(DEMO + '/form')], {});
+    saveFlow(f); created.push(f.id);
+    fs.rmSync(path.join(DIRS.runs, f.id), { recursive: true, force: true }); // 用例自密封：残件会让计数翻倍
+    // 连败 150 次 > 100 条摘要窗口：封顶实现只数窗口内必报 100（同 healedTotal 150→101 探针口径）
+    const N = 150;
+    for (let i = 0; i < N; i++) {
+      const stamp = '20260404-120000-' + String(i).padStart(3, '0');
+      saveRun({ flowId: f.id, stamp, status: 'fail', startedAt: '2026-04-04T12:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    }
+    const item = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(item.consecutiveFailures, N, '连败应报全量 ' + N + '（旧实现封顶窗口报 100），实为 ' + item.consecutiveFailures);
+    assert.equal(listRuns(f.id, 100).length, 100, '摘要窗口仍按 limit 截到 100');
+    // 错误语义：索引损坏 → 集合差自愈重建（读 report.json）后仍给全量真值
+    fs.writeFileSync(path.join(DIRS.runs, f.id, 'index.json'), '{corrupt-json', 'utf8');
+    const afterCorrupt = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(afterCorrupt.consecutiveFailures, N, '索引损坏重建后连败仍应全量真值 ' + N + '，实为 ' + afterCorrupt.consecutiveFailures);
+    // 幂等：只读统计，重复调用给同样的真值
+    const again = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(again.consecutiveFailures, N, '幂等：重复调用连败数不变，实为 ' + again.consecutiveFailures);
+    // pass 即止语义在全量口径下不变：最新一次 pass 让连败归 0（150 次失败全在更早处）
+    saveRun({ flowId: f.id, stamp: '20260405-120000-000', status: 'pass', startedAt: '2026-04-05T12:00:00.000Z', durationMs: 1, trigger: 'manual', healed: [] });
+    const afterPass = statusReport({}).items.find((i) => i.flowId === f.id);
+    assert.equal(afterPass.consecutiveFailures, 0, '最新一次 pass 即止：连败归 0，实为 ' + afterPass.consecutiveFailures);
+  });
+
+  await A('profile 争用诚实化分类器：外部持有者→环境让行、本进程持有者→照旧 FAIL、非争用→FAIL', async () => {
+    const ext = classifyProfileBusy('回放失败: 浏览器 profile 正被另一个执行占用（pid 999999，开始于 2026-10-06T00:00:00.000Z，触发方式 browser）。', process.pid);
+    assert.ok(ext.busy && ext.external && ext.holder === 999999, '外部持有者应判环境让行: ' + JSON.stringify(ext));
+    const self = classifyProfileBusy('浏览器 profile 正被另一个执行占用（pid ' + process.pid + '，开始于 x，触发方式 browser）。', process.pid);
+    assert.ok(self.busy && !self.external, '本进程持有者应照旧 FAIL（防锁泄漏被 SKIP 洗白）: ' + JSON.stringify(self));
+    const none = classifyProfileBusy("assert 'fail' !== 'pass'", process.pid);
+    assert.ok(!none.busy, '非争用失败不得误判: ' + JSON.stringify(none));
+  });
+
   await A('总览：正常流程被算作健康', async () => {
     const st = statusReport({});
     const demoItem = st.items.find((i) => i.flowId === '演示-订单日报导出');
@@ -1461,27 +1548,33 @@ async function main() {
     const exec = promisify(execFile);
     // 与 cwd 无关：曾用 process.cwd()，从项目根跑自检会误报"找不到 runner.mjs"（ESM 里没有 __dirname，用 import.meta.dirname）
     const runnerPath = path.join(import.meta.dirname, '..', 'runner.mjs');
-    const cases = [
-      { args: ['help'], expect: /用法/, allowFail: true },
-      { args: ['list'], expect: /演示-订单日报导出|还没有任何流程/ },
-      { args: ['show', '演示-订单日报导出'], expect: /步骤/ },
-      { args: ['history', '演示-订单日报导出'], expect: /stamp|\[/ },
-      // status 在"有问题"时故意返回退出码 1（可直接接告警），所以这里允许非零退出
-      { args: ['status'], expect: /summary/, allowFail: true },
-      { args: ['prune'], expect: /预演/ },
-      { args: ['doctor'], expect: /playwright/, allowFail: true },
-    ];
-    for (const cse of cases) {
-      let out = '';
-      try {
-        const r1 = await exec(process.execPath, [runnerPath].concat(cse.args), { cwd: process.cwd(), timeout: 120000, maxBuffer: 8388608 });
-        out = String(r1.stdout || '') + String(r1.stderr || '');
-      } catch (e1) {
-        out = String(e1.stdout || '') + String(e1.stderr || '');
-        if (!cse.allowFail) throw new Error('runner ' + cse.args.join(' ') + ' 失败: ' + out.slice(0, 200));
+    // list/show 原先点名演示 fixture，它只在默认数据根存在；WEBRPA_ROOT 隔离根里没有，
+    // 改为测试自备流程再断言（断言强度不变：list 清单必须含该流程、show 必须渲染步骤）。
+    const cliId = 't-runnercli';
+    saveFlow(F(cliId, [gt(DEMO + '/form')]));
+    try {
+      const cases = [
+        { args: ['help'], expect: /用法/, allowFail: true },
+        { args: ['list'], expect: /演示-订单日报导出|t-runnercli/ },
+        { args: ['show', cliId], expect: /步骤/ },
+        { args: ['history', cliId], expect: /stamp|\[/ },
+        // status 在"有问题"时故意返回退出码 1（可直接接告警），所以这里允许非零退出
+        { args: ['status'], expect: /summary/, allowFail: true },
+        { args: ['prune'], expect: /预演/ },
+        { args: ['doctor'], expect: /playwright/, allowFail: true },
+      ];
+      for (const cse of cases) {
+        let out = '';
+        try {
+          const r1 = await exec(process.execPath, [runnerPath].concat(cse.args), { cwd: process.cwd(), timeout: 120000, maxBuffer: 8388608 });
+          out = String(r1.stdout || '') + String(r1.stderr || '');
+        } catch (e1) {
+          out = String(e1.stdout || '') + String(e1.stderr || '');
+          if (!cse.allowFail) throw new Error('runner ' + cse.args.join(' ') + ' 失败: ' + out.slice(0, 200));
+        }
+        assert.ok(cse.expect.test(out), 'runner ' + cse.args.join(' ') + ' 输出不符: ' + out.slice(0, 200));
       }
-      assert.ok(cse.expect.test(out), 'runner ' + cse.args.join(' ') + ' 输出不符: ' + out.slice(0, 200));
-    }
+    } finally { deleteFlow(cliId); }
   });
 
   await A('浏览器配置：显式 channel=msedge 可运行', async () => {
@@ -1956,13 +2049,15 @@ async function main() {
       });
     }
     const idx = JSON.parse(fs.readFileSync(path.join(DIRS.runs, id, 'index.json'), 'utf8'));
-    assert.equal(idx.version, 1, '索引应带版本号');
+    assert.equal(idx.version, 2, '索引应带版本号（v2=摘要带预算可观测投影）');
     assert.equal(idx.runs.length, 3, '3 次运行应有 3 条摘要: ' + idx.runs.length);
     const runs = listRuns(id, 10);
     assert.deepEqual(runs.map((r) => r.stamp), ['20251002-120000-002', '20251002-120000-001', '20251002-120000-000']);
     assert.deepEqual(runs[1], {
       stamp: '20251002-120000-001', status: 'fail', startedAt: '2025-10-02T12:00:01.000Z',
       durationMs: 101, trigger: 'cli', healedCount: 0, failedStep: 2, error: 'boom',
+      // v2 预算可观测投影缺省口径：报告无预算字段时 timedOut=false、maxDurationMs/budgetOverrunMs=null
+      timedOut: false, maxDurationMs: null, budgetOverrunMs: null,
     }, '摘要字段/缺省值口径必须与直读 report.json 一致');
     assert.equal(runs[0].healedCount, 2, 'healedCount 应取报告 healed[] 长度');
   });
@@ -2351,6 +2446,108 @@ async function main() {
     }
   });
 
+  await A('看门狗×profile 锁：等锁被剩余预算夹取，不得把运行推过 maxDurationMs（R9）', async () => {
+    // 修前：launchContext 里等锁用满 browser.profileWaitMs（3s），预算 1500ms 的运行实测烧到 ~3.2s——
+    // 等锁必须按剩余预算夹取；预算内没等到锁仍判 PROFILE_BUSY（锁是真实原因）且如实报已等待时长。
+    const before = readConfig().browser;
+    writeConfig({ browser: { persistProfile: true, profileWaitMs: 3000 } });
+    const held = acquireLock('__profile__', { trigger: 'test-holder' });
+    if (!held.ok) throw new Error('__profile__ 占位锁拿不到（有并发执行在跑？让行后复跑）: ' + JSON.stringify(held.heldBy || {}));
+    try {
+      const f = F('t-r9-lockcap', [{ op: 'sleep', ms: 50 }]);
+      const t0 = Date.now();
+      const rep = await run(f, { maxDurationMs: 1500 });
+      const took = Date.now() - t0;
+      assert.equal(rep.status, 'fail', '锁被占应判失败: ' + rep.status);
+      assert.ok(!rep.timedOut, '锁竞争是 PROFILE_BUSY，不该标 timedOut');
+      assert.ok(/正被另一个执行占用/.test(String(rep.error)), '错误应点名 profile 被占: ' + rep.error);
+      assert.ok(/已等待 \d+ms/.test(String(rep.error)), '应如实上报锁等待时长: ' + rep.error);
+      assert.ok(took < 2600, '等锁没被预算夹取（预算 1500ms，实测 ' + took + 'ms）');
+      assert.ok(rep.reportPath && fs.existsSync(rep.reportPath), '失败收尾也要写报告: ' + rep.reportPath);
+    } finally {
+      releaseLock('__profile__');
+      writeConfig({ browser: { persistProfile: before.persistProfile, profileWaitMs: before.profileWaitMs } });
+    }
+  });
+
+  await A('看门狗：预算在启动前用尽→直接超时收尾，不白启浏览器（R9）', async () => {
+    // 修前：启动前不查到期，预算 1ms 也照常启浏览器（~0.7s）再在第 1 步判超时——白烧启动时长；
+    // 现在启动前预检：预算已尽直接 RUN_TIMEOUT，消息说清"尚未进入任何步骤"。
+    const f = F('t-r9-prelaunch', [gt(DEMO + '/form'), { op: 'sleep', ms: 50 }]);
+    const t0 = Date.now();
+    const rep = await run(f, { maxDurationMs: 1 });
+    const took = Date.now() - t0;
+    assert.equal(rep.status, 'fail', rep.error);
+    assert.ok(rep.timedOut, '缺少 timedOut 标记: ' + JSON.stringify({ status: rep.status, error: rep.error }));
+    assert.ok(/总超时/.test(String(rep.error)), '错误应说明总超时: ' + rep.error);
+    assert.ok(/尚未进入任何步骤/.test(String(rep.error)), '启动前超时应说清尚未进入步骤: ' + rep.error);
+    assert.equal(rep.failedStep, null, '启动前超时不该指向具体步骤: ' + rep.failedStep);
+    assert.ok(took < 400, '预算已尽仍启了浏览器（启动耗时 ~0.7s），实测 ' + took + 'ms');
+  });
+
+  await A('报告预算可观测：budgetSource 分口径 + budgetOverrunMs 显式越线（R10）', async () => {
+    // 修前：报告只有 durationMs/maxDurationMs，无人值守监控要事后相减才知道越线；
+    // budgetSource 只在 schedule 兜底时有值（explicit/config 两口径缺失）。
+    const before = readConfig().run.maxDurationMs;
+    writeConfig({ run: { maxDurationMs: 60000 } });
+    try {
+      const f = F('t-r10-budget', [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] });
+      const rep = await run(f);   // 无显式参数 → 来源 config；预算内 → 越线 0
+      assert.equal(rep.status, 'pass', rep.error);
+      assert.equal(rep.budgetSource, 'config', '配置预算应标注来源 config: ' + rep.budgetSource);
+      assert.equal(rep.budgetOverrunMs, 0, '预算内越线应为 0（修前 undefined）: ' + rep.budgetOverrunMs);
+      const f2 = F('t-r10-overrun', [gt(DEMO + '/form'), { op: 'sleep', ms: 30000 }]);
+      const rep2 = await run(f2, { maxDurationMs: 1500 });   // 显式预算 + 必然越线
+      assert.equal(rep2.status, 'fail', rep2.error);
+      assert.ok(rep2.timedOut, '应超时: ' + JSON.stringify({ status: rep2.status, error: rep2.error }));
+      assert.equal(rep2.budgetSource, 'explicit', '显式参数应标注来源 explicit: ' + rep2.budgetSource);
+      assert.ok(rep2.budgetOverrunMs > 0, '越线应显式暴露: ' + rep2.budgetOverrunMs);
+      assert.ok(rep2.budgetOverrunMs < 5000, '越线幅度应贴近真实（预算 1500+收尾/启动开销），实测 ' + rep2.budgetOverrunMs);
+    } finally {
+      writeConfig({ run: { maxDurationMs: before } });
+    }
+  });
+
+  await A('status_report 聚合经常性越线：窗口 5 次命中 ≥2 次点名（R12）', async () => {
+    // 口径：timedOut=被总时限拦停；budgetOverrunMs≥1000ms=实质越线（收尾开销量级 ~200-300ms 不算）。
+    // 修前：run 摘要不含 timedOut/budgetOverrunMs，status_report 无从聚合——problems 不会出现越线点名。
+    const id = 't-r12-overruns';
+    saveFlow(F(id, [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] }));
+    created.push(id);
+    const base = path.join(DIRS.runs, id);
+    fs.rmSync(base, { recursive: true, force: true }); // 用例自密封：上一轮残件会让窗口混入杂音
+    const mk = (stamp, timedOut, overrun) => {
+      const d = path.join(base, stamp);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({
+        flowId: id, stamp, status: timedOut ? 'fail' : 'pass', startedAt: '2025-10-03T12:00:00.000Z',
+        durationMs: timedOut ? 4000 : 1000, trigger: 'schedule', healed: [],
+        timedOut: !!timedOut, maxDurationMs: (timedOut || overrun) ? 1500 : null,
+        budgetOverrunMs: overrun || (timedOut ? 500 : 0),
+      }));
+    };
+    mk('20251003-120001-001', true, 0);      // 拦停
+    mk('20251003-120002-002', true, 0);      // 拦停
+    mk('20251003-120003-003', false, 2500);  // 实质越线（未拦停，≥1000ms）
+    mk('20251003-120004-004', false, 0);
+    mk('20251003-120005-005', false, 0);
+    const all = statusReport({});
+    const item = all.items.find((i) => i.flowId === id);
+    assert.ok(item, '全量 items 应包含该流程');
+    assert.ok(item.recentOverruns && item.recentOverruns.hits === 3, '窗口 5 次应命中 3 次: ' + JSON.stringify(item.recentOverruns));
+    assert.equal(item.recentOverruns.timedOut, 2, '2 次被拦停: ' + JSON.stringify(item.recentOverruns));
+    assert.equal(item.recentOverruns.maxOverrunMs, 2500, '最大越线 2500ms: ' + JSON.stringify(item.recentOverruns));
+    assert.ok(all.problems.some((p) => p.flowId === id && /越过 run\.maxDurationMs/.test(p.message)),
+      'problems 应点名经常性越线: ' + JSON.stringify(all.problems.filter((p) => p.flowId === id)));
+    // 只剩 1 次命中不点名（"经常性"口径 ≥2 次）
+    fs.rmSync(path.join(base, '20251003-120002-002'), { recursive: true, force: true });
+    fs.rmSync(path.join(base, '20251003-120003-003'), { recursive: true, force: true });
+    const again = statusReport({});
+    const item2 = again.items.find((i) => i.flowId === id);
+    assert.ok(item2.recentOverruns && item2.recentOverruns.hits === 1, '删两份后应只剩 1 次命中: ' + JSON.stringify(item2.recentOverruns));
+    assert.ok(!again.problems.some((p) => p.flowId === id && /越过 run\.maxDurationMs/.test(p.message)), '单次命中不该点名');
+  });
+
   /* ================= 收尾 ================= */
   // 备份不随 deleteFlow 清理：不一起删会永久累积（每跑一轮多几份残件）
   const purgeBackups = (id) => { for (const b of listBackups(id)) { try { fs.rmSync(b.file, { force: true }); } catch { /* ignore */ } } };
@@ -2369,9 +2566,10 @@ async function main() {
     't-timeout', 't-timeout-scroll', 't-timeout-handoff', 't-video', 't-video-ok', 't-video-secret', 't-sched-expect', 't-listruns',
     't-runidx-save', 't-runidx-heal', 't-runidx-prune', 't-runidx-order',
     't-chain-child', 't-chain-parent', 't-chain-skip-a', 't-chain-skip-b', 't-unattended', 't-video-prune',
-    't-live-marker', 't-waiting-human', 't-cf-running', 't-cf-interrupted', 't-totalruns',
+    't-live-marker', 't-waiting-human', 't-cf-running', 't-cf-interrupted', 't-totalruns', 't-healedtotal',
     't-noretry', 't-retry-cfg', 't-handoff-cfg', 't-mask-cfg', 't-noev-cfg', 't-url-regex', 't-url-regex-bad',
-    't-cfg-ltz', 't-cfg-profile', 't-navtimeout', 't-sp-ok', 't-sp-bad', 't-cfg-keepruns']) {
+    't-cfg-ltz', 't-cfg-profile', 't-navtimeout', 't-sp-ok', 't-sp-bad', 't-cfg-keepruns',
+    't-r9-lockcap', 't-r9-prelaunch', 't-r10-budget', 't-r10-overrun', 't-r12-overruns']) {
     try { deleteFlow(id); } catch { /* ignore */ }
     try { fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); } catch { /* ignore */ }
     purgeBackups(id);
@@ -2383,6 +2581,7 @@ async function main() {
 
   console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed, ' + skip + ' 诚实SKIP');
   if (fail) console.log('\n失败项:\n' + failures.join('\n'));
+  if (envSkips.length) console.log('\n环境让行（外部浏览器流占用 profile，诚实 SKIP 不计失败）:\n' + envSkips.join('\n'));
   process.exit(fail ? 1 : skip ? 3 : 0);
 }
 

@@ -19,6 +19,11 @@ import { fileURLToPath } from 'node:url';
 import { boolArg, numArg, intArg, arrayArg } from '../lib/args.js';
 import { resolvePlaywrightRunner, resolveCliRunner } from '../lib/runner.js';
 import { handleMessage } from '../server.mjs';
+import { installStandaloneReap } from './reap.mjs';
+
+// 单跑兜底：B/D 两节会开浏览器会话，任何退出分支都收掉本机孤儿 daemon/浏览器。
+// 在 verify-all 调度下自动跳过，由统一收尾负责（见 reap.mjs 注释）。
+installStandaloneReap(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), { label: 'args-check' });
 
 let failures = 0;
 const log = (s) => process.stdout.write(`${s}\n`);

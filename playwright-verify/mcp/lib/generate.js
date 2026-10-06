@@ -482,13 +482,17 @@ export function generate(input, opts = {}) {
   if (!pages.length) throw new Error('pages 不能为空：至少给出一个页面及其原子步骤');
   if (!cases.length) throw new Error('cases 不能为空：至少给出一个用例路径');
 
+  // 按「session + name」去重：session 不同则视为不同页，避免同一 session 重复 navPath 覆盖。
+  // 传入重复 name 时报错（静默覆盖是 bug，不是约定）。
   const pageByName = new Map();
   const pageOutputs = [];
   for (const p of pages) {
     const className = p.className || asciiIdentifier(`${pascal(p.name)}Page`, pageOutputs.length + 1);
     const steps = normalizeSteps(p.steps || []);
     const content = renderPageObject({ className, steps, navPath: p.navPath });
-    pageByName.set(p.name, { className, steps });
+    // 同名静默覆盖是 bug，不是约定 —— 直接报错
+    if (pageByName.has(p.name)) throw new Error(`页面 name="${p.name}" 重复，请去重或为其中一个指定不同的 className`);
+    pageByName.set(p.name, { className, steps, navPath: p.navPath });
     pageOutputs.push({ file: `${className}.ts`, path: `pages/${className}.ts`, content, className, name: p.name, steps });
   }
 
@@ -502,6 +506,10 @@ export function generate(input, opts = {}) {
     const pageVar = asciiIdentifier(`${camel(c.page)}Page`, ci + 1);
     // 页面层方法索引：按 stepKey 精确查找要复用的方法，不靠位置猜
     const methodByKey = new Map(poMethodsFor(pageSteps).map((m) => [m.key, m]));
+    // navPath 存在时 renderSpec 会生成 pageVar.goto()（用 navPath），
+    // caseSteps 循环中所有 goto 步骤均应跳过，避免冗余导航覆盖 navPath。
+    // 判据用 entry.navPath（来源可靠），不用 methodByKey（stepKey 与 method.key 可能失配）。
+    const hasNavPath = Boolean(entry.navPath);
     const caseSteps = normalizeSteps(c.steps || []);
     const body = [];
     for (const s of caseSteps) {
@@ -511,7 +519,13 @@ export function generate(input, opts = {}) {
         continue;
       }
       switch (s.act) {
-        case 'goto': body.push(`await page.goto(${JSON.stringify(s.url || '/')});`); break;
+        // goto 步骤：如果 page 有 navPath（renderSpec 已生成 pageVar.goto()），
+        // 用例层不再重复生成 page.goto()，避免覆盖 navPath 或产生冗余导航。
+        case 'goto':
+          if (!hasNavPath) {
+            body.push(`await page.goto(${JSON.stringify(s.url || '/')});`);
+          }
+          break;
         case 'assertText':
           body.push(`await expect(${locatorExpr(s.locator)}).toHaveText(${JSON.stringify(String(s.expect ?? ''))});`); break;
         case 'assertVisible':

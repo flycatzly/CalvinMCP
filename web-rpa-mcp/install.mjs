@@ -137,7 +137,7 @@ async function main() {
     for (const dir of skillsDirs) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-        for (const item of ['workflows', 'references']) {
+        for (const item of ['SKILL.md', 'workflows', 'references']) {
           const src = path.join(ROOT, item);
           if (!fs.existsSync(src)) continue;
           const dst = path.join(dir, item);

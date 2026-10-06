@@ -71,6 +71,14 @@ async function main() {
     const names = new Set(tools.map((t) => t.name));
     for (const n of need) if (!names.has(n)) throw new Error('缺少工具 ' + n);
   });
+  check('flow_run 预算口径写进契约：maxDurationMs 描述含锁等待夹取/启动不可中断/报告可观测字段', () => {
+    const fr = tools.find((t) => t.name === 'flow_run');
+    const desc = (fr && fr.inputSchema && fr.inputSchema.properties && fr.inputSchema.properties.maxDurationMs &&
+      fr.inputSchema.properties.maxDurationMs.description) || '';
+    for (const token of ['锁等待', '浏览器启动', 'budgetOverrunMs', 'budgetSource']) {
+      if (desc.indexOf(token) < 0) throw new Error('flow_run.maxDurationMs 描述缺「' + token + '」: ' + desc);
+    }
+  });
 
   const ping = await call('ping', {});
   check('ping 正常', () => { if (!ping.result) throw new Error(JSON.stringify(ping)); });

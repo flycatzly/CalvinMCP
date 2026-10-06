@@ -96,6 +96,8 @@ await step("vault 扫描入库", "wai_vault_scan", { dirs: [path.join(SAMPLES, "
   if (typeof s.inserted !== "number") throw new Error("缺 inserted");
   return s.inserted + " 条 / " + s.sessions + " 会话";
 });
+// 缺目录必须报错（F12）：旧的静默 files:0 会让夹具缺失时本步骤假过；与 wai_scan 的 expectError 同语义
+await step("vault 扫描缺失目录应报错", "wai_vault_scan", { dirs: [path.join(HOME, "no-such-vault")] }, null, { expectError: true });
 // 前置写好文件再扫描：旧流程「先扫后建文件」只因缺路径静默 0 文件才误过，
 // 现在 wai_scan 对不存在的目标必须报错（见下方 expectError 步骤）。
 fs.writeFileSync(path.join(HOME, "sample.txt"), "[2026-06-30 12:00] 甲: 项目初稿周四前给\n[2026-06-30 13:00] 乙: 收到\n", "utf8");

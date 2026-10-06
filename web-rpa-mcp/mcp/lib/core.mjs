@@ -8,7 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const MCP_DIR = path.resolve(__dirname, '..');
-export const ROOT = path.resolve(MCP_DIR, '..');
+// WEBRPA_ROOT：实例隔离用的数据根注入（测试/多实例并跑场景）。缺省仍是代码所在的项目根；
+// 只改 flows/runs/logs/.work/配置 的落点，mcp/、demo/ 等代码位置仍按文件相对解析不受影响。
+export const ROOT = process.env.WEBRPA_ROOT
+  ? path.resolve(process.env.WEBRPA_ROOT)
+  : path.resolve(MCP_DIR, '..');
 
 export const DIRS = {
   root: ROOT,
@@ -85,13 +89,14 @@ export const DEFAULT_CONFIG = {
     timezoneId: 'Asia/Shanghai',
     recordViewport: { width: 1440, height: 900 },
     userAgent: null,
+    profileWaitMs: 3000,           // profile 锁有界等待预算：0=撞上即报 PROFILE_BUSY（旧行为）；只对活锁有意义，过期锁自动清；设 run.maxDurationMs 时按剩余预算夹取
   },
   run: {
     stepTimeoutMs: 15000,
     navTimeoutMs: 45000,
     retries: 1,
     retryDelayMs: 800,
-    maxDurationMs: 0,              // 运行级总超时：0=不限；到期后优雅收尾（截图+报告+告警+释放锁）
+    maxDurationMs: 0,              // 运行级总超时：0=不限；到期后优雅收尾（截图+报告+告警+释放锁）。计时自运行开始，含 profile 锁等待与浏览器启动（锁等待被剩余预算夹取；启动不可中断，越线≤启动时长；剩余<100ms 时启动前直接超时收尾不白启）
     unattendedMaxDurationMs: 7200000, // 无人值守（trigger=schedule）兜底总超时：手工不限但定时不能跑飞拖到天亮（0=取消兜底）
     saveVideo: false,              // true 时回放全程录像（Playwright recordVideo，需要自带 ffmpeg）
     videoOn: 'failure',            // failure | always —— 成功时是否保留录像（failure=删掉成功录像省空间）

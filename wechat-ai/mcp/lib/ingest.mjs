@@ -220,6 +220,7 @@ export function scanPath(target, { source = "scan", runId = null, out = null } =
   const write = ingestSessionBatches(db, parseFiles(), { source, runId });
   for (let i = 0; i < perFile.length; i++) perFile[i].inserted = write.results[i].inserted;
   kvSet("last_index_ts", Date.now());
+  kvSet("last_index_source", "scan"); // 通道事实（F7）：scan 通道也要盖章，否则通道值永远停在最后一次 reader 索引
   const summary = { target, files: files.length, inserted: write.inserted, perFile };
   if (out) {
     fs.mkdirSync(out, { recursive: true });
@@ -248,6 +249,7 @@ export function ingestInbox({ limit = 100, runId = null } = {}) {
     }
   }
   kvSet("last_index_ts", Date.now());
+  kvSet("last_index_source", "inbox"); // 通道事实（F7）：与 scan 同款盖章；消息级来源另存 messages.source
   return { processed: results.length, ok: results.filter((r) => r.ok).length, results };
 }
 
@@ -289,6 +291,7 @@ export async function indexFromReader({
     report.totals.inserted = write.inserted;
     report.stats = write.stats;
     kvSet("last_index_ts", Date.now());
+    kvSet("last_index_source", String(sourceId)); // search 早退分支此前漏盖通道章（F7）
     const summary = { ...report, out };
     if (out) { fs.mkdirSync(out, { recursive: true }); writeJson(path.join(out, "index-summary.json"), summary); }
     return summary;
@@ -343,8 +346,16 @@ export function freshness() {
   const db = store();
   const last = db.prepare("SELECT MAX(ts) ts, COUNT(*) n FROM messages").get();
   const lastIndex = Number(db.prepare("SELECT v FROM kv WHERE k='last_index_ts'").get()?.v ?? 0);
+  const channel = db.prepare("SELECT v FROM kv WHERE k='last_index_source'").get()?.v ?? null;
   const ageHours = last.ts ? (Date.now() - last.ts) / 3600_000 : null;
   const indexAgeHours = lastIndex ? (Date.now() - lastIndex) / 3600_000 : null;
+  // source = 语料真实来源口径：messages.source 按量主来源（sources 给全量构成）。
+  // 旧实现读 kv last_index_source——那是"最后一次走的索引通道"，而 pickReader 自动档
+  // 只要 vault 目录存在就偏好 vault，真机出现过 0 条 vault 语料却标 source=vault。
+  // 通道事实保留为 last_index_channel，两种口径各归其位（F7）。
+  const comp = db.prepare("SELECT source, COUNT(*) n FROM messages GROUP BY source ORDER BY n DESC, source ASC").all();
+  const sources = {};
+  for (const r of comp) sources[String(r.source ?? "unknown")] = Number(r.n);
   return {
     messages: last.n,
     last_message_ts: last.ts || null,
@@ -353,7 +364,9 @@ export function freshness() {
     last_index_ts: lastIndex || null,
     index_age_hours: indexAgeHours === null ? null : Math.round(indexAgeHours * 10) / 10,
     fresh: ageHours !== null && ageHours <= 24,
-    source: db.prepare("SELECT v FROM kv WHERE k='last_index_source'").get()?.v ?? null,
+    source: comp.length ? String(comp[0].source ?? "unknown") : null,
+    sources,
+    last_index_channel: channel,
   };
 }
 

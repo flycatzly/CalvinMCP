@@ -693,8 +693,11 @@ export function crossGroupLinks({ sinceMs, untilMs, minChats = 2, limit = 200 } 
     .all(sinceMs ?? 0, untilMs ?? Date.now(), minChats, limit);
 }
 
-export function linkAppearances(norm, limit = 50) {
-  return cached(store(),"SELECT * FROM links WHERE norm=? ORDER BY ts ASC LIMIT ?").all(norm, limit);
+export function linkAppearances(norm, limit = 50, sinceMs, untilMs) {
+  // 与 crossGroupLinks 聚合行同一时间窗：此前不带窗口取全量，
+  // 会出现 hits（窗口内计数）< appearances（全量行）、first/last_ts 盖不住 appearances（F4）
+  return cached(store(),"SELECT * FROM links WHERE norm=? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?")
+    .all(norm, sinceMs ?? 0, untilMs ?? Date.now(), limit);
 }
 
 // ---------- runs / history ----------

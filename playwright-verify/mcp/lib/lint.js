@@ -843,7 +843,8 @@ export function lintSource(src, filename = '(inline)', opts = {}) {
 }
 
 export function lint(target, opts = {}) {
-  const files = collectFiles(target, opts);
+  const { severity, ...rest } = opts; // severity 单独拎出，用于过滤
+  const files = collectFiles(target, rest);
 
   // 第一遍：把所有页面对象的断言信息收集起来，供第二遍的 PW007 做跨文件推断。
   // 只扫 .ts/.js 且排除了 .spec./.test. 的文件 —— 页面层通常不带这些后缀。
@@ -866,14 +867,23 @@ export function lint(target, opts = {}) {
       results.push({ file: f, tests: 0, containers: 0, testNames: [], findings: [], readError: e.message });
       continue;
     }
-    results.push(lintSource(src, f, { ...opts, poMethods }));
+    results.push(lintSource(src, f, { ...rest, poMethods }));
   }
 
+  // severity 过滤：在汇总统计之前按级别筛选Findings。
+  // exitCode/verdict 基于完整报告计算（CI 门禁看完整结果），但渲染结果只看过滤后。
   const all = results.flatMap((r) => r.findings);
+  const filteredAll = severity ? all.filter((f) => f.severity === severity) : all;
+  const filteredResults = severity
+    ? results.map((r) => ({ ...r, findings: r.findings.filter((f) => f.severity === severity) }))
+    : results;
+
   const errorCount = all.filter((f) => f.severity === 'ERROR').length;
   const warnCount = all.filter((f) => f.severity === 'WARN').length;
+  const filteredErrorCount = filteredAll.filter((f) => f.severity === 'ERROR').length;
+  const filteredWarnCount = filteredAll.filter((f) => f.severity === 'WARN').length;
   const byId = {};
-  for (const f of all) {
+  for (const f of filteredAll) {
     byId[f.id] = byId[f.id] || { id: f.id, severity: f.severity, title: f.title, count: 0 };
     byId[f.id].count++;
   }
@@ -884,16 +894,20 @@ export function lint(target, opts = {}) {
     target,
     filesScanned: results.length,
     testCount: results.reduce((s, r) => s + r.tests, 0),
+    severity,           // 记录本次过滤使用了哪个级别（undefined = 不过滤）
     summary: {
       errorCount,
       warnCount,
       // 门禁语义：ERROR 必须把脚本以退出码 1 结束，否则它挂不进 CI（只有 WARN 的检查等于没有检查）
       exitCode: errorCount > 0 ? 1 : 0,
       verdict: errorCount > 0 ? 'BLOCK' : (warnCount > 0 ? 'PASS_WITH_WARNINGS' : 'PASS'),
+      // 过滤后的计数（用于渲染）
+      filteredErrorCount,
+      filteredWarnCount,
     },
     byRule: Object.values(byId).sort((a, b) => b.count - a.count),
-    files: results,
-    findings: all,
+    files: filteredResults,
+    findings: filteredAll,
   };
 }
 
@@ -902,9 +916,15 @@ export function lint(target, opts = {}) {
  * ------------------------------------------------------------------ */
 
 export function formatText(report) {
+  // severity 过滤时，汇总标签显示过滤后计数；byRule 也只含过滤后结果
+  const { errorCount, warnCount, filteredErrorCount, filteredWarnCount, exitCode, verdict } = report.summary;
+  const sevLabel = report.severity ? `[${report.severity}] ` : '';
+  const dispErr = report.severity ? filteredErrorCount : errorCount;
+  const dispWarn = report.severity ? filteredWarnCount : warnCount;
+
   const out = [];
-  out.push(`lint_spec  target=${report.target}`);
-  out.push(`扫描文件 ${report.filesScanned} 个，识别用例 ${report.testCount} 条`);
+  out.push(`${sevLabel}lint_spec  target=${report.target}`);
+  out.push(`扫描文件 ${report.filesScanned} 个，识别用例 ${report.testCount} 条${report.severity ? `（仅显示 ${report.severity}）` : ''}`);
   for (const r of report.files) {
     if (!r.findings.length) {
       out.push(`  [OK  ] ${r.file}　用例 ${r.tests} 条，零告警`);
@@ -919,10 +939,10 @@ export function formatText(report) {
     }
   }
   out.push('');
-  out.push(`汇总: ERROR ${report.summary.errorCount} / WARN ${report.summary.warnCount}`);
+  out.push(`汇总: ERROR ${dispErr} / WARN ${dispWarn}`);
   for (const b of report.byRule) out.push(`  ${b.severity === 'ERROR' ? 'ERROR' : 'WARN '} ${b.id} × ${b.count}　${b.title}`);
-  out.push(`结论: ${report.summary.verdict}（退出码 ${report.summary.exitCode}）`);
-  if (report.summary.errorCount > 0) {
+  out.push(`结论: ${verdict}（退出码 ${exitCode}）`);
+  if (errorCount > 0) {
     out.push('ERROR 必须清零才能合入 —— 这是本门禁的阻断条件。');
   }
   return out.join('\n');

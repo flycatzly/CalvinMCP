@@ -105,16 +105,108 @@ function stepLine(s) {
  * @param {Function} [o.runStep]     测试注入点（默认走 runCli）
  * @returns {Promise<{steps:Array, stopped:boolean, reason?:string, healLlm:{budget:number, used:number}}>}
  */
-export async function executePlan({ steps, cwd, session, headed = false, healLlmBudget, runStep } = {}) {
-  const results = [];
-  const exec = runStep || defaultRunStep;
-  // 一次运行一个预算实例：自愈成功执行会继续，没有总闸的话每步都能烧一次 LLM
+/**
+ * 执行计划。支持两种模式：
+ *  - cliBatch: 传入 cli_batch 兼容函数，所有步骤打包一次投出去，
+ *    再从返回结果里逐条检视（fail-fast）；适用于多步 UI 测试的中间产物跨步骤累积。
+ *  - runStep: 单步执行器覆写（默认 defaultRunStep），每个动作步单独调 runCli。
+ * 两种模式互斥：传了 cliBatch 则忽略 runStep。
+ *
+ * @param {object} p
+ * @param {object[]} p.steps              计划步骤
+ * @param {string}  p.cwd               工作目录
+ * @param {string}  p.session           会话名
+ * @param {boolean} p.headed            有头/无头
+ * @param {number}  p.healLlmBudget    自愈 LLM 预算
+ * @param {Function} p.runStep          单步执行器（默认 defaultRunStep）
+ * @param {Function} p.cliBatch          cli_batch 兼容函数：({steps,cwd,session,headed}) => Promise<StepResult[]>
+ */
+/**
+ * 计划步骤 → CLI 位置参数映射（单一源）。
+ * click 的 CLI 第二位置参数是鼠标键（left|right|middle）——绝不把 value 当 button 传出去；
+ * runStep 与 cliBatch 两条执行路径共用本函数，禁止再各自写一份映射（曾漂移出回归：
+ * 带 value 的 click 步在 cliBatch 路径每次必炸在 button 参数上）。
+ */
+export function stepCliArgs(step) {
+  if (step.act === 'fill') return [step.target, step.value];
+  if (step.act === 'click') return [step.target];
+  if (step.act === 'goto') return [step.target || step.value];
+  if (step.act === 'press') return [step.value || step.target];
+  return [];
+}
+
+/**
+ * 断言判定（单一源）：只判定计划给定的期望是否在快照文本里，不重写、不放宽。
+ * runStep 与 executePlan(cliBatch) 两条执行路径共用 —— 判定语义曾分叉（cliBatch 只看
+ * snapshot 命令是否成功、不看快照内容，断言永远「成立」），这里钉死同一份判定
+ * 与同一份失败文案（「断言不成立，不放宽」为 e2e 钉死文案）。
+ */
+export function judgeExpectation(step, snap) {
+  const text = snap && fs.existsSync(snap) ? fs.readFileSync(snap, 'utf8') : '';
+  const needle = step.value || step.target || '';
+  const found = text.toLowerCase().includes(needle.toLowerCase());
+  return {
+    ok: found,
+    detail: found ? `页面包含「${needle}」` : `页面不包含「${needle}」（断言不成立，不放宽）`,
+    evidence: snap,
+  };
+}
+
+export async function executePlan({ steps, cwd, session, headed = false, healLlmBudget, runStep, cliBatch } = {}) {
+  // 一次运行一个自愈预算实例：没有总闸的话每步都能烧一次 LLM
   const healBudget = createHealLlmBudget(healLlmBudget ?? DEFAULT_HEAL_LLM_BUDGET);
+
+  // 模式一：cli_batch 批量执行（所有步骤一次投出，结果逐条检视）
+  if (cliBatch) {
+    const allResults = await cliBatch({ steps, cwd, session, headed });
+    const results = [];
+    for (let i = 0; i < allResults.length; i++) {
+      const r = allResults[i];
+      const step = steps[i];
+      // 自愈门（只救 HEALABLE_ACTS 的定位类失败）；tryHealStep 内部自行管理 LLM 预算
+      if (!r.ok && HEALABLE_ACTS.has(step.act) && isLikelyLocatorFailure(`${r.detail || ''}`)) {
+        const healedStart = Date.now();
+        const healed = await tryHealStep({ step, cwd, session, headed, llmBudget: healBudget });
+        if (healed.ok) {
+          // tryHealStep 契约：自愈成功时已用新 ref **重试过该步** —— 这里只收编结果，
+          // 不再重放（r24 曾误用不存在的 healed.ref 再放一次 defaultRunStep，
+          // 重放打字面量 "undefined" 必炸，还借 continue 绕过了 fail-fast）。
+          results.push({
+            ok: true, healed: true, healedFrom: healed.healedFrom, healedTo: healed.healedTo, via: healed.via,
+            act: step.act, target: step.target, value: step.value, durationMs: Date.now() - healedStart,
+            detail: healed.detail, evidence: healed.evidence,
+          });
+          continue;
+        }
+        // 自愈失败：保留原结果并 fail fast
+        results.push({ ok: false, act: step.act, target: step.target, value: step.value,
+          detail: `${r.detail}（自愈未成功：${healed.detail}）`,
+          evidence: healed.evidence || r.evidence, healedTried: true, healWhy: healed.why });
+        return { steps: results, stopped: true, reason: results[results.length - 1].detail, healLlm: { budget: healBudget.limit, used: healBudget.used } };
+      }
+      // 与 runStep 同源的两条语义（曾分叉出回归）：
+      //   1) 结果形状：结果必须带 act/target/value —— verdictOf/report 靠 act 认断言步，
+      //      缺 act 时「全动作步无断言」误判 Blocked；
+      //   2) 断言判定：expect_* 的 ok 以「快照内容是否包含期望」为准，不是命令是否成功。
+      let out = { ...r, act: step.act, target: step.target, value: step.value };
+      if ((step.act === 'expect_text' || step.act === 'expect_visible') && r.ok) {
+        out = { ...judgeExpectation(step, r.evidence), act: step.act, target: step.target, value: step.value };
+      }
+      results.push(out);
+      if (!out.ok) {
+        return { steps: results, stopped: true, reason: out.detail || `${step.act} 失败`, healLlm: { budget: healBudget.limit, used: healBudget.used } };
+      }
+    }
+    return { steps: results, stopped: false, healLlm: { budget: healBudget.limit, used: healBudget.used } };
+  }
+
+  // 模式二：逐步执行（默认）
+  const exec = runStep || defaultRunStep;
+  const results = [];
   for (const step of steps) {
     const r = await exec({ step, cwd, session, headed, healBudget });
     results.push(r);
     if (!r.ok) {
-      // fail fast：失败后继续执行只会把现场搅浑，且后续步骤的 ok 不再有语义
       return { steps: results, stopped: true, reason: r.detail || `${step.act} 失败`, healLlm: { budget: healBudget.limit, used: healBudget.used } };
     }
   }
@@ -131,12 +223,12 @@ export async function defaultRunStep({ step, cwd, session, headed, healBudget })
 
   switch (step.act) {
     case 'goto': {
-      const r = await runCli({ cwd, session, subcommand: 'open', args: [step.target], headed });
+      const r = await runCli({ cwd, session, subcommand: 'open', args: stepCliArgs(step), headed });
       return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
     }
     case 'click':
     case 'fill': {
-      const args = step.act === 'fill' ? [step.target, step.value] : [step.target];
+      const args = stepCliArgs(step);
       const r = await runCli({ cwd, session, subcommand: step.act, args, headed });
       if (r.ok) return done({ ok: true, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
 
@@ -161,7 +253,7 @@ export async function defaultRunStep({ step, cwd, session, headed, healBudget })
       return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
     }
     case 'press': {
-      const r = await runCli({ cwd, session, subcommand: 'press', args: [step.value], headed });
+      const r = await runCli({ cwd, session, subcommand: 'press', args: stepCliArgs(step), headed });
       return done({ ok: r.ok, detail: r.summary, evidence: r.logFiles?.stdout, exitCode: r.exitCode });
     }
     case 'screenshot': {
@@ -173,15 +265,8 @@ export async function defaultRunStep({ step, cwd, session, headed, healBudget })
       // 断言不重写、不放宽：只判定计划给定的期望是否成立，证据是快照落盘件。
       const r = await runCli({ cwd, session, subcommand: 'snapshot', args: [], headed });
       const snap = r.artifacts?.snapshot;
-      const text = snap && fs.existsSync(snap) ? fs.readFileSync(snap, 'utf8') : '';
-      const needle = step.value || step.target || '';
-      const found = text.toLowerCase().includes(needle.toLowerCase());
       if (!r.ok) return done({ ok: false, detail: `快照失败：${r.summary}`, evidence: r.logFiles?.stdout });
-      return done({
-        ok: found,
-        detail: found ? `页面包含「${needle}」` : `页面不包含「${needle}」（断言不成立，不放宽）`,
-        evidence: snap,
-      });
+      return done(judgeExpectation(step, snap));
     }
     default:
       return done({ ok: false, detail: `未知动作 ${step.act}（白名单外不该出现在执行阶段）` });

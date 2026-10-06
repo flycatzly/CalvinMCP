@@ -11,7 +11,7 @@
  * --with-browser 会额外跑真实浏览器回归（约 30 秒，需要已装浏览器）。
  * 默认不跑，因为无浏览器的环境（CI 容器）也应该能验证核心判定逻辑。
  * --keep-artifacts 保留产物目录（.playwright-artifacts/ 等）；默认全绿后自动清理、失败保留现场。
- * --mode 1|2|3 按《部署说明.详细版》§15.3 判据行复跑三态验收 —— 每态不只跑对应命令，
+ * --mode 1|2|3 按《部署说明》§15.3 判据行复跑三态验收 —— 每态不只跑对应命令，
  *   还校验状态本身（依赖在不在、SKIP 是否诚实、矩阵是否真跑），对不上直接 exit 1：
  *   1 = 零依赖裸跑（12 套）；2 = 零依赖 + 浏览器面（13 套，执行层诚实 SKIP）；
  *   3 = 全量（可选依赖必须就位，矩阵真跑且聚 4 签名）。
@@ -162,6 +162,10 @@ function runSuite(s) {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // 标记「在 verify-all 调度下」：套件自带的独立收尾 kill-all 是全机收割，
+      // 会把 --parallel 并发兄弟套件的活会话一起杀掉（踩踏面）。子进程看到此标记
+      // 就跳过自装兜底，由 verify-all 结尾的统一 kill-all 负责收割。
+      env: { ...process.env, PWVERIFY_UNDER_HARNESS: '1' },
     });
     let out = '';
     let err = '';
@@ -344,14 +348,14 @@ if (mode) {
   const shape = mode === '1' ? `${passN}/13（${total} 断言）`
     : mode === '2' ? `${passN}/14（${total} 断言 + 诚实 SKIP）`
       : `${passN}/14（${total} 断言 + 矩阵 4 签名）`;
-  console.log(`\n判据[mode ${mode}]：${shape} —— ${modeFailed ? '判据不满足 ❌' : '与《部署说明.详细版》§15.3 判据一致 ✅'}`);
+  console.log(`\n判据[mode ${mode}]：${shape} —— ${modeFailed ? '判据不满足 ❌' : '与《部署说明》§15.3 判据一致 ✅'}`);
   for (const [desc, ok] of checks) if (!ok) console.log(`  ✗ ${desc}`);
 }
 
 // 收尾：产物目录「只在失败时保留」。
 // 这些目录是产品「证据一律落盘」约定的正常产出（readCases/cli_*/run_verify 都往里写），
 // 全绿之后它们对使用者只是噪音 —— 尤其在部署副本里跑全量时会把树跑脏（发布口径见
-// 部署说明.详细版 §15）。失败时一律保留：现场就是排查材料。
+// 部署说明 §15）。失败时一律保留：现场就是排查材料。
 const ARTIFACT_DIRS = [
   '.playwright-artifacts',
   '.playwright-cli',

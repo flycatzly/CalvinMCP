@@ -13,6 +13,7 @@ const MARKDOWN_SITE_DIR = "wechat-report";
 /** 已知文件 -> 标题 / 类别 / 优先级 / 是否默认折叠 */
 const SOURCE_RULES = [
   ["final_report.md", "执行结论", "overview", 10, false],
+  ["brief.md", "跨报告行动总览", "overview", 12, false],
   ["action_overview.md", "行动与商机机器总览", "internal", 79, true],
   ["group-daily/group_daily_topics.md", "话题日报", "groups", 20, false],
   ["group-daily/group_daily_groups.md", "重点群聊", "groups", 21, false],
@@ -38,6 +39,7 @@ const PAGE_SPECS = [
   ["groups", "groups.md", "群聊日报", "群聊日报", "在话题、重点群聊和全部群聊筛选之间切换；建议级别只针对本时段。", "#", 20],
   ["contacts", "contacts.md", "重点联系人", "重点联系人", "查看品牌方、中间人和自媒体博主的待回复、等待与复联。", "◎", 30],
   ["radar", "radar.md", "商单信号雷达", "信号雷达", "每个标准化链接只出现一次，用于判断哪些品牌正在集中投放。", "↗", 40],
+  ["reports", "reports.md", "专题分析报告", "专题分析", "期间/关系/情绪/任务/财务/记忆/内容/团队/风控与复联等完整分析报告。", "▤", 50],
 ];
 
 /** 源文件 id：相对路径 slug */
@@ -114,7 +116,9 @@ export function discoverReportSources(reportDir) {
     }
     const rule = ruleFor(relativePath) ?? BASENAME_RULES.get(path.basename(relativePath));
     const title = rule ? rule[1] : markdownTitle(text, path.basename(full, ".md").replace(/_/g, " "));
-    const kind = rule ? rule[2] : "other";
+    // 未知来源不再落 "other" 被 buildPages 静默丢弃（F11：枚举进 sources 却不渲染、搜索也搜不到），
+    // 统一归入 "reports" 分区可见展示；只有显式 internal 规则才刻意不进阅读站。
+    const kind = rule ? rule[2] : "reports";
     const priority = rule ? rule[3] : 60;
     const collapsed = rule ? rule[4] : true;
     const base = slug(relativePath.replace(/\.md$/i, ""));

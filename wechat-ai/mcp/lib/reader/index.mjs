@@ -102,6 +102,16 @@ export function getSource(id) {
 export function pickReader({ source, allowDemo = false, preferIndexed = false } = {}) {
   const cfg = loadConfig({ reload: true });
   if (source) {
+    // 显式点名的路径型 source 指向不存在的路径必须报错（F14）：静默空集与 wai_scan/
+    // wai_vault_scan 的「扫描目标不存在」是两种语义。与 getSource 同款解析（前缀+冒号后路径），
+    // 只拦显式点名；无路径的 vault/sqlite 默认通道缺失仍走 needs_access/空集设计态
+    // （vault_status 依赖），getSource/pickReadyReader 的探测路径也依赖其不抛错。
+    const k = String(source);
+    const fam = ["vault", "sqlite", "wcdb"].find((f) => k.startsWith(f));
+    if (fam && k.includes(":")) {
+      const p = k.slice(k.indexOf(":") + 1);
+      if (p && !fs.existsSync(p)) throw new Error("扫描目标不存在：" + p);
+    }
     const r = getSource(source);
     return { reader: r, sourceId: source, reason: "显式指定" };
   }

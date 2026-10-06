@@ -31,7 +31,7 @@ function masterKey() {
   if (typeof km !== "string" || km.length < MIN_MASTER_KEY_LEN) {
     throw new Error(
       `DBMCP_MASTER_KEY 未设置（或少于 ${MIN_MASTER_KEY_LEN} 字符）：enc2 密文需要主密钥才能解密。` +
-      `请在 MCP 服务的环境（客户端注册 JSON 的 "env" 块）中设置 DBMCP_MASTER_KEY 后重启，见《部署说明.详细版.md》。`
+      `请在 MCP 服务的环境（客户端注册 JSON 的 "env" 块）中设置 DBMCP_MASTER_KEY 后重启，见《部署说明.md》。`
     );
   }
   return km;

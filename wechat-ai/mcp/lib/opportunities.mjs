@@ -955,6 +955,35 @@ export function listInbox({ minPriority = 4, limit = 20 } = {}) {
   return rows.slice(0, Math.max(1, limit));
 }
 
+/** 与 listInbox 同口径的真实总数（status=new、priority>=minPriority、含候选），
+ *  不受 limit 截断：首页 counts.inbox 用它，避免拿"展示条数"当总数（F6） */
+export function countInbox({ minPriority = 4 } = {}) {
+  ensureOpportunitySchema();
+  const where = ["status='new'"];
+  const args = [];
+  if (minPriority > 0) {
+    where.push("priority>=?");
+    args.push(Number(minPriority));
+  }
+  return Number(store().prepare("SELECT COUNT(*) AS n FROM opportunities WHERE " + where.join(" AND ")).get(...args).n);
+}
+
+/** 与 listToday 同口径的真实总数（WHERE 逐条镜像，回归里与 listToday 长度钉等），不受 limit 截断（F6） */
+export function countToday({ today, minPriority = 3 } = {}) {
+  ensureOpportunitySchema();
+  const day =
+    today instanceof Date
+      ? fmtDay(today)
+      : typeof today === "number"
+        ? fmtDay(new Date(today))
+        : String(today || fmtDay(new Date())).slice(0, 10);
+  const sql =
+    "SELECT COUNT(*) AS n FROM opportunities WHERE status IN ('new','active','waiting') AND priority>=?" +
+    " AND (type='opportunity' OR confidence IN ('high','confirmed'))" +
+    " AND ((follow_up IS NOT NULL AND follow_up<>'' AND substr(follow_up,1,10)<=?) OR ((follow_up IS NULL OR follow_up='') AND status IN ('new','active')))";
+  return Number(store().prepare(sql).get(Number(minPriority) || 0, day).n);
+}
+
 /** 今日行动：到期跟进 0 / 已发布待结算 1 / active 2 / 其它 3，再按 priority、last_signal_time 降序 */
 export function listToday({ today, minPriority = 3, limit = 10 } = {}) {
   ensureOpportunitySchema();

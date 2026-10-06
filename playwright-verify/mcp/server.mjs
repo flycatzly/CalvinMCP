@@ -29,17 +29,17 @@ import { fileURLToPath } from 'node:url';
 import { lint, lintSource, formatText as lintText, RULES } from './lib/lint.js';
 import { checkConfig, formatText as cfgText, BASELINE } from './lib/configcheck.js';
 import { summarize, summarizeFile, formatText as sumText, CATEGORIES, summarizeTrend, formatTrendText, slimTrendForContext } from './lib/signature.js';
-import { runPlaywright, playwrightVersion, resolvePlaywrightRunner } from './lib/runner.js';
+import { runPlaywright, playwrightVersion, resolvePlaywrightRunner, findPlaywrightReport } from './lib/runner.js';
 import { runCli, cliHealthCheck, ARTIFACT_DIRS, CLI_ALLOWLIST } from './lib/cli.js';
 import { generate, writeGenerated, locatorExpr } from './lib/generate.js';
 import { checkStandards, formatText as stdText, renderStandardsMd } from './lib/standards.js';
 import { orchestrate, readCases, resolvePython } from './lib/orchestrate.js';
 import { boolArg, numArg, intArg, arrayArg } from './lib/args.js';
 import { maskComments, maskCommentsAndStrings, selfCheck as tokenizerSelfCheck } from './lib/tokenizer.js';
-import { llmChatJson, llmStatus, resolveLlm } from './lib/llmclient.js';
+import { llmChatJson, resolveLlm } from './lib/llmclient.js';
 import { buildPlanMessages, normalizePlan, fallbackPlan, verdictOf, PLAN_MAX_STEPS } from './lib/nlplan.js';
 import {
-  assertGoalAllowed, assertTargetAllowed, executePlan, buildReport, writeReport,
+  assertGoalAllowed, assertTargetAllowed, executePlan, buildReport, writeReport, stepCliArgs,
 } from './lib/agent.js';
 import {
   FACTS_EVAL_FN, factsPath, judgeImages, classifyLinks, probeLinks, judgeExplore, parseConsoleErrors, readFacts,
@@ -232,6 +232,7 @@ const TOOLS = [
         disableRules: { type: 'array', items: { type: 'string' }, description: '要关闭的规则 id，如 ["PW011"]' },
         severityOverrides: { type: 'object', description: '覆盖某些规则的级别，如 {"PW011":"ERROR"}' },
         tiers: { type: 'array', items: { type: 'string', enum: ['core', 'ext'] }, description: '只跑哪些档位的规则，默认全跑' },
+        severity: { type: 'string', enum: ['ERROR', 'WARN'], description: '只显示指定级别的Findings（CI 快速门禁用 ERROR 口径，评审用 WARN）' },
         format: { type: 'string', enum: ['text', 'json'], description: '返回格式，默认 text' },
       },
       required: ['target'],
@@ -244,6 +245,7 @@ const TOOLS = [
       const rep = lint(target, {
         include: args.include, exclude: args.exclude, tiers: args.tiers,
         ruleConfig: { disableRules: args.disableRules, severityOverrides: args.severityOverrides },
+        severity: args.severity || undefined,
       });
       const text = args.format === 'json' ? JSON.stringify(rep, null, 2) : lintText(rep);
       return rep.summary.errorCount > 0
@@ -405,6 +407,7 @@ const TOOLS = [
         );
       }
 
+      const runStart = Date.now();
       const res = await runPlaywright({
         cwd,
         args: pwArgs,
@@ -412,17 +415,67 @@ const TOOLS = [
         timeoutMs,
         logDir: path.join(cwd, ARTIFACT_DIRS.logs),
       });
+      // 找本次执行产出的报告（mtime 不早于本次执行起点，防止把上次的旧报告当结论）
+      const reportFile = findPlaywrightReport(cwd, runStart - 2000);
       const tail = (res.stdout || '').split(/\r?\n/).filter((l) => l.trim()).slice(-30).join('\n');
       const head = {
         cwd, runner: runner.how, version,
         exitCode: res.code, durationMs: res.durationMs, timedOut: res.timedOut,
         logFiles: { stdout: res.stdoutFile, stderr: res.stderrFile },
+        reportFile,
         message: res.message,
       };
       const text = `执行完成：退出码 ${res.code}（${Math.round((res.durationMs || 0) / 1000)}s）\n`
-        + `日志：${res.stdoutFile}\n\n--- 输出尾部 ---\n${tail}\n\n`
-        + '下一步：用 summarize_report 解析 test-results/report.json 做失败聚类与归因。';
+        + `日志：${res.stdoutFile}\n`
+        + `报告：${reportFile || '(本次未产出 report.json —— 检查 playwright.config 是否配了 json reporter 且 outputFile 指向 .playwright-artifacts/reports/ 或 test-results/)'}\n\n`
+        + `--- 输出尾部 ---\n${tail}\n\n`
+        + (reportFile
+          ? `下一步：summarize_report(file="${reportFile.replace(/\\/g, '/')}") 做失败聚类与归因。`
+          : '下一步：修好 reporter 配置后重跑，再用 summarize_report 归因。');
       return res.code === 0 ? result(text, head) : fail(text, head, 'RUN_FAILED');
+    },
+  },
+  {
+    name: 'setup-browser-config',
+    title: '生成适配当前平台的浏览器通道配置',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description:
+      '运行 setup-cli-config.mjs，按平台生成 .playwright/cli.config.json。'
+      + 'Windows → msedge（系统自带），其它平台 → chromium。'
+      + 'PVMCP_BROWSER_CHANNEL 环境变量可显式指定通道。'
+      + '适用于：删除了 ms-playwright 后重新初始化、或切了浏览器通道。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cwd: { type: 'string', description: '工作目录（默认 MCP server 启动目录）' },
+        channel: { type: 'string', description: '显式指定通道，覆盖 PVMCP_BROWSER_CHANNEL 与平台默认（如 msedge / chrome）' },
+        print: { type: 'boolean', description: '只打印配置内容，不写文件' },
+      },
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const cwd = path.resolve(args.cwd || DEFAULT_CWD);
+      const scriptDir = path.join(__dirname, '..', 'skill', 'playwright-verify', 'scripts');
+      const script = path.join(scriptDir, 'setup-cli-config.mjs');
+
+      const setupArgs = ['--cwd', cwd];
+      if (args.channel) setupArgs.push('--channel', String(args.channel));
+      if (args.print) setupArgs.push('--print');
+
+      const { runToFiles } = await import('./lib/runner.js');
+      const res = await runToFiles({
+        command: process.execPath,
+        args: [script, ...setupArgs],
+        cwd,
+        timeoutMs: 30_000,
+        logDir: path.join(cwd, '.playwright-artifacts', 'logs'),
+        logName: 'setup-browser-config',
+      });
+
+      const out = (res.stdout || '') + (res.stderr || '');
+      return res.code === 0
+        ? result(`浏览器通道配置完成\n${out.trim()}`, { code: res.code, output: out.trim() })
+        : fail(`配置失败（退出码 ${res.code}）\n${out.trim()}`, { code: res.code, output: out.trim() }, 'SETUP_FAILED');
     },
   },
   {
@@ -471,6 +524,153 @@ const TOOLS = [
       ].filter(Boolean);
       const text = lines.join('\n');
       return res.ok ? result(text, res) : fail(`${text}\n\n原因：${res.reason}${res.message ? `｜${res.message}` : ''}`, res, 'CLI_FAILED');
+    },
+  },
+  {
+    name: 'cli_batch',
+    title: 'CLI 批量顺序执行（多步状态累积）',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    description:
+      '多步 CLI 命令顺序执行，跨步状态（快照路径、Ref）自动累积，全量执行完再返回汇总报告。'
+      + '对应文章「Skill 驱动的 CLI — AI 自动编排 CLI 命令，UI 维护时间缩水 90%」核心场景：'
+      + 'open → snapshot → click/fill → snapshot → screenshot → close，'
+      + '中途各步的产物路径（如 snapshot 落盘的 .md）会作为上下文传给后续步骤，'
+      + '失败时停在当前步并给出已积累的全部状态。'
+      + '调试用 headed=true，回归保持无头（默认）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: '步骤序列，每步 { subcommand, args?, heading? }。'
+            + 'subcommand 同 cli_session 的子命令白名单；'
+            + 'args 为位置参数数组；'
+            + 'heading 为可选步骤说明（出现在报告中）。',
+          items: {
+            type: 'object',
+            properties: {
+              subcommand: { type: 'string', description: '子命令，如 open/goto/click/fill/snapshot/screenshot/press/...' },
+              args: { type: 'array', items: { type: 'string' }, description: '位置参数，如 ["https://example.com"] 或 ["e12"]' },
+              heading: { type: 'string', description: '可选步骤说明（出现在汇总报告里）' },
+            },
+            required: ['subcommand'],
+            additionalProperties: false,
+          },
+        },
+        session: { type: 'string', description: '会话名（多流程/多标签隔离），默认 batch' },
+        headed: { type: 'boolean', description: '调试用有头模式；默认 false（回归无头）' },
+        cwd: { type: 'string', description: '工作目录（产物落在 .playwright-artifacts/）' },
+        stopOnError: { type: 'boolean', description: '遇错是否停止；默认 true。false 时全部跑完' },
+        timeoutMs: { type: 'number', description: '单步超时毫秒（默认 120000）' },
+      },
+      required: ['steps'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const cwd = path.resolve(args.cwd || DEFAULT_CWD);
+      const session = args.session || 'batch';
+      const headed = boolArg(args.headed, 'headed', false);
+      const stopOnError = args.stopOnError !== false; // 默认 true
+      const timeoutMs = intArg(args.timeoutMs, 'timeoutMs', 120_000) || 120_000;
+
+      const stepResults = [];
+      // 跨步累积状态：最近一次快照路径（供后续步骤引用）
+      let lastSnapshotPath = null;
+      let lastScreenshotPath = null;
+      // 失败标记
+      let hasError = false;
+
+      for (let i = 0; i < (args.steps || []).length; i++) {
+        const step = args.steps[i];
+        const stepNo = i + 1;
+        const heading = step.heading || `#${stepNo} ${step.subcommand} ${(step.args || []).join(' ')}`;
+
+        // 累积上下文：注入前序快照路径（供 find/eval 类命令参考）。
+        // 必须在 runCli **之前**算好并传入；之前漏了这一步，导致 {{LAST_SNAPSHOT}}
+        // 永远不生效（算出来了却传给 runCli）。
+        const enrichedArgs = (step.args || []).map((a) => {
+          if (a === '{{LAST_SNAPSHOT}}' && lastSnapshotPath) return lastSnapshotPath;
+          if (a === '{{LAST_SCREENSHOT}}' && lastScreenshotPath) return lastScreenshotPath;
+          return a;
+        });
+
+        // 执行当前步骤
+        const res = await runCli({
+          cwd,
+          session,
+          subcommand: step.subcommand,
+          args: enrichedArgs,   // 用已替换占位符的参数
+          headed,
+          timeoutMs,
+        });
+
+        // 提取本次产物路径
+        const arts = res.artifacts || {};
+        // snapshot 产物在 arts.snapshot，screenshot 产物在 arts.file（不是 arts.screenshot）
+        const snapPath = arts.snapshot || null;
+        const shotPath = arts.file || null;
+
+        // 快照/截图路径自动累积（后续步骤可见）
+        if (snapPath) lastSnapshotPath = snapPath;
+        if (shotPath) lastScreenshotPath = shotPath;
+
+        const stepOk = res.ok;
+        if (!stepOk) hasError = true;
+
+        stepResults.push({
+          step: stepNo,
+          heading,
+          subcommand: step.subcommand,
+          args: enrichedArgs,
+          ok: stepOk,
+          exitCode: res.exitCode,
+          summary: res.summary || '',
+          reason: res.reason || '',
+          message: res.message || '',
+          artifacts: arts,
+          snapshotPath: lastSnapshotPath,
+          screenshotPath: lastScreenshotPath,
+          logFiles: res.logFiles || null,
+        });
+
+        // 遇错停止
+        if (!stepOk && stopOnError) break;
+      }
+
+      // 汇总报告
+      // 收尾：关闭 session，连同 daemon 的浏览器子进程一起退出。
+      // 之前漏了这一步，导致 batch 跑完后 daemon + chrome-headless-shell 永远挂在机器上
+      // （runCli 只在超时时才调 reapSession，正常结束不回收）。
+      let closeResult = null;
+      try {
+        closeResult = await runCli({ cwd, session, subcommand: 'close', args: [], timeoutMs: 20_000 });
+      } catch { /* 收尾尽力而为 */ }
+
+      const okCount = stepResults.filter((s) => s.ok).length;
+      const failCount = stepResults.filter((s) => !s.ok).length;
+      const allOk = failCount === 0;
+      const finalSnapshot = lastSnapshotPath;
+      const finalScreenshot = lastScreenshotPath;
+
+      const lines = [
+        `[${allOk ? 'PASS' : 'FAIL'}] cli_batch（session=${session}，${okCount} 步通过${failCount > 0 ? `，${failCount} 步失败` : ''}）`,
+        '',
+        ...stepResults.map((s) => [
+          `  ${s.ok ? '✓' : '✗'} ${s.heading}`,
+          s.args.length ? `    args: ${s.args.join(' ')}` : '',
+          s.ok ? '' : `    ERROR: ${s.reason}${s.message ? `｜${s.message}` : ''}`,
+          s.artifacts && Object.keys(s.artifacts).length ? `    产物: ${JSON.stringify(s.artifacts)}` : '',
+          s.logFiles?.stdout ? `    日志: ${s.logFiles.stdout}` : '',
+        ].filter(Boolean).join('\n')),
+        '',
+        allOk ? `全部 ${okCount} 步通过。` : `执行在第 ${stepResults.length} 步后停止（stopOnError=${stopOnError}）。`,
+        finalSnapshot ? `最终快照: ${finalSnapshot}` : '',
+        finalScreenshot ? `最终截图: ${finalScreenshot}` : '',
+      ].filter(Boolean);
+
+      const text = lines.join('\n');
+      const structured = { session, stepCount: stepResults.length, okCount, failCount, steps: stepResults, allOk, finalSnapshot, finalScreenshot };
+      return allOk ? result(text, structured) : fail(text, structured, 'CLI_BATCH_FAIL');
     },
   },
   {
@@ -995,10 +1195,55 @@ const TOOLS = [
         source = 'fallback';
       }
 
+      // cli_batch 批量执行器：多步 UI 测试中间产物（快照/截图路径）跨步骤累积
+      // {{LAST_SNAPSHOT}} / {{LAST_SCREENSHOT}} 占位符在每步执行前被前序产物路径替换
+      const cliBatch = async ({ steps, cwd: bcwd, session: bsession, headed: bheaded }) => {
+        let lastSnapshotPath = null;
+        let lastScreenshotPath = null;
+        const results = [];
+        for (const step of steps) {
+          // 占位符替换：先替换，再执行
+          const rawArgs = stepCliArgs(step);
+          const args = rawArgs.map((a) => {
+            if (String(a) === '{{LAST_SNAPSHOT}}' && lastSnapshotPath) return lastSnapshotPath;
+            if (String(a) === '{{LAST_SCREENSHOT}}' && lastScreenshotPath) return lastScreenshotPath;
+            return a;
+          });
+
+          let subcommand = '';
+          if (step.act === 'goto') subcommand = 'open';
+          else if (step.act === 'click') subcommand = 'click';
+          else if (step.act === 'fill') subcommand = 'fill';
+          else if (step.act === 'press') subcommand = 'press';
+          else if (step.act === 'screenshot') subcommand = 'screenshot';
+          else if (step.act === 'expect_text' || step.act === 'expect_visible') subcommand = 'snapshot';
+          else { results.push({ ok: false, detail: `未知动作 ${step.act}` }); continue; }
+
+          const r = await runCli({ cwd: bcwd, session: bsession, subcommand, args, headed: bheaded });
+
+          // 跨步状态累积
+          if (r.artifacts?.snapshot) lastSnapshotPath = r.artifacts.snapshot;
+          if (r.artifacts?.file) lastScreenshotPath = r.artifacts.file;
+
+          // 产物路径进 evidence（供 executePlan 里的自愈和报告使用）
+          let evidence = '';
+          if (step.act === 'screenshot' && r.artifacts?.file) evidence = r.artifacts.file;
+          else if ((step.act === 'expect_text' || step.act === 'expect_visible') && r.artifacts?.snapshot) evidence = r.artifacts.snapshot;
+          else evidence = r.logFiles?.stdout || '';
+
+          results.push({ ok: r.ok, detail: r.summary || '', evidence });
+        }
+        // 收尾：关闭 session，连同 daemon 的浏览器子进程一起退出。
+        // 修法：之前漏了这一步，batch/nl_test_goal 跑完后 daemon + chrome-headless-shell 永远挂在机器上。
+        try { await runCli({ cwd: bcwd, session: bsession, subcommand: 'close', args: [], timeoutMs: 20_000 }); } catch { /* 收尾尽力而为 */ }
+        return results;
+      };
+
       const { steps: stepResults, stopped, reason, healLlm } = await executePlan({
         steps: plan.steps, cwd, session,
         headed: boolArg(args.headed, 'headed', false),
         healLlmBudget: healBudget,
+        cliBatch,
       });
       const report = buildReport({
         goal, url: args.url, source, plan, stepResults,
@@ -1106,7 +1351,12 @@ const TOOLS = [
         `文件: ${gen.files.map((f) => f.path).join(', ')}`,
         '',
         '用例主张（交付契约）：',
-        ...gen.claims.map((c) => `  · ${c.title} → ${c.claims}`),
+        // 提示类 claims（以「（」开头）内联一行；正常 claims 换行缩进，避免长文本挤成一团
+        ...gen.claims.flatMap((c) =>
+          c.claims.startsWith('（')
+            ? [`  · ${c.title} → ${c.claims}`]
+            : [`  · ${c.title} →`, ...String(c.claims).split('\n').map((l) => `     ${l}`)]
+        ),
         writeInfo ? (writeInfo.written ? `\n已写盘 ${writeInfo.files.length} 个文件。` : `\n未写盘：${writeInfo.message}`) : '\n（未写盘；确认无误后把 write 设为 true，或设为 outDir）',
         '',
         '--- 生成内容预览 ---',
@@ -1284,11 +1534,8 @@ const TOOLS = [
         { name: 'Playwright 运行器', ok: !!runner, detail: runner ? runner.how : '未安装（执行类工具不可用，其余工具不受影响）', optional: true },
         { name: 'playwright-cli', ok: !!cli, detail: cli ? cli.how : '未安装（CLI 类工具不可用）', optional: true },
         { name: 'Python（Excel 编排）', ok: !!py, detail: py || '未找到（orchestrate_excel 用 .csv 仍可用）', optional: true },
-        (() => {
-          const llm = llmStatus();
-          const ok = llm.provider !== 'deepseek' || !!resolveLlm().hasKey;
-          return { name: 'LLM（智能体线）', ok, detail: `${llm.provider}${llm.model ? `/${llm.model}` : ''}：${llm.why}`, optional: true };
-        })(),
+        // LLM（智能体线）不放在 selfcheck —— 它是纯可选基础设施，
+        // nl_test_goal 运行时能正确处理不可用并降级，selfcheck 多检反而制造假信号。
       ];
       const required = checks.filter((c) => !c.optional);
       const ok = required.every((c) => c.ok);

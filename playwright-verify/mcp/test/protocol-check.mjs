@@ -23,10 +23,14 @@ import { fileURLToPath } from 'node:url';
 import {
   handleMessage, TOOLS, SUPPORTED_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION, VERSION,
 } from '../server.mjs';
+import { installStandaloneReap } from './reap.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const SERVER = path.join(__dirname, '..', 'server.mjs');
+// 单跑兜底：cli_health 会开浏览器会话，任何退出分支都收掉本机孤儿 daemon/浏览器。
+// 在 verify-all 调度下自动跳过，由统一收尾负责（见 reap.mjs 注释）。
+installStandaloneReap(ROOT, { label: 'protocol-check' });
 
 let failures = 0;
 const log = (s) => process.stdout.write(`${s}\n`);
@@ -117,14 +121,14 @@ check('只读工具集合恰好是纯读/纯自省五个（多一个=副作用�
   === [...READONLY_SET].sort().join(','),
   tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name).sort().join(','));
 
-const DESTRUCTIVE_SET = ['run_verify', 'cli_session', 'nl_test_goal', 'generate_scripts', 'orchestrate_excel'];
-check('破坏性工具集合恰好是执行/写盘/驱动页面五个（少一个=会改状态的工具免确认）',
+const DESTRUCTIVE_SET = ['run_verify', 'cli_session', 'cli_batch', 'nl_test_goal', 'generate_scripts', 'orchestrate_excel'];
+check('破坏性工具集合恰好是执行/写盘/驱动页面六个（少一个=会改状态的工具免确认）',
   tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name).sort().join(',')
   === [...DESTRUCTIVE_SET].sort().join(','),
   tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name).sort().join(','));
 
-const OPENWORLD_SET = ['run_verify', 'cli_session', 'explore_page', 'nl_test_goal', 'orchestrate_excel', 'collect_table'];
-check('openWorld 集合恰好是碰外部实体的六个（data: 页与本机探测不算开放世界）',
+const OPENWORLD_SET = ['run_verify', 'cli_session', 'cli_batch', 'explore_page', 'nl_test_goal', 'orchestrate_excel', 'collect_table'];
+check('openWorld 集合恰好是碰外部实体的七个（data: 页与本机探测不算开放世界）',
   tools.filter((t) => t.annotations.openWorldHint).map((t) => t.name).sort().join(',')
   === [...OPENWORLD_SET].sort().join(','),
   tools.filter((t) => t.annotations.openWorldHint).map((t) => t.name).sort().join(','));

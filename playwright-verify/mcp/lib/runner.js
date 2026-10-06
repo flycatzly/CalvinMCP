@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 /** 收集一个可执行文件的所有候选路径（Windows 下 npx 是 .cmd，spawn 需要带扩展名）。 */
 function resolveExecutable(cmd, env, cwd) {
@@ -75,6 +75,25 @@ export function stripKnownNoise(text) {
  * 跑一个命令，输出重定向到文件。
  * @returns {{ code, stdout, stderr, stdoutFile, stderrFile, durationMs, timedOut, spawnError }}
  */
+/**
+ * 超时收尾：把整棵进程树一起收掉，而不是只杀直接子进程。
+ * Windows 上 child.kill 只作用于直接子进程 —— 客户端死了，它拉起的 worker/浏览器
+ * 还挂在机器上（实测孤儿 chrome-headless-shell 整棵树就是这么留下的）。
+ * taskkill /T /F 连树收；taskkill 不可用时退回 SIGKILL（尽力而为）。
+ * POSIX 保持 SIGKILL，语义不变。
+ */
+function killTree(child) {
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      const r = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true, stdio: 'ignore', timeout: 15_000,
+      });
+      if (r.status === 0) return;
+    } catch { /* 落到下面兜底 */ }
+  }
+  try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+}
+
 export function runToFiles({ command, args = [], cwd, env = {}, timeoutMs = 300_000, logDir, logName, shell = false }) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -122,7 +141,7 @@ export function runToFiles({ command, args = [], cwd, env = {}, timeoutMs = 300_
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      killTree(child);
     }, timeoutMs);
 
     const done = (code, spawnError) => {
@@ -174,6 +193,13 @@ export function resolvePlaywrightRunner(cwd) {
  * （与 @playwright/test 用 node cli.js 跑法是同一个思路）。
  */
 export function resolveCliRunner(cwd) {
+  // 优先用 @playwright/test/cli.js（与本机已有的 chromium-1243 配套，
+  // 避免 @playwright/cli 0.1.22 捆绑的 playwright-core 1.64.0-alpha 找不到 chromium-1247）。
+  const testCli = path.join(cwd, 'node_modules', '@playwright', 'test', 'cli.js');
+  if (fs.existsSync(testCli)) {
+    return { command: process.execPath, prefix: [testCli, 'cli'], how: 'node @playwright/test/cli.js cli' };
+  }
+  // 再试 @playwright/cli（可能全局安装）
   const cliJs = path.join(cwd, 'node_modules', '@playwright', 'cli', 'playwright-cli.js');
   if (fs.existsSync(cliJs)) {
     return { command: process.execPath, prefix: [cliJs], how: 'node @playwright/cli/playwright-cli.js' };
@@ -240,4 +266,45 @@ export async function runPlaywright({ cwd, args = [], env = {}, timeoutMs = 600_
   return { ok: res.code === 0, runner: r.how, ...res };
 }
 
-export default { runToFiles, runPlaywright, resolvePlaywrightRunner, resolveCliRunner, findExecutable, playwrightVersion };
+/**
+ * 找本次执行产出的 Playwright JSON 报告。
+ *
+ * 只认「结构像报告」的文件（含 suites + stats），且 mtime 不早于 sinceMs ——
+ * 否则一次没产出报告的执行会把上次的旧报告当成结论，这正是「不报错但结论错」的陷阱。
+ * 报告目录里的 trend-*.json（多报告趋势）和 cases-*.json（Excel 编排）不含 suites/stats，会被正确跳过。
+ *
+ * @param {string} cwd 项目根
+ * @param {number} [sinceMs] 只认这个时间点之后落盘的文件（默认 0 = 不限）
+ * @returns {string|null} 报告绝对路径
+ */
+export function findPlaywrightReport(cwd, sinceMs = 0) {
+  const dirs = [
+    path.join(cwd, '.playwright-artifacts', 'reports'),
+    path.join(cwd, 'test-results'),
+    path.join(cwd, 'playwright-report'),
+  ];
+  const found = [];
+  for (const dir of dirs) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const f of names) {
+      if (!f.endsWith('.json')) continue;
+      const full = path.join(dir, f);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile() || st.mtimeMs < sinceMs) continue;
+        found.push({ full, mtime: st.mtimeMs });
+      } catch { /* 读不到就跳过，不影响其它候选 */ }
+    }
+  }
+  found.sort((a, b) => b.mtime - a.mtime);
+  for (const f of found) {
+    try {
+      const j = JSON.parse(fs.readFileSync(f.full, 'utf8'));
+      if (j && typeof j === 'object' && j.suites !== undefined && j.stats !== undefined) return f.full;
+    } catch { /* 不是 JSON 或不是报告，看下一个 */ }
+  }
+  return null;
+}
+
+export default { runToFiles, runPlaywright, resolvePlaywrightRunner, resolveCliRunner, findExecutable, playwrightVersion, findPlaywrightReport };

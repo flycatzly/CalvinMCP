@@ -132,7 +132,22 @@ export function loadVault({ dirs, force = false } = {}) {
       s.messages.push(toReaderMessage({ ...r, chat }, { chat }));
     }
   }
-  writeJson(cacheFile(), next);
+  // 按键合并写回（F15）：旧实现 writeJson(cacheFile(), next) 整文件覆写——force 空根写 {} 会
+  // 清空整个解析缓存，任意子集扫描（wai_vault_status 显式 dirs、getSource 的 vault:p）也会把
+  // 其他目录的条目一并丢掉，后果是重复解析与 cache_hits 抖动。合并语义：本次扫到的文件以新
+  // 条目为准；扫过的根内未再出现的文件=已删/移走，陈旧条目顺带回收（保住旧覆写偶然提供的 GC）；
+  // 未扫根的条目一律保留。路径比较只做分隔符归一与 win32 小写，误判方向的代价都是下次重解析。
+  const norm = (p) => (path.sep === "\\" ? String(p).replace(/\//g, "\\").toLowerCase() : String(p));
+  const rootKeys = roots.map((r) => norm(r).replace(/[\\/]+$/, ""));
+  const disk = readJson(cacheFile(), {});
+  const merged = {};
+  for (const [k, rec] of Object.entries(disk)) {
+    if (k in next) continue;
+    const f = norm(rec?.file ?? "");
+    if (!rootKeys.some((r) => f.startsWith(r + path.sep))) merged[k] = rec;
+  }
+  Object.assign(merged, next);
+  writeJson(cacheFile(), merged);
   const list = [...sessions.values()].map((s) => {
     const ts = s.messages.map((m) => m.ts).filter(Boolean);
     const { min, max } = minMax(ts);

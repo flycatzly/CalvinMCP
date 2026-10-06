@@ -22,7 +22,7 @@ export const SUITES = [
   { name: '扫描器（三份样例集）', file: 'mcp/test/lint-check.mjs', assertions: 53, note: 'clean 不冤枉 / messy 全中 / tricky 不误报 / 结构边界 11 / 对抗语料 18（误报漏报边界）/ 属性化语料 20 规则 × bad+good（真 lint 跑，bad 命中自己 good 不冤枉）+ 覆盖门' },
   { name: '归因（缺陷 4 回归）', file: 'mcp/test/signature-check.mjs', assertions: 42, note: 'ANSI 清洗幂等、断言不被误归成超时、6 条压成 4 个签名、输入校验不静默全零、多报告趋势（通过率曲线/签名漂移三分法/计数矩阵含簇内多条/md 落盘形态）、趋势 md 行截断（每列表 ≤50 行/诚实「还有 N 条」计数/结构化数据保全量/小趋势形态零变化）、趋势上下文有界（slim 截 50 与 md 同一常量/total 诚实/回灌面 ≤ 全量一半/行内保真/纯函数不突变/未超上限透传）' },
   { name: '生成器', file: 'mcp/test/generate-check.mjs', assertions: 27, note: '门禁、PO 分层、方法名、占位符、脆弱选择器' },
-  { name: 'MCP 协议与工具面', file: 'mcp/test/protocol-check.mjs', assertions: 116, note: '握手、版本协商、14 个工具、annotations 副作用声明、观测日志脱敏与聚合、错误码语义、stdin EOF 排空、报告输入校验、真实 stdio、日志容量上限与轮转（PVMCP_LOG_MAX_MB）、计划缓存观测（cache= 字段：可选解析/三态按工具聚/命中率 hit/(hit+miss) 白名单外进 malformed/CLI 同一份判定）、按工具块渲染（权重序/maxMs 透出/逐字节形状）' },
+  { name: 'MCP 协议与工具面', file: 'mcp/test/protocol-check.mjs', assertions: 116, note: '握手、版本协商、16 个工具、annotations 副作用声明、观测日志脱敏与聚合、错误码语义、stdin EOF 排空、报告输入校验、真实 stdio、日志容量上限与轮转（PVMCP_LOG_MAX_MB）、计划缓存观测（cache= 字段：可选解析/三态按工具聚/命中率 hit/(hit+miss) 白名单外进 malformed/CLI 同一份判定）、按工具块渲染（权重序/maxMs 透出/逐字节形状）' },
   { name: '规则表一致性', file: 'mcp/test/rules-check.mjs', assertions: 37, note: '规则 id 唯一、文档与实际规则表不漂移、属性化语料覆盖门（每条规则必须带 bad/good 样例，展开数=规则数×2）' },
   // 加固套件来自一次对抗性审计：专钉「不报错但结论错」的静默失效
   {
@@ -33,7 +33,7 @@ export const SUITES = [
   { name: 'Excel 编排端到端', file: 'mcp/test/orchestrate-e2e.mjs', assertions: 20, assertionsNoDep: 17, note: '读表 → 映射 → 生成门禁 → 落盘 → 真跑通过', browser: true },
   { name: '参数规范化与产物命名', file: 'mcp/test/args-check.mjs', assertions: 46, assertionsNoDep: 38, note: '布尔不静默反转、非法值报错、整数参数不静默取整、并发产物不互相覆盖、浏览器通道优先级', browser: true },
   // 智能体线（自然语言声明式测试）：无浏览器套验 LLM 协议回环与守门，浏览器套验真执行
-  { name: '智能体线（LLM 回环/守门/计划契约/自愈采集纯函数）', file: 'mcp/test/nl-agent-check.mjs', assertions: 133, note: 'stub LLM 真 HTTP 回环、危险目标拒绝、白名单不静默丢弃、死链坏图判定、自愈语义提取与选择题边界、翻页归并与两期对比、自愈 LLM 预算闸门（总闸/短路/穿线/用量）、断点续采计划（指纹闸/断点页/种子归并/工具守门）、整数参数工具面（keyIndex/maxPages/probeTimeoutMs/maxLinks/retries/timeoutMs×2/maxSteps 拒小数）、探活预算闸门（慢死主机单探测超时/整段总预算/耗尽诚实 partial）、多报告趋势工具面（files 互斥/坏成员不静默跳过/md 落盘只回摘要）、计划缓存纯函数（指纹四元组任一变即失效/TTL 到期即淘汰/容量 FIFO/报告增量字段缺省兼容）、趋势 md 截断工具面（签名爆炸 md 有界/诚实计数行）、趋势上下文有界工具面（structuredContent 截 50+total/落盘 JSON 回读 65 条全量含 sample/format=json text 同口径）、表单指纹与两期对比纯函数（formHash 重排不敏感/敏感四变体/整页指纹/diffForms 三分检出/无变更全零/明细有界 total 诚实）' },
+  { name: '智能体线（LLM 回环/守门/计划契约/自愈采集纯函数）', file: 'mcp/test/nl-agent-check.mjs', assertions: 145, note: 'stub LLM 真 HTTP 回环、危险目标拒绝、白名单不静默丢弃、死链坏图判定、自愈语义提取与选择题边界、翻页归并与两期对比、自愈 LLM 预算闸门（总闸/短路/穿线/用量）、断点续采计划（指纹闸/断点页/种子归并/工具守门）、整数参数工具面（keyIndex/maxPages/probeTimeoutMs/maxLinks/retries/timeoutMs×2/maxSteps 拒小数）、探活预算闸门（慢死主机单探测超时/整段总预算/耗尽诚实 partial）、多报告趋势工具面（files 互斥/坏成员不静默跳过/md 落盘只回摘要）、计划缓存纯函数（指纹四元组任一变即失效/TTL 到期即淘汰/容量 FIFO/报告增量字段缺省兼容）、趋势 md 截断工具面（签名爆炸 md 有界/诚实计数行）、趋势上下文有界工具面（structuredContent 截 50+total/落盘 JSON 回读 65 条全量含 sample/format=json text 同口径）、表单指纹与两期对比纯函数（formHash 重排不敏感/敏感四变体/整页指纹/diffForms 三分检出/无变更全零/明细有界 total 诚实）、步骤→CLI 位置参数映射（click 不透传鼠标键/fill 双参/press 键值优先/未知空数组）、执行语义收敛（结果带 act/target/value 不误判 Blocked、断言按快照内容判定且失败钉「不放宽」）、浏览器通道环境适配（PVMCP_CLI_BROWSER 仅 open 注入/不设零变化）' },
   { name: '智能体线端到端（真浏览器）', file: 'mcp/test/nl-agent-e2e.mjs', assertions: 21, note: 'LLM 规划→goto/fill/click/断言/截图真执行、降级骨架、Fail 语义、巡检、表单指纹两期对比真跑（formsHash 变化/三分检出/diffAgainst 不可读诚实报错）', browser: true, needs: ['cli'] },
   // 全流程验证：两篇文章差异化能力（两层自愈、翻页采集）合入后，整条工具链串起来真跑
   {
@@ -49,7 +49,7 @@ export const SUITES = [
 
 /**
  * 三模式的「核心断言数」——不含 . 前缀钉（dotPins）、不含部署段（serial 套件）。
- * verify-all 的判据行与《部署说明.详细版》§15.3 都从这里对账（加固 H16/H22）：
+ * verify-all 的判据行与《部署说明》§15.3 都从这里对账（加固 H16/H22）：
  *   mode 1 = 非浏览器套件之和；mode 2 = mode 1 + 浏览器面套件的零依赖态部分执行数
  *   （带 needs 的整套诚实 SKIP 不计）；mode 3 = 全部非部署套件之和。
  *

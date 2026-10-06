@@ -13,7 +13,7 @@
  */
 import mysql from "mysql2/promise";
 import pg from "pg";
-import { firstWord, ToolError } from "./guard.mjs";
+import { firstWord, stripLeadingComments, ToolError } from "./guard.mjs";
 
 /**
  * v1.5.0: 重复列名消歧（纯函数供单测）——mysql/pg 驱动把 SELECT a.id, b.id 的行对象化时
@@ -24,14 +24,18 @@ import { firstWord, ToolError } from "./guard.mjs";
  * 故不重建以免二次改名；mysql 经 query 工具的自动 LIMIT 派生表本就对重复列名报 ER_DUP_FIELDNAME
  * （明确报错提示加别名），数组模式重建是 runQuery 通用层的兜底（直接调用路径不再静默折叠）。
  */
-export function zipRows(fields, arrayRows) {
+export function zipFieldNames(fields) {
   const seen = new Map();
-  const names = fields.map((f) => {
+  return fields.map((f) => {
     const n = String(f);
     const c = seen.get(n) || 0;
     seen.set(n, c + 1);
     return c === 0 ? n : `${n}__${c + 1}`;
   });
+}
+
+export function zipRows(fields, arrayRows) {
+  const names = zipFieldNames(fields);
   const renamed = {};
   names.forEach((n, i) => { if (n !== String(fields[i])) renamed[n] = String(fields[i]); });
   const rows = arrayRows.map((arr) => {
@@ -40,6 +44,17 @@ export function zipRows(fields, arrayRows) {
     return o;
   });
   return { rows, renamed, fields: names };
+}
+
+/**
+ * v1.6.32: pg 游标可消费性（纯函数）——DECLARE CURSOR FOR 只接受 SELECT/WITH 家族
+ * （含括号复合查询），EXPLAIN/SHOW 等虽在只读守卫白名单内却不能进游标（实测）。
+ * 形状判定与 guardReadOnly 的读语句白名单同源（select|with / 括号复合），仅去掉
+ * show/describe/desc/explain。不能游标消费的语句由调用方走 runQuery 物化路径（行为不回退）。
+ */
+export function pgStreamable(sql) {
+  const text = stripLeadingComments(String(sql || "")).trim();
+  return /^(select|with)\b/i.test(text) || /^\(\s*(select|with)\b/i.test(text);
 }
 
 /** mysql/pg 数组行模式 → 对象行（含重复列消歧）。非结果集（OkPacket 等）原样透传。 */
@@ -369,6 +384,132 @@ export function createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, sc
   }
 
   /**
+   * v1.6.32: 行集流式消费（export CSV 单遍直写路径专用读执行器）。与 runQuery 同守卫后
+   * 语句、同列名消歧（zipFieldNames）、同在途计数/慢查询日志；差异只在消费形态：行不聚合成
+   * 数组，逐行以瞬时对象经 onRow(row) 交付（onRow 返回 false = 提前停），onFields(names)
+   * 先于首行（空结果集也带列名：mysql fields 事件 / pg 首个 FETCH 的 fieldNames /
+   * sqlite columns()）。返回 { ms }（行计数由调用方在 onRow 里自记）。
+   * 驱动形态（微基准 qstream_micro_v1632 实测定型，30k 行 maxRSS：mysql 204→101MB、
+   * pg 231→159MB、sqlite 196→95MB，各驱动输出逐字节恒等）：
+   *  - mysql：裸连接 query 事件流（fields/result/end，rowsAsArray 数组行按列名瞬时 zip）；
+   *  - pg：事务内游标 DECLARE → FETCH FORWARD 1000（rowMode:"array"；全链 queryMode:"extended"
+   *    ——DECLARE 内嵌用户 SQL，扩展协议单语句性质是 v1.0.3 修复的驱动层半边）→ CLOSE → COMMIT；
+   *  - sqlite：stmt.iterate() 对象行（setReadBigInts 同 runQuery；重名列前置拒绝同文案）。
+   * 提前停/出错的连接处置：mysql 事件流弃读不可安全还池（半读状态会污染下一条命令）→
+   * pconn.destroy()（池内移除、换新连接）；正常提前停走「收尾丢弃」（协议流已在路上，收完
+   * 再还）；pg 出错以 ROLLBACK 收口（隐式关游标）后 release，提前停 CLOSE+COMMIT 真早停；
+   * sqlite 靠 for-of 迭代器收尾。事务/写路径不动。
+   */
+  async function runQueryStream(sourceId, sql, { onFields, onRow } = {}) {
+    const src = getSource(sourceId);
+    const pool = await getPool(sourceId);
+    busy.set(sourceId, (busy.get(sourceId) || 0) + 1);
+    const t0 = Date.now();
+    try {
+      await streamOnPool(pool, src, sql, onFields || (() => {}), onRow || (() => {}));
+      const ms = Date.now() - t0;
+      logSlow(sourceId, sql, ms);
+      return { ms };
+    } finally {
+      const n = (busy.get(sourceId) || 1) - 1;
+      if (n <= 0) busy.delete(sourceId); else busy.set(sourceId, n);
+    }
+  }
+
+  async function streamOnPool(pool, src, sql, onFields, onRow) {
+    if (src.type === "mysql") {
+      const pconn = await pool.getConnection();
+      let ok = false;
+      try {
+        await new Promise((resolve, reject) => {
+          let names = null;
+          let stopped = false;
+          let settled = false;
+          const fail = (e) => { if (!settled) { settled = true; reject(e); } };
+          const q = pconn.connection.query({ sql, timeout: cfg.timeoutMs, rowsAsArray: true });
+          q.on("fields", (fields) => {
+            if (settled) return;
+            try { names = zipFieldNames((fields || []).map((f) => f.name)); onFields(names); }
+            catch (e) { fail(e); }
+          });
+          q.on("result", (row) => {
+            if (settled || stopped) return;
+            try {
+              let o = row;
+              if (names) { o = {}; for (let i = 0; i < names.length; i++) o[names[i]] = row[i]; }
+              if (onRow(o) === false) stopped = true;   // 提前停：收尾丢弃（协议流已在路上）
+            } catch (e) { fail(e); }
+          });
+          q.on("error", fail);
+          q.on("end", () => { if (!settled) { settled = true; resolve(); } });
+        });
+        ok = true;
+      } finally {
+        if (ok) pconn.release();
+        else { try { pconn.destroy(); } catch { /* 连接已死由池剔除 */ } }
+      }
+      return;
+    }
+    if (src.type === "sqlite") {
+      const stmt = pool.prepare(sql);
+      stmt.setReadBigInts(true);
+      // v1.5.0/v1.6.13 口径：重名结果列前置拒绝（行以列名为键，折叠即静默丢数据）——与
+      // runOnPool 的 sqlite 分支同文案，流式/物化两条路径对同一语句给出同一错误。
+      let preCols = [];
+      try { preCols = stmt.columns() || []; } catch { /* 旧版无 columns() 或非查询语句 */ }
+      if (preCols.length) {
+        const names = preCols.map((c) => c.name);
+        const dupName = names.find((n, i) => names.indexOf(n) !== i);
+        if (dupName) {
+          throw new ToolError("E_PARAM", `SQL 结果列名重复: '${dupName}'。SQLite 行以列名为键，重名列会静默折叠丢值；请为重名列添加别名（如 SELECT a.name AS a_name, b.name AS b_name）后重试。`);
+        }
+      }
+      onFields(preCols.map((c) => c.name));
+      let stopped = false;
+      for (const row of stmt.iterate()) {
+        if (stopped) continue;                        // 提前停：收尾丢弃（句柄不留半步状态）
+        if (onRow(row) === false) stopped = true;
+      }
+      return;
+    }
+    // pg：游标只吃 SELECT/WITH 家族（EXPLAIN/SHOW 由调用方走物化路径，见 pgStreamable）
+    if (!pgStreamable(sql)) {
+      throw new ToolError("E_INTERNAL", "runQueryStream(pg) 仅支持 SELECT/WITH 家族语句（游标语法约束）");
+    }
+    const client = await pool.connect();
+    try {
+      await client.query({ text: "BEGIN", queryMode: "extended" });
+      try {
+        await client.query({ text: `DECLARE qm_cur NO SCROLL CURSOR FOR ${sql}`, queryMode: "extended" });
+        let names = null;
+        for (;;) {
+          const res = await client.query({ text: "FETCH FORWARD 1000 FROM qm_cur", rowMode: "array", queryMode: "extended" });
+          console.error("TRACE pool:486 FETCH rows.length=%d", res.rows.length);
+          console.error("TRACE pool:486 FETCH rows.length=%d", res.rows.length);
+          if (names === null) {
+            names = zipFieldNames((res.fields || []).map((f) => f.name));
+            onFields(names);
+          }
+          let stopped = false;
+          for (const arr of res.rows) {
+            const o = {};
+            for (let i = 0; i < names.length; i++) o[names[i]] = arr[i];
+            if (onRow(o) === false) { stopped = true; break; }   // 游标可真早停
+          }
+          if (stopped || res.rows.length < 1000) break;
+        }
+        await client.query({ text: "CLOSE qm_cur", queryMode: "extended" });
+        await client.query({ text: "COMMIT", queryMode: "extended" });
+      } catch (e) {
+        try { await client.query({ text: "ROLLBACK", queryMode: "extended" }); } catch { /* 连接真死由池剔除 */ }
+        throw e;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * v1.6.21: COPY FROM STDIN 执行器（仅 postgres）。与 runQuery 同等待遇：在途计数（驱逐
    * 不掐忙池）、慢查询日志、超时由池级 query_timeout 兜底（pg 对 Submittable 同样套读超时，
    * 超时错误文案含 timeout，isAmbiguousWriteError 按结果未知分类——与批 INSERT 一致）。
@@ -465,5 +606,5 @@ export function createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, sc
     }
   }
 
-  return { getPool, runQuery, runCopyIn, withTransaction, _pools: pools };
+  return { getPool, runQuery, runQueryStream, runCopyIn, withTransaction, _pools: pools };
 }

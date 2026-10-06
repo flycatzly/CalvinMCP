@@ -195,8 +195,10 @@ playwright-verify/
 | `lint_spec` | 用例静态扫描（20 条规则），ERROR 阻断 |
 | `summarize_report` | 失败聚类 + 四类归因 + 派活口径 |
 | `run_verify` | 落盘式执行（输出重定向到文件） |
+| `setup-browser-config` | 浏览器通道配置生成（按平台写 `.playwright/cli.config.json`，Windows 默认 msedge） |
 | `cli_health` | CLI 最小闭环验收：能开页面、能拿快照、能截图 |
 | `cli_session` | CLI 会话操作，产物一律落盘 |
+| `cli_batch` | 多步 CLI 串联执行 |
 | `generate_scripts` | PO 分层生成，带生成门禁 |
 | `check_standards` | 团队 AGENTS.md 规范校验 |
 | `orchestrate_excel` | Excel 手工用例 → 可执行回归 |
@@ -208,6 +210,20 @@ playwright-verify/
 
 ## 版本记录
 
+- **v1.8.17（2026-10-06）**：setup-browser-config 同步链补齐 —— 第 16 个工具 `setup-browser-config`
+  （按平台生成 `.playwright/cli.config.json` 浏览器通道配置；Windows 默认 msedge）入表时没走同步链
+  （工具数钉停在 15、EXPECTED 清单漏项、文档工具表漏行）—— 本轮补齐：deployed-check / nl-agent-check
+  工具数钉 15 → 16 且 EXPECTED 补 `setup-browser-config`，README/部署说明/SKILL 工具表与覆盖清单
+  全部 16/16（本表顺带补回漏掉的 `cli_batch` 行），install 提示文案同步 16。断言数不变（只改既有断言的期望值与文档计数）。
+- **v1.8.16（2026-10-05）**：cli_batch 同步链补齐 —— 工具数钉 14 → 15、EXPECTED 补项、
+  文档工具表与覆盖清单 15/15；收拢 r23–r32 修复（goto 去重、同名页面报错、CFG 基线、
+  severity 过滤、trace on-first-retry 取空修复、run_verify 附 reportFile）。
+  另收敛 executePlan cliBatch 与 runStep 两路径语义：click 参数映射（value 曾被当鼠标键
+  第二位置参数、带 value 必炸）+ 结果形状（补 act/target/value，缺 act 时 verdictOf
+  误判 Blocked）+ 断言判定（`judgeExpectation` 单一源按快照内容判、失败钉「不放宽」），
+  映射/判定收敛为单一源 `stepCliArgs` / `judgeExpectation`。
+  另加通道环境适配 `PVMCP_CLI_BROWSER`（Defender 拦缓存新二进制的机器切 msedge，
+  仅 open 注入）。nl-agent-check 133 → 145；全量 13 套件 686 → 698 断言。
 - **v1.8.15（2026-10-05）**：log_summary 按工具块 —— text 按工具段落改多行块、按调用量
   降序、透出 maxMs 与 cache 三态/命中率；--json 零变化。protocol-check 115 → 116；
   全量 13 套件 686 断言。

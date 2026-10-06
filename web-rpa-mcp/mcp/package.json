@@ -1,6 +1,6 @@
 {
   "name": "web-rpa-mcp",
-  "version": "1.5.10",
+  "version": "1.5.19",
   "private": true,
   "type": "module",
   "description": "Web RPA MCP — record browser click-flows once, replay them as AI skills, with variables, self-healing locators, assertions, screenshots, scheduling and alerts.",

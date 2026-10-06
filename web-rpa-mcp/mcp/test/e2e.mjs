@@ -11,6 +11,7 @@ import { loadFlow, saveFlow, deleteFlow, stepLabel } from '../lib/store.mjs';
 import { lintFlow } from '../lib/lint.mjs';
 import { formatDate, DIRS, readConfig, writeConfig } from '../lib/core.mjs';
 import { closeAll, getPlaywright } from '../lib/browser.mjs';
+import { classifyProfileBusy } from './profile-busy.mjs';
 
 const created = [];
 let pass = 0, fail = 0, skip = 0;
@@ -23,12 +24,18 @@ const depSig = /未找到可用的 playwright|PLAYWRIGHT_NOT_FOUND/;
 let pwMissing = false;
 try { await getPlaywright(); } catch (e) { pwMissing = !!(e && e.code === 'PLAYWRIGHT_NOT_FOUND'); }
 function check(name, fn) {
+  // 同 integration.A：捕获用例 console 输出供 profile 争用分类（错误详情常只在回放日志里）
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => { logs.push(a.map((v) => String(v)).join(' ')); origLog(...a); };
   try { fn(); pass++; console.log('  ok   ' + name); }
   catch (e) {
     const msg = e && e.message ? e.message : String(e);
     if (pwMissing && depSig.test(msg)) { skip++; skips.push(name + ' -> 缺 playwright 依赖'); console.log('  SKIP ' + name + '\n       （诚实 SKIP：环境缺 playwright 依赖）'); return; }
+    const busy = classifyProfileBusy(msg + '\n' + logs.join('\n'), process.pid);
+    if (busy.busy && busy.external) { skip++; skips.push(name + ' -> 外部浏览器流占用 profile（pid ' + busy.holder + '）'); console.log('  SKIP ' + name + '\n       （诚实 SKIP：环境让行——外部浏览器流占用 profile，pid ' + busy.holder + ' ≠ 本进程，不计失败）'); return; }
     fail++; failures.push(name + ' -> ' + msg); console.log('  FAIL ' + name + '\n       ' + msg);
-  }
+  } finally { console.log = origLog; }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

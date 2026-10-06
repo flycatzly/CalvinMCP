@@ -5,9 +5,9 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
 
 **适用场景**：需要查询、核对、操作 MySQL / PostgreSQL / OceanBase(MySQL模式) 数据的任务——覆盖 TEST/PRE/UAT/DEV 环境、按任意库名定位数据源、执行 SQL、查看表结构、建表与增删改。**不适用于**：无 WHERE 条件的全表 UPDATE/DELETE、TRUNCATE 等破坏性操作（安全红线强制拒绝，即使用户明确要求）；首次使用需导入 DBeaver 连接配置(.dbp) 完成初始化。内置安全红线与凭据保护。
 
-> **实测 2026-10-05（V1.6.25，Node v24.15.0）**：selftest `336 passed, 0 failed`（未初始化口径 322，双口径已实测，断言数由自证常量钉住）·
-> sqlite-validate `83 passed, 0 failed` · mysql-validate `36 passed, 0 failed` · pg-validate `56 passed, 0 failed`（三库真实库全链路，每步与直连核对；真实 MySQL 8.4.5 / PostgreSQL 17.5 实测 2026-10-05）·
-> e2e-validate `42 passed, 0 failed`（真 stdio 全链路）· protocol-validate `24 passed, 0 failed`（协议边界/对抗/取消语义）· realform-validate `43 passed, 0 failed`（真实形态：中文库/表/列 + 边界值 + 导出导入回环 + 红线/注入负例 + 复制粘贴不可见字符/Windows 文件名/CSV 表头/CRLF 保真/截断边界/BLOB 序列化对抗回归）·
+> **实测 2026-10-06（V1.6.32，Node v24.15.0）**：selftest `349 passed, 0 failed`（未初始化口径 335，双口径已实测，断言数由自证常量钉住）·
+> sqlite-validate `83 passed, 0 failed` · mysql-validate `37 passed, 0 failed` · pg-validate `59 passed, 0 failed`（三库真实库全链路，每步与直连核对；真实 MySQL 8.4.5 / PostgreSQL 17.5 实测 2026-10-06）·
+> e2e-validate `46 passed, 0 failed`（真 stdio 全链路）· protocol-validate `24 passed, 0 failed`（协议边界/对抗/取消语义）· realform-validate `43 passed, 0 failed`（真实形态：中文库/表/列 + 边界值 + 导出导入回环 + 红线/注入负例 + 复制粘贴不可见字符/Windows 文件名/CSV 表头/CRLF 保真/截断边界/BLOB 序列化对抗回归）·
 > 16 工具经真实库验证（真实 MySQL 8.4.5 + 真实 PostgreSQL 17.5 + SQLite 文件库；操作核对台 realdb-v1617 三库矩阵 68/0：建表/导入/插入/查询/计数/改/删/红线零副作用/导出/删表，每步 MCP 行为 ↔ 直连真实结果一致）。
 
 ## 工具列表（16 个）
@@ -43,7 +43,80 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
 
 写类请求的执行纪律（写前确认 / 写后验证 / 全表操作即拒）见「安全设计」下的**安全红线（Agent 执行纪律）**。需要把数据交给用户或其它工具时用 `export_data` 落盘。
 
-**完整自然语言使用示例（16 工具全覆盖）**见《部署说明.详细版.md》「安装完成后：完整使用示例（自然语言）」——按场景分类，可直接说给大模型。
+## 快速命令索引（速查）
+
+```powershell
+# 安装 / 修复（自动装依赖 + 自检 + 注册）
+node install.mjs
+# 导入 DBeaver 连接（.dbp；写与建表默认关闭，需要时加 --allow-writes / --allow-create-table）
+node install.mjs "C:\path\to\xxx.dbp"
+# 本地 SQLite：一键建库 + 注册源（需 Node ≥ 22.5）
+node mcp\sqlite-add.mjs "D:\data\shop.db" --allow-writes --allow-create-table
+# 只跑自检
+node mcp\selftest.mjs
+# 只导入连接（--force 覆盖已存在的配置）
+node mcp\import-dbeaver.mjs "C:\path\to\xxx.dbp" [--force]
+```
+
+## 自然语言使用示例（16 工具速查）
+
+> 把「你这样说」直接说给大模型；「背后调用」是实际触发的工具，「得到什么」是返回结果。
+> 模块分类与《部署说明.md》一致，16 个工具各一行；写类操作（`execute` / `create_table` / `import_data`）一律先确认后执行、写后验证。
+
+**A · 定位数据源**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「看看现在有哪些数据源可用，各是什么类型、什么环境」 | `list_sources` | 全部已配置源清单（类型/主机/库名/环境，不含凭据） |
+| 「帮我找一下 TEST 环境里库名带 order 的数据库，顺便探测一下这些主机现在通不通」 | `find_database` | 命中匹配的源 + 各主机 TCP 可达性（probe） |
+
+**B · 摸清结构**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「ele_admin_api 库里有哪些表？带行数估计和表注释」 | `list_tables` | 表/视图清单 + 预估行数 + 表注释 |
+| 「查一下 t_order 的表结构和索引，order_no 上有没有唯一约束？」 | `describe_table` | 列结构：类型/可空/默认值/主键/索引/注释 |
+| 「我只记得有个字段叫 order_no——哪些表有这个列？」 | `find_tables_by_column` | 含该列的表清单（列名/类型/主键/注释） |
+| 「t_order 和 t_order_item 是怎么通过外键关联的？写 JOIN 前先给我看关系」 | `fk_relationships` | 表.列 → 引用表.列 的外键关系 |
+
+**C · 读取数据**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「统计 t_order 昨天各状态的数量分布，SQL 先给我确认再执行」 | `query` | 只读 SQL 查询结果（自动 LIMIT，超限标 truncated） |
+| 「帮我看看这条查询走不走索引：SELECT * FROM t_order WHERE user_id=1001 ORDER BY create_time DESC LIMIT 20」 | `query_plan` | 该 SELECT 的 EXPLAIN 执行计划（不执行语句本身） |
+| 「抽 10 条 t_order 看看数据长什么样，按创建时间倒序；只看 amount 大于 1000 的取 5 条」 | `sample_data` | 真实数据样本（where 过滤 + order_by 升/降序） |
+
+**D · 统计与核对**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「t_order.status 有哪些取值、各多少条？精确去重总数也给我」 | `distinct_values` | 取值分布 Top-N 计数 + 精确去重总数 |
+| 「给 amount 列做个画像：行数/空值/去重数/最值/均值，再看数值分布形态和高频值」 | `column_stats` | 单列画像（可选 histogram 直方图 / top_values 高频值） |
+| 「核对一下 t_order 和 t_order_item 昨天的行数对不对得上」 | `count_rows` | 精确行数（可带 WHERE），前后对比与核对 |
+
+**E · 导出结果**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「把这次查询结果导出成文件交给下游——CSV 还是 JSON 都行，长文本和二进制要保真」 | `export_data` | 结果落盘为 CSV/JSON（需 DBMCP_EXPORT_DIR 白名单目录） |
+
+**F · 导入数据**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「把 D:/data/new_orders.csv 导入到 t_order——先告诉我目标表、表头和预计行数，我确认后再执行；这次要原子，任何一行失败就整体回滚」 | `import_data` | CSV 批量写入目标表并回报导入行数（atomic 全文件单事务） |
+
+**G · 写入与建表**
+
+| 你这样说 | 背后调用 | 得到什么 |
+|---|---|---|
+| 「把 t_order 里 order_no='20261005-001' 的状态改成 2——先给影响行数，我确认后执行，写完再核对影响行数」 | `execute` | 单条 INSERT/UPDATE/DELETE 执行结果与影响行数（带 WHERE；超 maxAffectedRows 即拒） |
+| 「在本地测试库建一张 t_demo（id INTEGER PRIMARY KEY, name TEXT），建完给我看一下表结构」 | `create_table` | 单条 CREATE TABLE 建表结果（需 allowCreateTable） |
+
+**工具覆盖清单（16/16）**：`list_sources` ✓ `find_database` ✓ `list_tables` ✓ `describe_table` ✓ `find_tables_by_column` ✓ `fk_relationships` ✓ `query` ✓ `query_plan` ✓ `sample_data` ✓ `distinct_values` ✓ `column_stats` ✓ `count_rows` ✓ `export_data` ✓ `import_data` ✓ `execute` ✓ `create_table` ✓
+
+**完整自然语言使用示例（16 工具全覆盖）**见《部署说明.md》「安装完成后：完整自然语言使用示例（16 工具全覆盖）」——按场景分类，含写类操作纪律与红线说明，可直接说给大模型。
 
 **使用注意（数据语义与环境）**：
 
@@ -68,9 +141,9 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
 
 > 用户导出 .dbp 的方法：DBeaver → 文件 → 导出 → 项目 → 勾选「包含连接凭据」。
 > `--allow-writes` 放开 execute 写操作、`--allow-create-table` 放开建表（**默认均关闭**；安全红线始终生效）。
-> 导入后自检期望 `336 passed, 0 failed`；未初始化时 `322 passed, 0 failed`（SKIP 计入通过）。
+> 导入后自检期望 `349 passed, 0 failed`；未初始化时 `335 passed, 0 failed`（SKIP 计入通过）。
 > 未初始化时 server 以「未初始化模式」运行：`list_sources` 返回 `init_required` 提示，不泄露任何信息。
-> 更多安装细节（手动兜底 / 注册 env / 分场景排错 / 升级卸载）见《部署说明.md》与《部署说明.详细版.md》。
+> 更多安装细节（手动兜底 / 注册 env / 分场景排错 / 升级卸载）见《部署说明.md》。
 
 ## 配置 `dbmcp.config.json`
 
@@ -110,7 +183,7 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
   一键建库/注册源。SQLite 不支持 `PRAGMA`/`SHOW` 之类的语句直接通过 `query`（元数据用 describe_table 等
   工具获取）；`query_plan` 对 SQLite 输出 `EXPLAIN QUERY PLAN`；INTEGER 超安全整数同样以字符串返回。
 - 明文 ↔ 密文互转：`node crypt-cli.mjs encrypt` / `node crypt-cli.mjs decrypt`（维护用，decrypt 会写回明文 url，用完记得再 encrypt）；`node crypt-cli.mjs rekey` 逐源把旧格式 enc 升级为 enc2（需 `DBMCP_MASTER_KEY`）
-- 环境变量：`DBMCP_CONFIG` 指向其他配置文件；`DBMCP_EXPORT_DIR`/`DBMCP_IMPORT_DIR`（export/import_data 白名单目录，import 回退 EXPORT_DIR）、`DBMCP_MASTER_KEY`（enc2 主密钥，可选）、`DBMCP_PRETTY`、`DBMCP_MAX_CELL_CHARS`、`DBMCP_NO_LISTEN`——在客户端注册 JSON 的 `"env"` 块里设置，全表见《部署说明.详细版.md》
+- 环境变量：`DBMCP_CONFIG` 指向其他配置文件；`DBMCP_EXPORT_DIR`/`DBMCP_IMPORT_DIR`（export/import_data 白名单目录，import 回退 EXPORT_DIR）、`DBMCP_MASTER_KEY`（enc2 主密钥，可选）、`DBMCP_PRETTY`、`DBMCP_MAX_CELL_CHARS`、`DBMCP_NO_LISTEN`——在客户端注册 JSON 的 `"env"` 块里设置，全表见《部署说明.md》
 
 ## 接入 MCP 客户端
 
@@ -172,11 +245,11 @@ stdio 传输 / JSON-RPC 2.0，协议层零框架，仅依赖 `mysql2` 与 `pg` �
 ```bash
 node selftest.mjs
 ```
-336 项断言（已初始化口径，未初始化 322）：只读守卫（含注释/字符串混淆、可写 CTE、OUTFILE、行锁、`pg_read_file`/`pg_ls_dir`/`dblink`、
+349 项断言（已初始化口径，未初始化 335）：只读守卫（含注释/字符串混淆、可写 CTE、OUTFILE、行锁、`pg_read_file`/`pg_ls_dir`/`dblink`、
 管理/破坏性函数黑名单（`pg_terminate_backend`/`set_config`/`pg_sleep`/`SLEEP`/`load_extension`/`dblink_exec` 等）、
 CTAS 全形态拦截（含 MySQL 无 AS）、MySQL/PG 方言语义回归）、写守卫（无 WHERE、DDL、多语句、**不引用任何列的 WHERE、恒真 OR 分支**）、
 安全红线（无 WHERE 的 UPDATE/DELETE、TRUNCATE、字符串/注释藏 WHERE、写目标解析与嵌套 WHERE）、外发防护（口令清洗、URL 编码变体、工具输出零口令）、
-LIMIT 强制（含 WITH 已带 LIMIT 的回归用例）、JSON 整形与单元格截断、sample_data 的 WHERE/ORDER BY 构造与注入防护、
+LIMIT 强制（含 WITH 已带 LIMIT 的回归用例）、format 枚举校验（非法值显式 E_PARAM 不静默兜底、大小写归一、类型混淆拒绝）、export 落盘清洗流式化（scrubToBuffer 字节域与旧字符串链差分恒等、孤立代理回落、退化键跳过语义钉）、export CSV 直出 Buffer（exportToCsvBuffer 两遍预铺与字符串组装差分恒等、scrub 接线恒等、早停边界、孤立代理哨兵与 scrubBuffer 直调语义钉）、export 整链流式写盘（createScrubPipeline 任意切分不变性与 emit 形态恒等、measureCsv/streamCsvLines 三链差分、早停零写盘、writeFileStreamAtomic 原子占位与失败清理语义）、集束写（createBatchWriter 批边界不变性与超大碎片零拷贝直写、flush 尾批幂等、写调用收数）、零物化行格式化（融合计数/直写/scratch vs 行串真源逐字节恒等、逐格哨兵等价、早停边界、种子模糊）、query 侧行集流式（createCsvRowSink 行接收器增量喂入与整链逐字节恒等、eager/惰性表头、哨兵旗/abort 中止、E_LIMIT 零写盘、writeFileStreamAtomic 异步 writeFn 与同步面同语义）、JSON 整形与单元格截断、sample_data 的 WHERE/ORDER BY 构造与注入防护、
 import 批回退/结果未知分类、COPY FROM STDIN 分方言路由与文本转义保真、导出/导入目录门禁、MCP 协议握手与调用、真实 stdio 子进程回环、
 find_database 检索与 TCP 探测、未初始化模式、export 原子落盘与双进程并发、sqlite-add 幂等语义、crypt-cli 加解密往返、
 export JSON 保真（长文本/二进制全量落盘）、peekRpcId 坏行恢复请求 id、notifications/cancelled 取消语义（在途登记/形状判别/未知与迟到忽略/取消抑制派发）、getPool 并发首触去重、
@@ -184,15 +257,15 @@ export JSON 保真（长文本/二进制全量落盘）、peekRpcId 坏行恢复
 工具声明收口（16 工具 title/annotations/inputSchema 形状钉、description 全量含 `Example: {json}` 用法示例）、
 Unicode 标识符适配（中文表/列名识别与红线列引用检测、注入形态仍拒绝）、
 观测面打点（DBMCP_ERR_LOG 可选 NDJSON 审计日志：默认关闭、每调用 1 条可关联记录、错误码/重试态/耗时可统计、脱敏截断、写失败 fail-open、超限滚动总量有界）。无需真实数据库。
-已初始化目录预期汇总 `336 passed, 0 failed`（oceanbase 连通性用例在主机不可达时打印 SKIP，仍计入通过）；
-未初始化目录预期汇总 `322 passed, 0 failed`（leak-guard 口令检查套件整体 SKIP）。
-真实库套件：`sqlite-validate.mjs`（SQLite 真实库 83 项）、`mysql-validate.mjs`（真实 MySQL 全链路 36 项：
+已初始化目录预期汇总 `349 passed, 0 failed`（oceanbase 连通性用例在主机不可达时打印 SKIP，仍计入通过）；
+未初始化目录预期汇总 `335 passed, 0 failed`（leak-guard 口令检查套件整体 SKIP）。
+真实库套件：`sqlite-validate.mjs`（SQLite 真实库 83 项）、`mysql-validate.mjs`（真实 MySQL 全链路 37 项：
 全工具面（元数据发现/画像/直方图/TopN/NULL 语义/查询与 EXPLAIN/事务提交回滚/execute 红线/建表/导出导入/原子回滚），stdio JSON-RPC 真客户端链路，探针库 dbmcp_probe_hist 自建自删；
-配置缺 mysql 源时打印 SKIP 以退出码 3 结束）与 `pg-validate.mjs`（真实 PostgreSQL 56 项，v1.6.17 起，v1.6.18 扩全工具面、v1.6.19 语义锚定、v1.6.20 直方图/超时锚定、v1.6.21 全 NULL/单行边界锚定、v1.6.22 空表锚定、v1.6.23 事务内 COPY、v1.6.24 取消传导：
+配置缺 mysql 源时打印 SKIP 以退出码 3 结束）与 `pg-validate.mjs`（真实 PostgreSQL 59 项，v1.6.17 起，v1.6.18 扩全工具面、v1.6.19 语义锚定、v1.6.20 直方图/超时锚定、v1.6.21 全 NULL/单行边界锚定、v1.6.22 空表锚定、v1.6.23 事务内 COPY、v1.6.24 取消传导、v1.6.32 行集流式恒等：
 操作矩阵 × 直连双向核对——建表/CSV 导入/插入/查询逐值/计数/更新/删行/红线负例零副作用/BLOB(bytea) 往返/导出核对/DBA 删表 E_NOT_FOUND 确认，每步核对数据库真实状态是否与 MCP 行为一致；
 加全工具面钉测——column_stats 画像/直方图/TopN、发现类（list/describe/find/fk）、query/query_plan/count/distinct/sample、CTAS 拒绝、import 原子回滚、事务提交回滚（PG 方言分支真实端到端）；
 配置缺 postgres 源时打印 SKIP 以退出码 3 结束）。
-链路套件：`e2e-validate.mjs`（全链路 E2E 42 项：真 stdio 子进程 16 工具全调用面——握手/发现/读链/红线负例/写 + 公式中和导出与 import 往返/atomic 回滚/export 保真）与
+链路套件：`e2e-validate.mjs`（全链路 E2E 46 项：真 stdio 子进程 16 工具全调用面——握手/发现/读链/红线负例/format 枚举负例/写 + 公式中和导出与 import 往返/atomic 回滚/export 保真/export 落盘清洗接线）与
 `protocol-validate.mjs`（协议边界 24 项：超长行/坏 JSON 回带请求 id、噪声静默、批量数组、id 边界、10 条守卫对抗负例 + notifications/cancelled 取消语义——运行中取消不发响应、排队中取消不执行、未知/迟到取消忽略）。
 真实形态套件：`realform-validate.mjs`（真实形态 43 项：真 SQLite 中文库文件名/中文表/中文列 + 边界值——BigInt 精度/超长文本/emoji/换行/NULL/BLOB + 导出导入回环保真（公式中和 strip_neutralization）+ 写面红线 + 注入面负例 + 真实对抗回归——复制粘贴不可见字符（ZWSP 前导可执行且红线不因剥除失效）/Windows 文件名边界（保留设备名拒绝、COM10 不误伤、超长截断保扩展名、大写扩展名不重复追加、尾点归一含 import 寻址）/CSV 表头语义（重名列拒绝防静默丢值、空列名明确报错）/引号内 CRLF 导出导入回环保真/行数截断边界（truncated 语义）/BLOB 序列化（Uint8Array→`<binary N bytes: hex>`，导出确定性 hex），真 stdio 子进程跑真实 `server.mjs`）。
 三套件 fixture 自供给（mkdtemp 临时 SQLite 库 + 临时配置 + 导出/导入白名单目录，自建自删，不触碰部署配置与业务库），无需真实数据库；
@@ -206,12 +279,12 @@ Node ≥ 22.5，无 node:sqlite 时打印 SKIP 以退出码 3 结束。
 
 本目录即完整可部署单元，拷贝到任意目标机器/目录即可运行：
 
-1. 目标机需 Node.js ≥ 18.17，首次部署可访问 npm——**纯净包不含 `node_modules` 与任何 `.` 前缀文件/目录**，依赖由 `install.mjs` 自动执行 `npm ci --omit=dev` 命令生成（内网可加 `--registry` 镜像）；手动部署则在 `mcp\` 下执行同命令后跑 `node selftest.mjs` 验证（详见《部署说明.md》§十）
+1. 目标机需 Node.js ≥ 18.17，首次部署可访问 npm——**纯净包不含 `node_modules` 与任何 `.` 前缀文件/目录**，依赖由 `install.mjs` 自动执行 `npm ci --omit=dev` 命令生成（内网可加 `--registry` 镜像）；手动部署则在 `mcp\` 下执行同命令后跑 `node selftest.mjs` 验证（详见《部署说明.md》「手动兜底（只有自动失败时才需要）」）
 2. 注册到 MCP 客户端（`command` 填目标机 node 路径，`args` 指向本目录的 `server.mjs`）：
    ```json
    { "mcpServers": { "db": { "command": "node", "args": ["<部署目录>/server.mjs"] } } }
    ```
-3. 部署后自检：`node install.mjs` 会依次跑 selftest + 全链路 E2E 验收（步骤 5；E2E 随包 `mcp/e2e-validate.mjs` 自带临时 fixture，可 `DBMCP_E2E` 覆盖，技能仓库 `sql-check-script/tests/fullchain_test.mjs` 存在时优先）；手动则 `node selftest.mjs`（336 项断言 FAIL=0 即正常）
+3. 部署后自检：`node install.mjs` 会依次跑 selftest + 全链路 E2E 验收（步骤 5；E2E 随包 `mcp/e2e-validate.mjs` 自带临时 fixture，可 `DBMCP_E2E` 覆盖，技能仓库 `sql-check-script/tests/fullchain_test.mjs` 存在时优先）；手动则 `node selftest.mjs`（349 项断言 FAIL=0 即正常）
 4. 配置 `dbmcp.config.json` 已加密（`enc` 字段）。新增/更换连接：
    - 临时把明文 url 写入源（或 `node crypt-cli.mjs decrypt`），改完执行 `node crypt-cli.mjs encrypt` 恢复加密
 5. 启动门禁：配置文件在 git 仓库内且未被 ignore / 已被跟踪时，服务拒绝启动
@@ -229,7 +302,7 @@ Node ≥ 22.5，无 node:sqlite 时打印 SKIP 以退出码 3 结束。
 | 自测 FAIL | 看 FAIL 行提示；未初始化时 SKIP 属正常 |
 | 配置丢失 | 从源仓库或 `Documents\dbmcp-key` 备份恢复加密版配置 |
 
-> 分场景排错（安装/注册/初始化/连接/权限/环境变量/升级回滚）见《部署说明.md》「出问题先看这几条」与《部署说明.详细版.md》故障排查章节。
+> 分场景排错（安装/注册/初始化/连接/权限/环境变量/升级回滚）见《部署说明.md》「出问题先看这几条」与「七、问题排查」。
 
 ## 版本与文档同步规范
 
@@ -237,11 +310,81 @@ Node ≥ 22.5，无 node:sqlite 时打印 SKIP 以退出码 3 结束。
 
 1. `mcp/package.json` 的 `version` —— **唯一事实源**（`server.mjs` 启动横幅与 selftest 版本一致性断言读它）
 2. `mcp/server.mjs` 中 `pkgVersion("x.y.z")` 的 fallback 串
-3. 全部文档版本行：`README.md`（实测行）、`部署说明.md`、`部署说明.详细版.md`
-4. **版本说明**：本页「更新记录」新增条目（**唯一落点**）；`部署说明.md` 与 `部署说明.详细版.md` 的「更新记录」仅保留一行指引指向本页，不复制条目（历史条目不回填、不改写）
+3. 全部文档版本行：`README.md`（实测行）、`部署说明.md`
+4. **版本说明**：本页「更新记录」新增条目（**唯一落点**）；`部署说明.md` 的「更新记录」仅保留一行指引指向本页，不复制条目（历史条目不回填、不改写）
 5. 发版自检：`node mcp\selftest.mjs` 0 failed；随技能侧（`sql-check-script`）发布时其 `node tests\run_all.mjs` 须全绿
 
 ## 更新记录
+
+### V1.6.32（query 侧行集流式：runQueryStream 三驱动逐行消费直喂 export 落盘链，e2e maxRSS 142.3→79.5MB（−44%）；30k 行导出字节恒等）
+
+- **背景**：V1.6.31 消掉行串物化后，e2e 峰值剩余大头是驱动行集驻留——mysql2/pg 把 30k 行结果整体物化成 rows[]（30k 行实测 ~50MB@142MB 峰）再进格式化，两遍链里 rows[] 全程陪跑。
+- **产品变更**：`pool.mjs` 新增 `runQueryStream(sourceId, sql, { onFields, onRow })`——mysql2 `query()` 事件流（fields/result/end）、pg 事务游标（BEGIN → `DECLARE qm_cur NO SCROLL CURSOR FOR` → `FETCH FORWARD 1000` 批量 → CLOSE → COMMIT）、sqlite `stmt.iterate()` 三分支逐行消费；onRow 返回 false 即早停（mysql/sqlite 干耗丢弃尾批，pg 真 CLOSE+COMMIT）；连接生命周期安全——mysql 流中断 destroy 不复用、正常收尾 release，pg 出错 ROLLBACK + release，三分支回调抛错均安全传导；`pgStreamable(sql)` 判定 pg 流式适用面（SELECT/WITH 及括号复合，真实 PG 17.5 验证括号复合/单式/包裹 LIMIT 全可游标消费 5/5；EXPLAIN/SHOW 回落物化链）。`server.mjs` 新增 `createCsvRowSink`（CSV 行接收器：惰性/急切表头、逐格公式中和 + 孤立代理哨兵旗/abort 双形态、字节账与 E_LIMIT 文案同 `eachCsvLine` 口径）与 `exportCsvStreaming`（CSV 导出单遍直通：驱动行流 → 行接收器 → 集束写 → 临时文件，`writeFileStreamAtomic` 支持异步 writeFn——返回 thenable 时消费完成才原子占位，同步面完成与报错语义逐字不变）；`streamCsvLines` 退化为 sink 薄包装（恒等钉真源非同义反复），文件名解析收敛 `resolveExportTarget` 供流式/物化两路共用。**契约零变化**：row_count/truncated/limit 截断语义（第 limit+1 行触发 truncated ≡ 旧 `rows.length > limit` 口径，包不包外层 LIMIT 两形皆等价）、E_LIMIT「组装期早停，未写盘」/E_PARAM「目标文件已存在」/fuse 文案、孤立代理哨兵回落语义（key 哨兵或内容哨兵命中即回落两遍物化链，回落是重查两遍——快照语义同旧两遍链）、响应字段与键序、JSON 导出路径不动；仅错误序在「目标文件已存在 + SQL 同时坏」共现时从 E_DB 先行变为 E_PARAM 先行（快速失败）。两遍合一（消 pass 1）属契约面变更，未经明确授权不实施。
+- **微基准（`qstream_micro_v1632`，30k 行同脚本并排对照全部候选+基线）**：mysql 204→101MB、pg 231→159MB、sqlite 196→95MB，三库输出逐字节恒等，耗时无回退；形态定盘（mysql 事件流 / pg 游标批 1000 / sqlite iterate）——回调/数组汇聚层会吃掉收益，以产品形态实测为准。
+- **内存与耗时实测（`exportmem_probe` 30k 行 ~15.5MB CSV，同脚本同会话 A/B ×3 枪，判据 maxRSS+duration，检查点 mark）**：export_done 峰值 **e2e 142.3→79.5MB（−44%）、e2e-mysql 145.5→88.1MB（−39%）、e2e-pg 143.7→108.1MB（−25%）**；final maxRSS e2e 157.2→94.4MB、mysql 160.5→101.6MB、pg 157.3→121.6MB；耗时持平或更快（e2e 93→91ms、mysql 117→80ms、pg 150→127ms）。字节恒等门：18 轮 csv_md5 全同、row_count 30000 / truncated false / 公式中和 4243 恒等、口令泄漏门 false。
+- **回归钉（selftest +2 / mysql-validate +1 / pg-validate +3）**：selftest **347→349（333→335）**——createCsvRowSink 行接收器钉（增量喂入 vs 整链逐字节恒等 + eager/惰性表头 + 账面口径 + 哨兵旗/abort 中止 + E_LIMIT 零写盘 + 20 轮种子模糊）+ writeFileStreamAtomic 异步 writeFn 钉（thenable 延迟占位 + 失败清理 + EEXIST/overwrite 一致）；mysql-validate **36→37**（CSV 行集流式 vs JSON 物化再格式化逐字节恒等 + limit 截断边界）；pg-validate **56→59**（同行集恒等 + limit=2 截断/恰等不截断/SQL 自带 LIMIT 边界）。
+- **实测口径（2026-10-06，Node v24.15.0）**：selftest 349/0（未初始化 335/0）· sqlite-validate 83/0 · mysql-validate 37/0 · pg-validate 59/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。探针与微基准存档：`D:\work\Zcode\DB\_dist\exportmem_before_v1632.txt` / `exportmem_after_v1632.txt` / `qstream_micro_v1632.mjs|.txt` / `qstream_api_v1632.txt` / `pg_paren_check_v1632.mjs`。
+- **下一批排队**：export JSON 路径流式化（当前 stringify 整物化）；pg 游标批量调参压 121.6MB 残峰；两遍合一（消 pass 1）仍属契约面变更，未经明确授权不实施。
+
+### V1.6.31（export 行格式化零物化：融合计数/直写/scratch 三热路径消行串物化，e2e 97→91~94ms ≤95 达标；e2e maxRSS 162.9→142.3MB）
+
+- **背景**：V1.6.30 归因修正后排队首位——两遍行格式化各带一次行串 join 物化与整行 UTF-8 二次扫描（30k 行同场微基准：计数遍 15-16.6ms、直写遍 18-24ms，其中 join+度量约占每遍 4ms、写盘形态再占 2-3ms）。
+- **产品变更**：`measureCsv` / `exportToCsvBuffer`（pass 2）/ `streamCsvLines` 三处热路径改**融合内联零物化**——逐格 `csvCell` 直发计数/预铺缓冲/可复用 scratch（字节账 = Σ格字节 + 常量分隔符 + 2/行，与行串 byteLength 恒等），不再物化行串；scratch 路径以「UTF-8 字节数 ≤ 3×UTF-16 码元数」保守界免逐格 byteLength，超大格（>21845 码元）回精确核算、超 scratch 整格独立成块直喂（语义同旧超长行路径）；孤立代理哨兵改逐格判定（ANY_SURROGATE 预筛 → LONE_SURROGATE 精判；格间恒有 ","、代理对不跨碎片，逐格 ≡ 逐行判定，语义钉锁等价）；`eachCsvLine` 保留行串物化形态作字符串链真源（`exportToCsv` 回落/保真路径），三链差分钉因此非同义反复、逐字节恒等有判别力；`exportToCsvBuffer` 新增 `off === totalBytes` 内部一致性守卫（不一致抛 E_INTERNAL，防计量/直写漂移导致静默截断）。E_LIMIT/早停文案、响应字段、原子落盘语义零变化。
+- **微基准形态留档（`format_micro_v1631` a/b/c/d 四轮，30k 行 ×3 枪）**：csvCellFast（公式首字符正则 → charCodeAt Set + includes 判特殊符）**反而更慢**，弃用（直写形 16.3-16.5 vs 14.7-15.1ms；V8 简单正则赢 includes 组合）；`isWellFormed()` 替代哨兵正则无差（0.3 vs 0.3-0.4ms），弃用；逐格哨兵带 ANY_SUR 预筛不劣化（13.8-15.2 vs 无预筛 14.1-15.3ms）；攒行 frags 数组 + onLine 回调形与 onFrag 回调 sink 形把收益吃光（M/N 15.8-19.6ms、S 15.8-18.4ms、T 22.1-22.8ms）→ 定盘**融合内联**（P 计数 14.1-14.6ms vs 现状 15.1-16.6ms；Q 直写 17-18ms vs 现状 18-24ms，同场对照）；跨脚本绝对值不作判据——早期「G 形计数 11ms」是会话漂移假象，同场对照还原真相（「归因先量机制」续篇：结论必须出自同时段对照）。
+- **耗时实测（`exportmem_probe` 30k 行 ~15.5MB，同脚本同会话 A/B，after ×3 枪）**：measure 32→30ms；stream 段 37→36-40ms（持平）；new 两遍链 64→59ms；e2e **97→91 / 94 / 91ms（≤95 目标达成）**。
+- **内存实测（同上）**：行串物化 churn 消除的红利——stream maxRSS 123.3→115MB（−8）、new 137.5→129MB（−8）、e2e **162.9→142.3MB（−20.6）**；legacy 字符串链不动（175MB，对照）。
+- **字节恒等**：scrubbed 15,547,717 / new 15,549,817 / stream 15,547,717 / e2e 15,548,017 四线全恒等；公式中和 4,243 恒等；写调用 60 恒等。
+- **回归钉（selftest +1）**：selftest **346→347（332→333）**——零物化组装差分钉（融合计数/直写/scratch vs 行串真源逐字节恒等 + 逐格哨兵 ≡ 逐行哨兵 + 早停 exact-1 边界与零 write 回调 + 恰等上限放行 + 40 轮种子模糊三链恒等；对抗行含孤立代理在格首/格尾、相邻格伪配对不误合并、合法代理对不误报哨兵、30000 码元超大格精确分支）；e2e/protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05—06，Node v24.15.0）**：selftest 347/0（未初始化 333/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。探针与微基准存档：`D:\work\Zcode\DB\_dist\exportmem_before_v1631.txt` / `exportmem_after_v1631.txt` / `format_micro_v1631*.mjs|.txt`。
+- **下一批排队**：query 侧行集流式（e2e 142MB 峰值剩余大头是驱动行对象驻留，流式消费可再降 maxRSS 并省结果集物化耗时）；两遍合一（消 pass 1，牵动「组装期早停，未写盘」文案契约与哨兵时序——属契约面变更，未经明确授权不实施）。
+
+### V1.6.30（export 落盘集束写：createBatchWriter 把 1856 次 WriteFile 收成 60 次，e2e 导出耗时 −4~5ms；耗时归因修正）
+
+- **背景**：V1.6.29 流式写盘带出 +9ms 耗时差（当时归因「write 系统调用数增加」，排队集束写回收）。本轮按队列实施：streamCsvLines 的 emit 碎片此前逐片 `fs.writeSync` 落盘，30k 行真负载 15.5MB 产出被切成 **1856 片**（均片 ~8KB），逐片落盘放大 WriteFile 次数。
+- **产品变更**：新增纯函数 `createBatchWriter(write, batchBytes = 262144)`——`push(b)` 同步消费碎片（拷入复用批缓冲；碎片若是短命视图——streamCsvLines 的 scratch 视图——该契约必须成立），批满经 `write(批视图)` 落出，`flush()` 吐尾批；超大碎片（≥ batchBytes）先冲刷现批再**零拷贝整块直写**（写回调收到同一缓冲对象，自测钉住）。`doExportData` 流式写块接线（`fs.writeSync(fd, b)` 外套集束器）；`streamCsvLines` 与其写契约零改动，`writeFileStreamAtomic` 原子占位、早停文案「组装期早停，未写盘」、`bytes`/`formula_cells_neutralized` 等响应字段、`Error: [E_CODE:retry]` 分类全部零触碰。
+- **耗时实测（同脚本同负载 A/B，`_dist/exportmem_probe.mjs`，before/after 各 2 轮）**：写调用 **1856 → 60 次（−31×）**；e2e 产品路径导出 duration **101/104 → 97/99ms（−4~5ms）**；流式链（pass2+清洗+写）41 → 36/39ms；maxRSS 全平（stream 122.4/122.5、e2e 163.1/163.3）；清洗后字节恒等 15,547,717、rpc `bytes` 15,548,017 不变。
+- **归因修正（形态留档，判语更正）**：V1.6.29 条目「+9ms 源于 write 系统调用数」实测**只对了 ~2ms**（1856 次 WriteFile ≈ 1.1µs/次）。链计时补测（`_dist/exportmem_v1630_chain_timing.txt`，同脚本）：缓冲链（exportToCsvBuffer 两遍 + scrubBuffer + writeFileSync）**63/63ms**，流式链（streamCsvLines pass2 + 清洗 + 写）**36-38ms**——流式链本身已快 ~25ms，e2e 全链耗时主导项是**两遍行格式化**（每遍 ~25ms）；跨会话 e2e 绝对值（93/94 vs 97/99）不作判据，只认同脚本同会话 A/B。教训：给耗时差归因先量机制（write_calls 计数器），别把整段差值记到单一机制头上。
+- **回归钉（selftest +1）**：selftest **345→346（331→332）**——createBatchWriter 集束写钉（批边界 ±1/微片/超大碎片 400 片随机 × 2 批型逐字节恒等 + 超大碎片零拷贝同对象直写 + flush 尾批幂等与续写 + 写调用收数上界）；e2e/protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 346/0（未初始化 332/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+- **下一批排队**：零物化行格式化（csvCell 直写 scratch，消行串物化与二次 UTF-8 编码——两遍行格式化是耗时主导，最高收益候选）；query 侧行集流式（rows[] 物化是剩余内存大户，独立归因）。
+
+### V1.6.29（export 整链流式写盘：|k|−1 尾随暂存逐 key 流式 scrub 直写 fd，30k 行产品链峰值 RSS 177.5→162.3MB）
+
+- **背景**：V1.6.28 留档的下一候选「export 整链流式写盘」本轮实施。另有一项工具链发现：`mcp_alltools_test.mjs` 启动时 `fs.rmSync(_dist/mcp-test)` 整目录清理（fixture 卫生，行为保留）会连带删掉存在那里的探针脚本与存档——V1.6.27/V1.6.28 的探针产物均已因此遗失（含上一条目引用的 `_dist/mcp-test/exportmem_after_v1628.txt`；历史条目不改写，损失在此记档）。自本轮起探针脚本与存档一律放 `_dist/` 根；同负载 before 存档 `_dist/exportmem_before_v1629.txt` 复测重建了对照链数据（legacy 175.1/175.5、缓冲链 137.5/137.3、e2e 177.7/177.5，与 V1.6.28 条目记载一致）。
+- **产品变更（流式写盘）**：新增 `createScrubPipeline(list)`（流式清洗管线：每 key 一级、尾部 < |k| 字节暂存待定区，跨块边界/跨 UTF-8 多字节序列/跨替换边界匹配不丢，贪心次序与整段扫描一致）、`measureCsv`（pass 1 计量+孤立代理哨兵，抽自 exportToCsvBuffer 单一真相源）、`streamCsvLines(write,…)`（pass 2 逐行格式化 → 管线 → write 回调，返回实写清洗后字节数 = 旧 `scrubbed.length` 口径）、`writeFileStreamAtomic`（流式原子落盘：临时文件 fd 直写 + rename/link 原子占位，失败清理与 EEXIST 显式拒绝同 writeFileAtomic）。`doExportData` CSV 快乐路径改流式直写，`scrubbed` 全量缓冲不再物化（JSON 路径与孤立代理哨兵回落字符串链逐字不变）。**契约兼容**：CSV 文件逐字节不变、`bytes`/`formula_cells_neutralized` 等响应字段逐字不变、早停文案「组装期早停，未写盘」如实（pass 1 先于任何写盘）、文件名/存在性错误序不变、`Error: [E_CODE:retry]` 分类零触碰。
+- **形态留档（首版失败，二版返工）**：首版管线用整块 concat 衔接（每级 `Buffer.concat([tail,chunk])` + 输出/汇点再 concat），30k 行实测**反胜为负**——流式链 maxRSS 145.6/145.9 vs 缓冲链 137.1-137.5、真 RPC 产品路径 201.4/200.7 vs 177.5/177.7、耗时 93→122ms：~120MB 临时 concat 分配抖动（GC 压力）压过省下的 15.5MB 驻留。二版改**碎片原生零拷贝**（未匹配间隙直出输入缓冲视图、尾部暂存 ≤|k|-1 字节小拷贝、`streamCsvLines` 可复用 scratch 整块回收）才真实见效；失败数据留档 `_dist/exportmem_after_v1629_v1_concat.txt` 作反面基准。教训：流式化的收益会被分配形态瞬间吃掉，判据必须落在 maxRSS 实测而非「理论上少一份缓冲」。
+- **内存实测（同负载 A/B，`_dist/exportmem_probe.mjs` 四模式 ×2 轮，判据 maxRSS）**：30k 行 15.5MB CSV——纯组装+清洗链 **137.1-137.5 → 122.4/122.6MB（−11%）**；真 RPC 产品路径（e2e 模式 sqlite → `export_data` 落盘）**177.5/177.7 → 162.3/162.8MB（−8.5%）**，external 17.2→2.4MB（15.5MB 内容缓冲驻留消除）。清洗后字节三链逐字节一致（15,547,717），rpc `bytes` 15,548,017 与 V1.6.28 逐字不变。耗时 93/94→102/103ms（+9ms：逐片写盘系统调用次数增加，writev 集束写留档后续回收）。
+- **回归钉（selftest +2 差分钉）**：selftest **343→345（329→331）**——createScrubPipeline 切分不变性钉（12 组对抗输入 × 10 种字节切分 × 返回/emit 双形态与 scrubWith 逐字节恒等，含单字节 key、短 key、跨行边界 key、flush 尾部语义、退化键直通）+ measureCsv/streamCsvLines 整链恒等钉（流式/Buffer/字符串三链差分 + 早停零写盘文案 + 恰等上限放行 + 哨兵口径一致 + 40 轮种子模糊 + writeFileStreamAtomic 原子占位/覆盖/失败清理语义）；e2e-validate 钉数不变 46（export 落盘清洗接线钉继续护住产品路径落盘内容与 bytes 一致）；protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 345/0（未初始化 331/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+- **下一批排队**：writev 集束写（把逐片 writeSync 收成每批一次系统调用，回收 +9ms 耗时差）；零物化行格式化（csvCell 直写 scratch，消行串分配抖动，pass 1/2 同用）；query 侧行集流式（大结果集 rows[] 物化与响应拼装分块化，V1.6.28 留档顺延）。
+
+### V1.6.28（export CSV 组装直出 Buffer：两遍精确预铺消内容串驻留，30k 行导出链峰值 RSS 175→137MB）
+
+- **背景**：V1.6.27 把落盘清洗改为字节域就地压缩后，export 链的残余峰值来自 CSV 组装形态本身——`exportToCsv` 的 `lines[]` 行数组 + `join` 产物两份整表字符串同驻堆上（30k 行 15.5MB CSV：内容串以 UTF-16 驻留 ~31MB + 行数组 ~16MB），随后才转 Buffer 清洗；探针检查点实测 content_ready 阶段 heap 68.9MB、全链峰值 maxRSS 175MB（`_dist/mcp-test/exportmem_after_v1628.txt` legacy 模式）。
+- **产品变更（CSV 组装）**：新增共享行发射器 `eachCsvLine`（组装单真相源：逐行格式化 + 逐行字节累计 + maxBytes 早停，早停文案与抛出时机同 v1.5.1 逐字不变）；`exportToCsvBuffer` 两遍精确预铺——pass 1 只计量行字节并打孤立代理哨兵，pass 2 逐行 `buf.write` 直入 `Buffer.allocUnsafe(totalBytes)`、行串即时丢弃，全程不物化整表内容串；`exportToCsv` 字符串版保留为保真真源（回落路径）。逐字节恒等由构造保证（共用发射器）+ 差分钉锁定。**契约兼容**：CSV 输出逐字节不变（CRLF 尾行、公式中和计数、早停边界语义全保留），`formula_cells_neutralized`/`bytes`/`row_count` 等响应字段逐字不变，`Error: [E_CODE:retry]` 分类零触碰。
+- **产品变更（scrub 接线）**：从 `scrubToBuffer` 抽出 `scrubBuffer(buf, list)`（字节域入口）；`scrubToBuffer` 退化为字符串薄包装（孤立代理门控 + 转字节 + 委托），对外行为逐字节不变。`doExportData` CSV 分支改走 `exportToCsvBuffer → scrubBuffer`；**孤立代理哨兵**（行内容含孤立代理项，或 SECRET_LIST 键含孤立代理项）触发时回落旧字符串链（`exportToCsv → scrubToBuffer`）——孤立代理物化成字节后与字面 U+FFFD 不可分、字节域口令匹配可能与字符串域分叉，回落保证与旧版逐字节恒等（该形态导出多一趟组装，代价可接受且极罕见）。JSON 分支无逐行结构维持字符串链。凭据清洗契约（scrub/scrubWith/scrubToBuffer/scrubBuffer 对合法输入字节恒等）不变。
+- **内存实测（同负载 A/B 对照，`_dist/mcp-test/exportmem_probe.mjs` 三模式 ×2 轮，判据 maxRSS）**：30k 行 15.5MB CSV 全链（组装→清洗→落盘）峰值 maxRSS **175.1/175.8 → 137.1/137.4MB（−22%）**；content_ready 阶段 heap **68.9→43.7MB**（两份整表字符串驻留消除）；清洗后字节两链逐字节一致（15,547,717 = 15,547,717，15.5MB 真实负载上的恒等实证）。真 RPC 产品路径（e2e 模式：30k 行 sqlite → `export_data`）maxRSS 177.3/177.5、`bytes` 与落盘一致、公式中和 4243。注：v1.6.27 原探针脚本与存档本轮发现遗失，legacy 模式为同口径重建（形态一致、绝对值低 ~15MB，原负载行物化更重），故判据取同负载 A/B 对照而非跨探针绝对值。
+- **回归钉（selftest +2 差分钉）**：selftest **341→343（327→329）**——exportToCsvBuffer 与字符串组装逐字节恒等钉（对抗行集 + scrub 接线恒等 + 恰等/少 1 字节早停边界 + 60 轮种子模糊含字面 U+FFFD）+ 孤立代理哨兵语义钉（saw_lone_surrogate 置位、合法代理对不误报、回落链恒等、scrubBuffer 直调恒等与退化键跳过）；e2e-validate 钉数不变 46（既有 export 落盘清洗接线钉已覆盖新组装器接线）；protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 343/0（未初始化 329/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0。
+- **下一批排队（V1.6.27 留档项顺延）**：query 侧行集流式（大结果集 rows[] 物化与响应拼装分块化）；export 整链流式写盘（带 |k|−1 尾随暂存的逐 key 流式 scrub 写 fd，V1.6.25 留档项，再触碰凭据清洗契约故继续分车）。
+
+### V1.6.27（export 落盘清洗流式化：scrubToBuffer 原地压实替换，30k 行导出峰值 RSS 204→190MB；修复 enumArg 类型混淆绕过）
+
+- **背景**：两件事同车。① V1.6.25 留档的 export 侧 scrub 峰值问题（18.5MB CSV 全链堆峰 113.2MB/RSS 251.5MB）按排期在本轮处置；② 本轮对抗探针（`_dist/mcp-test/bugprobe_v1626.mjs`）在 V1.6.26 的 `enumArg` 上抓到类型混淆 bug——`format: ["json"]` 被 `String(["json"]) === "json"` 静默强转命中、绕过校验照常执行，与「只接受字符串」的声明语义不符（数组/布尔/数字/包装对象均可绕过）。
+- **产品变更（bug 修复，参数校验）**：`enumArg` 命中判定收紧为仅字符串参与匹配（`typeof v === "string"` 门），任何非字符串一律 `E_PARAM` 拒绝并列出允许值。合法字符串取值行为逐字节不变；此修复只影响本就应被拒绝的类型混淆输入（V1.6.26 声称拒绝、实际漏拒的面），契约零破坏。
+- **产品变更（export 落盘清洗流式化）**：新增 `scrubToBuffer(text, list)` 与内联压实步 `scrubPassInPlace`（server.mjs 纯函数）：逐 key 在 UTF-8 字节域把口令替换为 `***`，同一块 Buffer 上**原地压实**（`***` 恒 3 字节，key ≥3 字节时输出指针永不越过读指针，全程零额外分配；|key|<3 的罕见形态回落片段拼接）。`doExportData` 落盘链改为内容直出 Buffer、计量与写盘只经 Buffer（`content` 提前释放，消除字符串+Buffer 双份常驻）。**清洗契约逐字节不变**：与 `Buffer.from(scrubWith(t, list), "utf8")` 逐字节恒等——对抗矩阵（key 重叠/自重叠/跨替换边界/替换串本身是 key/多字节与代理对/user:pass 变体）+ 种子模糊差分 0 不一致，孤立代理项输入（UTF-8 编码替换成 U+FFFD 会致字节域匹配分叉）自动回落旧字符串链保证退化输入也恒等；明确偏离钉在自测：空 key/非字符串 key 跳过（SECRET_LIST 不会产生）。**形态留档**：初版「输入+输出双缓冲」把堆省下的又还给外部内存（RSS 204→208，无收益），改原地压实才真实见效；与 V1.6.25 留档的「|k|−1 尾随暂存分块」设计不同——原地压实同等有界且更易证恒等，整链分块组装（再消 content 串驻留）留待后续车。before/after 同口径探针留档 `_dist/mcp-test/exportmem_{before,after}_v1627.txt`。
+- **内存实测（30k 行/15.8MB CSV，口令命中 30k 次，同机同日 before/after 各 2 轮）**：scrub 链阶段峰值（stages 口径）**maxRSS 204→190MB（−7%）**、写盘后堆 57.6→42.6MB；端到端真实链路（handleRpc `export_data`）**maxRSS 189→186MB**，耗时 102→96ms 无回归。剩余峰值大头是查询结果行集与 CSV 组装（30k 行 rows ~28MB + 内容串），受 20MB 导出上限封顶、非无界；行集流式/分块组装是独立后续车。
+- **回归钉（selftest +2 差分钉；e2e +1 接线钉）**：selftest **339→341（325→327）**——scrubToBuffer/scrubWith 逐字节恒等钉（11 组对抗矩阵 + 200 轮种子模糊）+ 孤立代理回落与退化键跳过语义钉；e2e-validate **45→46**——export 落盘清洗接线钉（临时配置注入口令源，导出文件必须已替换且 `bytes` 与落盘字节一致，防「scrubToBuffer 存在但处理器漏接」漂移）；protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 341/0（未初始化 327/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 46/0 · protocol 24/0 · realform 43/0；另 46 断言独立全工具真库 harness 46/0；对抗冒烟 19 组 + 2000 轮模糊差分 0 不一致。
+- **下一批排队**：export 整链分块组装流式（消内容串驻留，30k 行峰值再降一档）；query 侧行集流式（rows 是剩余大户，独立归因）。
+
+### V1.6.26（format 枚举参数校验收口：非法 format 显式 E_PARAM，不再静默兜底成默认格式）
+
+- **背景**：全工具面实测探针（`_dist/mcp-test/opt_probe.mjs`，2026-10-05）发现两处枚举参数「静默兜底」：`query_plan` 传 `format:"xml"` 不报错、静默返回 `plan_format:"text"`；`export_data` 传 `format:"xml"` 静默导出 CSV。inputSchema 早已声明 `enum`，但服务端未校验——调用方以为拿到了 xml 却得到另一种格式且毫无提示，与 v1.0.2 修掉的「limit 静默夹断」同一类误导。同类探针已证伪的候选项一并留档：`query` 自动 LIMIT 包裹（`_za_mcp_limit` 派生表）**不丢 ORDER BY**（真实 MySQL 4,3,2,1 / 真实 PG 3,2,1 实测保序，`_dist/mcp-test/order_probe2.mjs`），无需改动。
+- **产品变更（参数校验）**：新增纯函数 `enumArg(v, name, allowed, dflt)`（与 `intArg` 同设计哲学）：缺失（undefined/null/""）→ 默认值；命中允许值（去首尾空白、大小写不敏感）→ 归一小写；其它 → `Error: [E_PARAM:no-retry] Invalid 'format': … is not one of […].`（列出允许值）。接入 `query_plan.format`（text|json）与 `export_data.format`（csv|json）两个枚举面。**契约兼容**：合法取值行为逐字节不变（`"text"`/`"json"`/`"csv"`/缺省路径同旧）；仅非法取值从「静默兜底」收紧为显式报错（inputSchema 本就禁止该值，合规客户端零影响），并新增宽容归一——`"JSON"`/`" Text "` 旧版被当另一格式兜底、现正确命中。**不变项**：超时分类、幂等语义、写权限门禁、日志脱敏（scrub）、安全红线、`Error: [E_CODE:retry]` 错误契约均零触碰。一处可观测序变化：`query_plan` 同时传坏 format 与坏 SQL 时先报 format 参数错（参数校验先于语句校验；守卫拦截纵深不变）。sqlite 的 `format:"json"` 仍返回 `EXPLAIN QUERY PLAN` 文本树（`plan_format` 如实标注，方言无 FORMAT 选项，语义同旧）。
+- **回归钉（selftest +3：拒绝语义/归一+缺省/合法值恒等；e2e +3：真 stdio 接线级）**：selftest **336→339（322→325）**；e2e-validate **42→45**（`query_plan` 拦非法 format、`export_data` 拦非法 format、`JSON` 大小写归一接线钉——防「enumArg 存在但处理器漏接」漂移）；protocol/realform/sqlite/mysql/pg-validate 钉数不变。
+- **实测口径（2026-10-05，Node v24.15.0）**：selftest 339/0（未初始化 325/0）· sqlite-validate 83/0 · mysql-validate 36/0 · pg-validate 56/0 · e2e 45/0 · protocol 24/0 · realform 43/0；真库 RPC 探针 8/8（`_dist/mcp-test/enum_probe.mjs`：xml→E_PARAM 且导出零副作用、JSON→json、text/缺省恒等、参数错先于语句错）。
+- **下一批排队（V1.6.25 留档项顺延）**：export 侧 scrub 逐 key 流式化（18.5MB 导出峰值 113.2MB→目标有界；触碰凭据清洗契约，需独立回归归因，另行排期）。
 
 ### V1.6.25（import 解析内存峰值收口：parseCsv 构建重写消 cons-rope 病理 + 流式 CSV 分段解析，18MB 导入峰值 574→41MB）
 

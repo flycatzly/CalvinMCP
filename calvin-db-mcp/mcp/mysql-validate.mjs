@@ -394,6 +394,43 @@ try {
     const csv = fs.readFileSync(path.join(exportDir, "hist_export.csv"), "utf8").trim().split(/\r?\n/);
     if (csv.length !== 6) throw new Error("replaced content should have 5 rows, got " + csv.length);
   });
+  await checkAsync("export: CSV 行集流式与 JSON 物化再格式化逐字节恒等 + limit 截断边界（v1.6.32）", async () => {
+    // 平凡列（id,v 全数字）独立重排 CSV 与流式导出逐字节比对——不借产品侧 csvCell 之手
+    const sql = "SELECT id, v FROM " + PROBE_TABLE + " WHERE id < 5 ORDER BY id";
+    const rj = parseToolResult(await srv.rpc("tools/call", {
+      name: "export_data", arguments: { source: MYSQL_ID, sql, format: "json", filename: "stream_ref.json", overwrite: true },
+    }));
+    if (rj.isError) throw new Error(rj.text.slice(0, 200));
+    const rows = JSON.parse(fs.readFileSync(path.join(exportDir, "stream_ref.json"), "utf8")).rows || [];
+    const rc = parseToolResult(await srv.rpc("tools/call", {
+      name: "export_data", arguments: { source: MYSQL_ID, sql, format: "csv", filename: "stream_cmp.csv", overwrite: true },
+    }));
+    if (rc.isError) throw new Error(rc.text.slice(0, 200));
+    const d = rc.data;
+    if (num(d.row_count) !== 5 || d.truncated !== false) throw new Error("csv meta: " + JSON.stringify(d));
+    if (!("formula_cells_neutralized" in d)) throw new Error("csv response must carry formula_cells_neutralized");
+    const want = "id,v\r\n" + rows.map((r) => r.id + "," + r.v).join("\r\n") + "\r\n";
+    const got = fs.readFileSync(path.join(exportDir, "stream_cmp.csv"), "utf8");
+    if (got !== want) {
+      throw new Error("stream csv bytes diverge: " + JSON.stringify(got.slice(0, 120)) + " vs " + JSON.stringify(want.slice(0, 120)));
+    }
+    // 截断边界：数据足量 limit=2 → truncated=true 且只落 2 行（流式第 limit+1 行停消费）
+    const rt = parseToolResult(await srv.rpc("tools/call", {
+      name: "export_data", arguments: { source: MYSQL_ID, sql: "SELECT id, v FROM " + PROBE_TABLE + " ORDER BY id", limit: 2, format: "csv", filename: "stream_cut.csv", overwrite: true },
+    }));
+    if (rt.isError) throw new Error(rt.text.slice(0, 200));
+    const cut = fs.readFileSync(path.join(exportDir, "stream_cut.csv"), "utf8").trim().split(/\r?\n/);
+    if (num(rt.data.row_count) !== 2 || rt.data.truncated !== true || cut.length !== 3) {
+      throw new Error("truncation: rows=" + rt.data.row_count + " truncated=" + rt.data.truncated + " lines=" + cut.length);
+    }
+    // 恰好等量不误报截断
+    const rx = parseToolResult(await srv.rpc("tools/call", {
+      name: "export_data", arguments: { source: MYSQL_ID, sql: "SELECT id, v FROM " + PROBE_TABLE + " WHERE id < 2 ORDER BY id", limit: 2, format: "csv", filename: "stream_exact.csv", overwrite: true },
+    }));
+    if (rx.isError || num(rx.data.row_count) !== 2 || rx.data.truncated !== false) {
+      throw new Error("exact-limit: " + rx.text.slice(0, 160));
+    }
+  });
   await checkAsync("import: CSV 导入目标表（参数化 INSERT，rows_imported=5）", async () => {
     // import 白名单目录独立（DBMCP_IMPORT_DIR 设置后不回退 export 目录）——模拟文件投递到导入目录
     fs.copyFileSync(path.join(exportDir, "hist_export.csv"), path.join(importDir, "hist_export.csv"));

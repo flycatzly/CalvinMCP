@@ -161,7 +161,7 @@ export function saveRun(report) {
    索引只是 report.json 的投影缓存，证据源永远是报告本身；外部直写/删除运行目录后，
    读侧按「目录有报告却不在索引 / 索引条目无目录」两个集合差自愈重建——宁可多读一遍，
    不可长期说谎。 */
-const RUN_INDEX_VERSION = 1;
+const RUN_INDEX_VERSION = 2;
 
 function runIndexPath(base) { return path.join(base, 'index.json'); }
 
@@ -172,6 +172,10 @@ function runSummary(rep) {
     durationMs: rep.durationMs, trigger: rep.trigger || 'manual',
     healedCount: (rep.healed || []).length, failedStep: rep.failedStep || null,
     error: rep.error || null,
+    // 预算可观测投影（v2）：status_report 聚合"经常性越线"用；旧报告没有这些字段=undefined，聚合口径天然不计
+    timedOut: !!rep.timedOut,
+    maxDurationMs: rep.maxDurationMs || null,
+    budgetOverrunMs: typeof rep.budgetOverrunMs === 'number' ? rep.budgetOverrunMs : null,
   };
 }
 
@@ -245,15 +249,32 @@ export function listRuns(flowId, limit = 20) {
 }
 
 /**
- * 单遍枚举同时给出窗口摘要与真实运行总数。
+ * 单遍枚举同时给出窗口摘要、真实运行总数、全量自愈累计与全量连续失败数。
  * total=运行目录总数（一次 readdir 即得，含进行中/中断），不再被 limit 封顶——
  * 旧实现 statusReport 用 listRuns(100).length 当 totalRuns，超过 100 次就恒报 100（少报）。
- * 摘要仍按 limit 截，只有 total 是全量真值。
+ * healedTotal=全部已完成运行的 healedCount 之和，同样不许被 limit 封顶——
+ * 旧实现只累加窗口内 ≤100 条，自愈发生在窗口外就整段少报（探针实锤 150→101、30→0）。
+ * consecutiveFailures=从最新往回数到首个 pass 为止的已定论失败数（fail/blocked），
+ * 对全部运行目录计数、不受 limit 封顶——旧实现 statusReport 只对 ≤100 条窗口计数，
+ * 连败 >100 恒报 100（探针实锤 150→100）。running/interrupted/无报告目录不计失败也不打断
+ * （与原窗口口径逐字一致）。
+ * 摘要仍按 limit 截；total/healedTotal/consecutiveFailures 是全量真值（后两者对已载入的
+ * 索引求值，零额外 I/O）。
  */
 export function listRunsEx(flowId, limit = 20) {
   const { base, dirs, entries } = enumerateRuns(flowId);
   const total = dirs.length;
-  if (!dirs.length) return { runs: [], total };
+  let healedTotal = 0;
+  for (const e of entries.values()) healedTotal += Number(e && e.healedCount) || 0;
+  let consecutiveFailures = 0;
+  for (const d of dirs) {
+    const e = entries.get(d);
+    if (!e) continue; // 进行中/中断/空目录（不在索引）：不计失败也不打断
+    if (e.status === 'pass') break;
+    if (e.status === 'running' || e.status === 'interrupted') continue;
+    consecutiveFailures++;
+  }
+  if (!dirs.length) return { runs: [], total, healedTotal: 0, consecutiveFailures: 0 };
   const out = [];
   // 运行目录名就是可排序的时间戳（stampId：YYYYMMDD-HHmmss-mmm），倒序取、凑够 limit 即停。
   // 已完成运行的摘要直接从索引拿（一次 readJson），不再逐个读 report.json
@@ -279,7 +300,7 @@ export function listRunsEx(flowId, limit = 20) {
       });
     }
   }
-  return { runs: out, total };
+  return { runs: out, total, healedTotal, consecutiveFailures };
 }
 
 export function loadRun(flowId, stamp) {

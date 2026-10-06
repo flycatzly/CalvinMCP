@@ -20,7 +20,7 @@
  *   H13 安装时 CLI 通道配置的决策矩阵（保留/重生成/显式优先/字节确定）
  *   H14 Python 字节码（__pycache__/*.pyc）四层排除：入库/复制/分发/比对一个都不能漏
  *   H15 路径解析禁用 URL 的 pathname（中文/空格路径被百分号编码，静默指错位置）
- *   H16 版本/文档同步：版本号唯一源 package.json，四份文档的版本记录与自然语言使用示例缺一即发版未完成
+ *   H16 版本/文档同步：版本号唯一源 package.json，三份文档的版本记录与自然语言使用示例缺一即发版未完成
  *   H17 智能体线守门：凭据只走环境变量、危险目标拒绝表非空、白名单外动作不静默丢弃
  *   H18 纯净发布包口径：实跑 distribute 验产物 —— 无 node_modules、无 . 前缀内容
  *   H19 发版门禁：distribute 收尾自动一次性副本 verify-all + 终态哈希终查（发版不可能忘）
@@ -457,7 +457,7 @@ log('=== H15) 路径解析不得取 URL 的 pathname（编码后静默指错位�
  * 发版纪律是「每次版本更新，版本号 + 版本说明同步到全部对应文档，缺一处即视为
  * 发版未完成」。纪律靠人记就一定会漏 —— 版本号在文档间漂移是静默的：没人报错，
  * 只是读者拿着对不上的版本号来问。所以钉四件事：版本号唯一源是 package.json
- * （server 运行时读它，不另存副本）、四份文档都带当前版本号与两节固定内容
+ * （server 运行时读它，不另存副本）、三份文档都带当前版本号与两节固定内容
  * （版本记录 + 自然语言使用示例）、**每份**文档的版本记录首条都是当前版本且
  * 不写超前版本号（「README 更新了、别的文档忘了」是实测常态）、
  * §15.3 判据行的核心数与 suites.mjs 的 coreCounts 同步（判据行与代码漂移=判据形同虚设）。
@@ -466,7 +466,7 @@ log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const V = String(pkg.version || '');
-  const docs = ['README.md', '部署说明.md', '部署说明.详细版.md', 'skill/playwright-verify/SKILL.md'];
+  const docs = ['README.md', '部署说明.md', 'skill/playwright-verify/SKILL.md'];
   const texts = new Map(docs.map((d) => [d, fs.readFileSync(path.join(ROOT, d), 'utf8')]));
   // 版本记录节切片：从「## 版本记录」标题到下一个二级标题/文末（正文里提到「版本记录」的散文不算）
   const recordSection = (t) => {
@@ -477,27 +477,27 @@ log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
   };
 
   const missingVer = docs.filter((d) => !texts.get(d).includes(`v${V}`));
-  check('H16 四份文档都带当前版本号（唯一源 package.json）',
+  check('H16 三份文档都带当前版本号（唯一源 package.json）',
     /^\d+\.\d+\.\d+$/.test(V) && missingVer.length === 0,
     `v${V}${missingVer.length ? ` 缺：${missingVer.join(', ')}` : ' 全部在位'}`);
 
   const missingRecord = docs.filter((d) => !texts.get(d).includes('版本记录'));
-  check('H16 四份文档都有「版本记录」节（版本说明同步落点）',
+  check('H16 三份文档都有「版本记录」节（版本说明同步落点）',
     missingRecord.length === 0, missingRecord.length ? `缺：${missingRecord.join(', ')}` : '全部在位');
 
   const missingNl = docs.filter((d) => !texts.get(d).includes('自然语言使用示例'));
-  check('H16 四份文档都有「自然语言使用示例」（说人话就能用）',
+  check('H16 三份文档都有「自然语言使用示例」（说人话就能用）',
     missingNl.length === 0, missingNl.length ? `缺：${missingNl.join(', ')}` : '全部在位');
 
   // 每份文档的版本记录首条都得是当前版本 —— 只查 README 不够：实测常态是
-  // 「README 更新了、另外三份忘了」，读者拿的往往是部署/安装文档而不是 README。
+  // 「README 更新了、另外两份忘了」，读者拿的往往是部署/安装文档而不是 README。
   const staleFirst = [];
   for (const [d, t] of texts) {
     const first = (recordSection(t).match(/v(\d+\.\d+\.\d+)/) || [])[1];
     if (first !== V) staleFirst.push(`${d}(${first || '无'})`);
   }
-  check('H16 四份文档版本记录首条都是当前版本（记录跟得上版本）',
-    staleFirst.length === 0, staleFirst.length ? staleFirst.join(', ') : `四份首条均为 v${V}`);
+  check('H16 三份文档版本记录首条都是当前版本（记录跟得上版本）',
+    staleFirst.length === 0, staleFirst.length ? staleFirst.join(', ') : `三份首条均为 v${V}`);
 
   // 超前版本号（文档写了还没发的版本）会把读者引向不存在的行为 —— 只在版本记录节里查，
   // 全文查会被示例里的第三方版本号（如 Node v24.x）误伤。
@@ -510,14 +510,14 @@ log('=== H16) 版本/文档同步（缺一处即发版未完成）===');
     }
   }
   check('H16 版本记录无超前版本号（不写还没发的版本）',
-    ahead.length === 0, ahead.length ? ahead.join(', ') : '四份均无超前');
+    ahead.length === 0, ahead.length ? ahead.join(', ') : '三份均无超前');
 
   // 判据行与代码的 CORE 漂移是静默的：verify-all 自己按 CORE 判「一致 ✅」，
   // 文档里那行数没人复核 —— 所以让机器来对：§15.3 核心数 == suites.mjs 的 coreCounts（数字单一源）。
   const { coreCounts } = await import('./suites.mjs');
   const core = coreCounts();
   const codeVals = [core[1], core[2], core[3]].map(String);
-  const docLine = /核心断言 mode 1 = (\d+)、mode 2 = (\d+)、mode 3 = (\d+)/.exec(texts.get('部署说明.详细版.md'));
+  const docLine = /核心断言 mode 1 = (\d+)、mode 2 = (\d+)、mode 3 = (\d+)/.exec(texts.get('部署说明.md'));
   check('H16 §15.3 核心判据数与 suites.mjs 的 coreCounts 一致（判据行不与代码漂移）',
     !!docLine && codeVals[0] === docLine[1] && codeVals[1] === docLine[2] && codeVals[2] === docLine[3],
     `代码 CORE ${codeVals.join('/')} / §15.3 ${docLine ? docLine.slice(1).join('/') : '(无)'}`);
@@ -643,7 +643,7 @@ log('=== H19) 发版门禁：副本验收 + 终态哈希终查不得静默失效
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 
-  const depDoc = fs.readFileSync(path.join(ROOT, '部署说明.详细版.md'), 'utf8');
+  const depDoc = fs.readFileSync(path.join(ROOT, '部署说明.md'), 'utf8');
   check('H19 发版文档写明门禁（§15 发布流程 + 发版门禁字样，发版者看得到）',
     depDoc.includes('发版门禁') && depDoc.includes('## 15. 发布流程'));
 }

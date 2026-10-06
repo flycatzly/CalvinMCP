@@ -59,6 +59,22 @@ export function acquireLock(flowId, meta = {}) {
   return { ok: false, heldBy: lockInfo(flowId) };
 }
 
+/**
+ * 有界等待版锁获取：撞上活锁先等对方放（250ms 轮询），预算内拿到=ok，超预算=诚实失败（带 heldBy 与 waitedMs）。
+ * waitMs=0 等价 acquireLock 撞上即报；上限 5 分钟防手滑配大。只对活锁有意义——过期锁 acquireLock 自己会清。
+ */
+export async function acquireLockWithWait(flowId, meta = {}, waitMs = 0) {
+  const budget = Math.min(300000, Math.max(0, Number(waitMs) || 0));
+  const t0 = Date.now();
+  let lock = acquireLock(flowId, meta);
+  while (!lock.ok && Date.now() - t0 < budget) {
+    await new Promise((r) => setTimeout(r, Math.min(250, budget - (Date.now() - t0))));
+    lock = acquireLock(flowId, meta);
+  }
+  const waitedMs = Date.now() - t0;
+  return lock.ok ? { ok: true, waitedMs } : { ok: false, heldBy: lock.heldBy, waitedMs };
+}
+
 export function releaseLock(flowId) {
   heldLocks.delete(flowId);
   const f = lockFile(flowId);
@@ -265,23 +281,29 @@ export function statusReport(opts = {}) {
   const now = Date.now();
 
   for (const f of flows) {
-    const { runs, total } = listRunsEx(f.id, 100);
+    const { runs, total, healedTotal, consecutiveFailures } = listRunsEx(f.id, 100);
     const last = runs[0] || null;
-    // 连续失败只数「已定论的失败」（fail/blocked）；pass 即止。
-    // running（未定论）与 interrupted（崩溃另计，item.interrupted 已单列）既不计失败、也不打断计数——
-    // 否则"正在跑的那次"或"崩溃那次"会被当成一次失败，虚增连续失败数、误报"连续失败 N 次"告警（探针实锤）。
-    let consecutiveFailures = 0;
-    for (const r of runs) {
-      if (r.status === 'pass') break;
-      if (r.status === 'running' || r.status === 'interrupted') continue;
-      consecutiveFailures++;
-    }
-    const healedTotal = runs.reduce((s, r) => s + (Number(r.healedCount) || 0), 0);
+    // consecutiveFailures 取自 listRunsEx 的全量计数（从最新往回数到首个 pass 为止；running/interrupted
+    // 不计失败也不打断——崩溃另计 item.interrupted，别把"正在跑/崩溃"当失败虚增连败、误报告警）。
+    // 别改回对 runs 窗口计数：窗口封顶 100 条会把连败 >100 少报为 100（探针实锤 150→100），
+    // 同 totalRuns/healedTotal 封顶旧病。
+    // healedTotal 取自 listRunsEx 的全量累计（=已完成全部运行之和）——别改回对 runs 窗口 reduce：
+    // 窗口封顶 100 条会把窗口外自愈整段少报（探针实锤 150→101、30→0），同 totalRuns 封顶旧病。
     const lock = lockInfo(f.id);
     const scan = scanActiveMarkers(f.id); // 一次扫描同时拿活/死，别扫两遍
     const interrupted = scan.dead;
     const live = scan.live;
     const s = sched[f.id] || null;
+    // 经常性越线聚合（R12）：窗口=最近 5 次，timedOut=被总时限拦停，budgetOverrunMs≥1000ms=实质越线
+    // （收尾开销量级 ~200-300ms 不算，见 SKILL.md 五之二口径）。旧索引/旧报告无这些字段=不计，天然兼容。
+    const recent = runs.slice(0, 5);
+    const overrunHits = recent.filter((r) => r && (r.timedOut === true || (typeof r.budgetOverrunMs === 'number' && r.budgetOverrunMs >= 1000)));
+    const recentOverruns = overrunHits.length ? {
+      window: recent.length,
+      hits: overrunHits.length,
+      timedOut: overrunHits.filter((r) => r.timedOut === true).length,
+      maxOverrunMs: Math.max(...overrunHits.map((r) => (typeof r.budgetOverrunMs === 'number' ? r.budgetOverrunMs : 0))),
+    } : null;
     const item = {
       flowId: f.id,
       name: f.name,
@@ -291,6 +313,7 @@ export function statusReport(opts = {}) {
       lastTrigger: last ? last.trigger : null,
       lastError: last ? (last.error ? String(last.error).split('\n')[0].slice(0, 200) : null) : null,
       consecutiveFailures,
+      recentOverruns,
       totalRuns: total,
       healedTotal,
       stepCount: f.stepCount,
@@ -305,6 +328,11 @@ export function statusReport(opts = {}) {
     else if (last.status === 'fail') problems.push({ flowId: f.id, level: 'error', message: '最近一次失败：' + (item.lastError || '(无详情)') });
     else if (last.status === 'blocked') problems.push({ flowId: f.id, level: 'warn', message: '最近一次被阻断：' + (item.lastError || '(无详情)') });
     if (consecutiveFailures >= 3) problems.push({ flowId: f.id, level: 'error', message: '连续失败 ' + consecutiveFailures + ' 次' });
+    if (recentOverruns && recentOverruns.hits >= 2) problems.push({
+      flowId: f.id, level: 'warn',
+      message: '最近 ' + recentOverruns.window + ' 次执行有 ' + recentOverruns.hits + ' 次越过 run.maxDurationMs（其中 ' +
+        recentOverruns.timedOut + ' 次被拦停，最大越线 ' + recentOverruns.maxOverrunMs + 'ms）：预算可能偏小或页面卡死',
+    });
     if (item.waitingHuman) problems.push({ flowId: f.id, level: 'warn', message: '正在等待人工接管：' + (item.waitingHuman.reason || '需要人工') + (item.waitingHuman.until ? '（截止 ' + item.waitingHuman.until + '）' : '') });
     if (interrupted) problems.push({ flowId: f.id, level: 'error', message: '存在中断的执行（' + interrupted.stamp + '）：进程可能被强杀或断电' });
     if (lock.held || (live && !item.waitingHuman)) problems.push({ flowId: f.id, level: 'info', message: '正在执行中（pid ' + (lock.held ? lock.pid : live.pid) + '）' });

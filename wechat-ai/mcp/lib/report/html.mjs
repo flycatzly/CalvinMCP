@@ -5,7 +5,7 @@ import { ensureDir, atomicWrite, fmtLocal } from "../util.mjs";
 import { mdToHtmlLite, sanitizeFragment, protectDocument } from "./security.mjs";
 
 /** 已知的顶层路由顺序（缺失的分区不会出现在导航里） */
-export const ROUTE_ORDER = ["overview", "groups", "contacts", "radar"];
+export const ROUTE_ORDER = ["overview", "groups", "contacts", "radar", "reports"];
 
 /** 群聊关注级别选项 */
 const GROUP_LEVELS = ["重点", "雷达观察", "关注", "低优先级", "排除候选"];

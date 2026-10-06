@@ -153,6 +153,25 @@ export function truncate(s, n, suffix = "…") {
   return t.length <= n ? t : t.slice(0, Math.max(0, n - suffix.length)) + suffix;
 }
 
+/** 先切词再截断：截断点落在 URL 中间时回退到该 URL 起点，不展示半个链接（整段即超长 URL 时保持硬截断） */
+export function truncateOutsideUrl(s, n, suffix = "…") {
+  const t = String(s ?? "");
+  if (t.length <= n) return t;
+  const keep = Math.max(0, n - suffix.length);
+  const re = /https?:\/\/\S+/gi;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (start < keep && end > keep) {
+      if (start === 0) break;
+      return t.slice(0, start).replace(/\s+$/, "") + suffix;
+    }
+    if (start >= keep) break;
+  }
+  return t.slice(0, keep) + suffix;
+}
+
 export function stripControl(s) {
   return String(s ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }

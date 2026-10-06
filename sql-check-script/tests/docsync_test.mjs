@@ -43,7 +43,7 @@ const files = [];
 /** 去掉 README「更新记录」历史段——历史条目允许出现旧版本号与旧数字，不参与一致性判定 */
 const stripHistory = (txt) => txt.split(/^## 更新记录/m)[0];
 
-// ① 版本标记唯一且 ≥ 20 处（22 处基线；outputs/ 模板不在扫描面）
+// ① 版本标记唯一且 ≥ 20 处（21 处基线；outputs/ 模板不在扫描面）
 const markerRe = /^[>#] 版本 v(\d+\.\d+\.\d+) ·/gm;
 const markers = [];
 for (const f of files) {

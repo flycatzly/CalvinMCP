@@ -273,13 +273,25 @@ export function summarize(json, opts = {}) {
       const passedAfterRetry = t.status === 'flaky' || (failed.length > 0 && results.some((r) => r.status === 'passed'));
       const label = [...spec.trail, spec.specTitle].filter(Boolean).join(' › ');
 
-      if (failed.length > 0) {
+        if (failed.length > 0) {
         // 取最后一次失败作为代表（首次失败往往是抖动，最后一次才代表结论）
         const rep = failed[failed.length - 1];
         const raw = errorTextOf(rep);
         const cleaned = clean(raw);                       // 清洗一次
         const cat = classify(cleaned);                    // 判定吃清洗后的文本
         const sig = signature(cleaned, spec.file || opts.file);  // 签名吃同一份清洗后的文本
+        // 提取 trace 附件：**扫全部失败结果**，不能只看最后一次。
+        // 真实配置常见 trace: 'on-first-retry' —— trace 只落在首次重试上，
+        // 而「最后一次失败」往往是第二次重试（无 trace）。只看最后一次 = 永远取不到。
+        const traceUrls = [];
+        for (const r of failed) {
+          for (const a of (r.attachments || [])) {
+            if (a.name !== 'trace') continue;
+            const u = a.path || a.url;
+            if (u && !traceUrls.includes(u)) traceUrls.push(u);
+          }
+        }
+        const traceUrl = traceUrls[0] || null;
         const rec = {
           title: label,
           file: spec.file,
@@ -294,6 +306,8 @@ export function summarize(json, opts = {}) {
           // 人看到的 message 不含根因，等于要求他去翻原始报告。
           message: cleaned.split('\n').filter((l) => l.trim()).slice(0, 6).join('\n'),
           durationMs: rep.duration ?? 0,
+          traceUrl,
+          traceUrls,          // 本次用例全部失败结果里的 trace（去重）
         };
         failures.push(rec);
         if (passedAfterRetry) flakes.push(rec);
@@ -319,12 +333,28 @@ export function summarize(json, opts = {}) {
         sample: f.message,
         flakyCount: 0,
         file: f.file,
+        traceUrls: [],   // 失败 trace 路径列表（去重）
       });
     }
     const c = clusters.get(f.signature);
     c.count++;
     c.tests.push(f.title);
+    // 收集 trace URL（去重），多个失败有同一个 trace 时不重复
+    for (const u of (f.traceUrls || (f.traceUrl ? [f.traceUrl] : []))) {
+      if (!c.traceUrls.includes(u)) c.traceUrls.push(u);
+    }
   }
+
+  // 辅助函数：截短 trace 路径用于显示。
+  // 取最后两段（test-results/sample-x-retry1/trace.zip → sample-x-retry1/trace.zip）——
+  // 绝对前缀每条都一样（截掉不损失信息），而截「开头 60 字符」会让 5 条 trace 全长一个样，
+  // 报告里等于没给。目录名 + 文件名才是可区分的部分。
+  const shortTrace = (url) => {
+    if (!url) return null;
+    const parts = String(url).replace(/\\/g, '/').split('/').filter(Boolean);
+    const short = parts.slice(-2).join('/');
+    return short.length > 60 ? `${short.slice(0, 57)}…` : short;
+  };
 
   const clusterList = [...clusters.values()]
     .map((c) => ({
@@ -334,6 +364,8 @@ export function summarize(json, opts = {}) {
       action: CATEGORIES[c.category].action,
       // 派活口径：一个签名 = 一份工作量，而不是「一条失败 = 一个人」
       workload: `${c.count} 条失败同源，派 1 人按此签名查`,
+      traceUrls: c.traceUrls,    // 原始路径数组（供调用方查完整文件）
+      traceShorts: c.traceUrls.map(shortTrace), // 截短显示用
     }))
     .sort((a, b) => b.count - a.count);
 
@@ -581,6 +613,9 @@ export function formatText(report) {
     out.push(`    归因: ${c.nature}　派给: ${c.owner}`);
     out.push(`    下一步: ${c.action}`);
     if (c.tests.length) out.push(`    涉及用例: ${c.tests.slice(0, 4).join(' | ')}${c.tests.length > 4 ? ` …共 ${c.tests.length} 条` : ''}`);
+    if (c.traceShorts && c.traceShorts.length) {
+      out.push(`    trace: ${c.traceShorts.join(', ')}`);
+    }
     out.push('');
   }
   out.push('分类汇总:');

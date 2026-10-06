@@ -238,10 +238,20 @@ async function errResult(message, extra) {
  * 运行期参数校验：inputSchema 声明了类型/边界就按声明执行。
  * 此前 P 只是文档——limit 负值直通 SQL 成为无界查询、空 query 变 LIKE %% 全量、
  * 负 days 被 resolveWindow 交换成「未来窗口」还标成「过去 N 小时」。
- * 只校验调用方实际给出的键（null 视为未给）；未知键不拦，避免误伤扩展调用。
+ * required 同样要执行（F13X）：此前缺必填参数静默走默认路径——inbox_push 记空记录、
+ * 空 query 全量匹配、batch_create 建空批次、scene_upsert 写无名场景。
+ * 缺键/null/空串（trim 后）/空数组一律视为未给。
+ * 类型/边界只校验调用方实际给出的键（null 视为未给）；未知键不拦，避免误伤扩展调用。
  */
 function checkArgs(args, schema) {
   const props = schema?.properties ?? {};
+  for (const k of (schema?.required ?? [])) {
+    const v = args[k];
+    const missing = v === undefined || v === null
+      || (typeof v === "string" && v.trim() === "")
+      || (Array.isArray(v) && v.length === 0);
+    if (missing) throw new Error(`参数 ${k} 不能为空：必填参数缺失或为空`);
+  }
   for (const [k, v] of Object.entries(args)) {
     if (v === undefined || v === null) continue;
     const p = props[k];
@@ -475,11 +485,16 @@ tool("wai_vault_status", "查看已配置的导出目录（vault）状态：文�
   });
 
 tool("wai_vault_scan", "扫描导出目录并写入索引（等价于 wai_scan 指向 vault 目录）。",
-  S({ dirs: P.arr("临时覆盖导出目录"), out: P.str("输出目录") }), async (a) => {
+  S({ dirs: P.arr("临时覆盖导出目录"), out: P.str("输出目录（可选：传入则落一份 vault-scan-summary.json 扫描摘要）") }), async (a) => {
     const { loadVault } = await mod("reader/vault.mjs");
     const { ingestSessionBatches } = await M.ingest();
-    const { store } = await M.store();
+    const { store, kvSet } = await M.store();
     const dirs = a.dirs && a.dirs.length ? a.dirs : (await M.readerIndex()).vaultDirs();
+    // 缺目录必须显式暴露（F12）：与 wai_scan「扫描目标不存在」同一语义——全部缺失直接报错；
+    // 部分缺失继续扫存在的，并在返回里列 missing（loadVault 会静默过滤不存在的目录，
+    // 静默 files:0 会让用户以为扫描成功）。空目录存在但无文件 → files:0 是诚实结果，不报错。
+    const missing = dirs.filter((d) => typeof d !== "string" || !fs.existsSync(d));
+    if (missing.length === dirs.length) throw new Error("扫描目标不存在：" + missing.join("、"));
     // 只强制解析一次（旧实现 describe() 与 loadVault() 各 force 解析一遍全目录）
     const loaded = loadVault({ dirs, force: true });
     const db = store();
@@ -487,12 +502,27 @@ tool("wai_vault_scan", "扫描导出目录并写入索引（等价于 wai_scan �
     // 在 600 会话/3 万条量级实测 1607ms，攒批形态贴近单事务对照 385ms。
     // 批内原子、批间独立；写入幂等（确定性 id + INSERT OR IGNORE），失败重跑即可补齐。
     const write = ingestSessionBatches(db, loaded.sessions.map((s) => s.messages.map((m) => ({ ...m, chat: m.chat }))), { source: "vault" });
-    return {
+    kvSet("last_index_ts", Date.now());
+    kvSet("last_index_source", "vault"); // 通道事实（F7）：vault 通道同样要盖章
+    const result = {
       reader: "vault", roots: loaded.roots, files: loaded.files,
       sessions: loaded.sessions.length, parsed: loaded.parsedCount, cache_hits: loaded.cacheHits,
-      dirs, inserted: write.inserted,
+      dirs, missing, inserted: write.inserted,
       write_chunks: write.chunks, write_stats: write.stats,
     };
+    // F16：out 此前声明却从未消费——消费方（commands.md 已文档化）传 out 期望像 wai_scan
+    // 一样落一份扫描摘要。对齐 scanPath 的 out 语义：mkdir recursive + 原子写 + 幂等覆盖。
+    // 文件名区分 wai_scan 的 scan-summary.json / wai_db_index 的 index-summary.json，
+    // 同一输出目录下三通道互不覆盖；内容仅本地路径与计数（roots/dirs/missing/各计数），
+    // 无聊天名与消息正文，敏感度低于 wai_scan 摘要的 perFile。空串（trim 后）视为未给。
+    const out = typeof a.out === "string" && a.out.trim() ? a.out.trim() : null;
+    if (out) {
+      const { writeJson } = await M.util();
+      const file = writeJson(path.join(out, "vault-scan-summary.json"), { ...result, out });
+      result.out = out;
+      result.summary_file = file;
+    }
+    return result;
   });
 
 tool("wai_db_index", "从数据源拉取并建立/刷新本地索引。scope=sessions 刷新近期会话；scope=labels 按微信标签；scope=search 按关键词。",
@@ -528,7 +558,7 @@ tool("wai_db_status", "索引新鲜度：最新消息时间、距现在多久、
 
 // ---------- 2. 检索 ----------
 tool("wai_chat_search", "在全部已导入微信内容里检索关键词（实时、覆盖全量，不受标签限制），并把命中写入本地索引。",
-  S({ query: P.str("关键词", { minLength: 1 }), chat: P.str("限定会话"), limit: P.int("返回条数，默认 100", { min: 0 }), maxTextChars: P.int("正文截断，默认 500", { min: 0 }), source: P.str("数据源 id"), out: P.str("输出目录"), ...WINDOW_PROPS }, ["query"]),
+  S({ query: P.str("关键词", { minLength: 1 }), chat: P.str("限定会话"), limit: P.int("返回条数，默认 100", { min: 0 }), maxTextChars: P.int("正文截断，默认 500", { min: 0 }), source: P.str("数据源 id"), out: P.str("输出目录（可选：传入则落一份 chat_search.md 检索证据，正文按隐私设置打码）"), ...WINDOW_PROPS }, ["query"]),
   async (a) => {
     const { pickReader } = await M.readerIndex();
     const { reader, sourceId } = pickReader({ source: a.source, allowDemo: true });
@@ -548,10 +578,21 @@ tool("wai_chat_search", "在全部已导入微信内容里检索关键词（实�
     const msgs = (r.data?.messages ?? []);
     const res = msgs.length ? ingestMessages(store(), msgs.map((m) => ({ ...m, chat: m.chat })), { source: `reader:${sourceId}` }) : { inserted: 0 };
     const showChars = a.maxTextChars ?? 500;
-    return {
+    const result = {
       source: sourceId, query: a.query, count: msgs.length, inserted: res.inserted, query_meta: r.data?.query ?? null,
       messages: msgs.slice(0, 80).map((m) => ({ ...m, content: String(m.content ?? "").slice(0, showChars) })),
     };
+    // F17：out 此前声明却从未消费——commands.md 已文档化，消费方期望像 wai_chat_history
+    // 一样落一份 markdown 证据。走 renderChatSearch（writeText 默认掩码，privacy.redactOutputs
+    // 开启时 maskPii——F1 口径）；文件名 chat_search.md 区别于 wai_chat_history 的
+    // chat_history.md，同输出目录两工具互不覆盖；幂等（无时间戳，重跑字节一致）。
+    // 空串（trim 后）视为未给；未传 out 返回零新键（基线兼容）。
+    const out = typeof a.out === "string" && a.out.trim() ? a.out.trim() : null;
+    if (out) {
+      const md = await M.reportMd();
+      result.out = await md.renderChatSearch(msgs, { query: a.query, chat: a.chat, source: sourceId, outDir: out });
+    }
+    return result;
   });
 
 tool("wai_db_search", "在本地索引里快速检索（已索引范围，速度更快）。支持限定会话与时间。",
@@ -743,7 +784,7 @@ tool("wai_contact_daily", "重点联系人私聊日报（关系推进）：待�
     return { window: w.label, outDir, files, count: (rows.rows ?? rows).length, rows: (rows.rows ?? rows).slice(0, 30) };
   });
 
-tool("wai_reactivation", "品牌方复联雷达：找出值得重新联系的人，按 今天优先看 / 待交接跟进 / 等待区 / 纯佣低优先级 / 我方主动放弃 五档分档并给出可发话术（上游口径里的「待下一批跟进/复购保温」折叠进 今天优先看，「暂缓」即 等待区；next 字段返回带「下一批」信号的会话）。",
+tool("wai_reactivation", "品牌方复联雷达：找出值得重新联系的人，按 今天优先看 / 待交接跟进 / 等待区 / 纯佣低优先级 / 我方主动放弃 五档分档并给出可发话术（上游口径里的「待下一批跟进/复购保温」在沉默期满后折叠进 今天优先看，刚聊过的落 等待区，「暂缓」即 等待区；next 字段返回带「下一批」信号的会话）。",
   S({ ...WINDOW_PROPS, inactiveDays: P.int("沉默阈值天数，默认 21"), label: P.arr("限定标签"), selfName: P.arr("本人昵称"), out: P.str("输出目录"), indexFirst: P.bool("先建索引") }),
   async (a) => {
     const { reactivation } = await M.signals();
@@ -799,6 +840,11 @@ tool("wai_reply_draft", "回复建议：先判断是否需要回复，再按联�
 tool("wai_render_bundle", "把一轮报告目录渲染成旗舰交互式 HTML + 分区 Markdown 站点（全局搜索、分区路由、明暗主题、打印、当前分区 Markdown 下载）。",
   S({ reportDir: P.str("报告目录"), out: P.str("HTML 输出路径（不得位于仓库/包目录内）"), markdownOut: P.str("门户 Markdown 路径（不得位于仓库/包目录内）"), title: P.str("标题") }, ["reportDir"]),
   async (a) => {
+    // schema 已声明 reportDir 必填，服务端同样拦截：缺省时 path.resolve(".") 会把 cwd（可能是包目录）
+    // 当报告目录渲染并把产物写进去——assertOutOutsideRepo 只检查显式入参，拦不住默认路径。
+    if (a.reportDir === undefined || a.reportDir === null || String(a.reportDir).trim() === "") {
+      return fail("reportDir 必填：请传入报告目录（如 wai_brief / wai_group_daily 的 outDir 或其父目录）");
+    }
     const bundle = await M.reportBundle();
     for (const p of [a.reportDir, a.out, a.markdownOut].filter(Boolean)) await assertOutOutsideRepo(p);
     const attempt = (dir) => bundle.renderBundle(dir, { out: a.out, markdownOut: a.markdownOut, title: a.title });
@@ -1100,7 +1146,9 @@ tool("wai_obsidian_write", "把内容写成 Obsidian 笔记（含 frontmatter、
   S({ vault: P.str("Obsidian vault 路径"), folder: P.str("子目录"), title: P.str("标题"), markdown: P.str("正文 Markdown"), attachments: P.arr("附件路径"), tags: P.arr("标签"), chat: P.str("来源会话"), url: P.str("来源链接") }, ["vault", "markdown"]),
   async (a) => {
     const { writeObsidianNote } = await M.obsidian();
-    return writeObsidianNote(a);
+    // 工具面入参是 chat/url，writeObsidianNote 解构的是 sourceChat/sourceUrl：
+    // 不做映射时 frontmatter 恒为空（F10）。多余字段随 ...a 透传无害。
+    return writeObsidianNote({ ...a, sourceChat: a.chat, sourceUrl: a.url });
   });
 
 tool("wai_skill_list", "列出内置技能（微信流技能目录）：公众号文章提取、视频信息读取。",

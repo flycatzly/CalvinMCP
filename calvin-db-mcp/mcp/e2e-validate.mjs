@@ -56,7 +56,11 @@ try {
   }
   fs.writeFileSync(cfgFile, JSON.stringify({
     maxRows: 200, timeoutMs: 30000, maxAffectedRows: 500,
-    sources: { demo: { type: "sqlite", url: "sqlite://" + dbFile, allowWrites: true, allowCreateTable: true, description: "e2e-validate 自供给临时库" } },
+    sources: {
+      demo: { type: "sqlite", url: "sqlite://" + dbFile, allowWrites: true, allowCreateTable: true, description: "e2e-validate 自供给临时库" },
+      // v1.6.27：口令源（绝不连接）——只为让 SECRET_LIST 含 "s3cr3t"，钉 export 落盘清洗接线
+      secret_src: { type: "mysql", url: "mysql://probe:s3cr3t@127.0.0.1:1/probe" },
+    },
   }));
 
   /* ---------------- stdio JSON-RPC 小客户端（真链路） ---------------- */
@@ -170,6 +174,16 @@ try {
     ok("query 拦非白名单 PRAGMA", isErr(e8));
   }
 
+  /* ---- 参数校验（负例，v1.6.26）：format 枚举非法值应显式 E_PARAM，不得静默兜底成默认格式 ---- */
+  {
+    const p1 = await call("query_plan", { source: "demo", sql: "SELECT 1 AS a", format: "xml" });
+    ok("query_plan 拦非法 format（E_PARAM）", isErr(p1) && errText(p1).includes("E_PARAM"), errText(p1));
+    const p2 = await call("export_data", { source: "demo", sql: "SELECT 1 AS a", format: "xml", filename: "enum-neg.csv", overwrite: true });
+    ok("export_data 拦非法 format（E_PARAM）", isErr(p2) && errText(p2).includes("E_PARAM"), errText(p2));
+    const p3 = await call("export_data", { source: "demo", sql: "SELECT 1 AS a", format: "JSON", filename: "enum-norm.json", overwrite: true });
+    ok("export_data format 大小写归一（JSON→json）", !isErr(p3) && jsonOf(p3)?.format === "json", errText(p3) || JSON.stringify(p3));
+  }
+
   /* ---- 写 + 导入导出 ---- */
   {
     const before = Number(jsonOf(await call("count_rows", { source: "demo", table: "books" }))?.total);
@@ -191,6 +205,13 @@ try {
     ok("export json 保真: 3000 字符长文本完整落盘（v1.6.3 回归）",
       exl?.row_count === 1 && lraw.includes(longText) && !lraw.includes("<truncated"),
       lraw ? (lraw.includes("<truncated") ? "含截断标记" : "len=" + lraw.length) : "导出文件缺失");
+    // v1.6.27 回归：export 落盘清洗走流式链路（scrubToBuffer）——内容含口令时文件内必须已替换，
+    // 且 bytes 字段与落盘字节数一致（计量从 Buffer.length 接线，防止 scrub 后计量错位）
+    const expw = jsonOf(await call("export_data", { source: "demo", sql: "SELECT 's3cr3t' AS note", format: "csv", filename: "scrub-wire.csv", overwrite: true }));
+    const praw = expw?.file && fs.existsSync(expw.file) ? fs.readFileSync(expw.file) : null;
+    ok("export 落盘清洗: 口令已替换且 bytes 与文件一致（v1.6.27 流式链路接线）",
+      !!praw && !praw.toString("utf8").includes("s3cr3t") && praw.toString("utf8").includes("***") && expw.bytes === praw.length,
+      expw ? JSON.stringify({ bytes: expw?.bytes, file_len: praw?.length, head: praw?.toString("utf8").slice(0, 80) }) : "导出失败");
     const ct = jsonOf(await call("create_table", { source: "demo", sql: "CREATE TABLE IF NOT EXISTS e2e_roundtrip (id INTEGER PRIMARY KEY, val TEXT)" }));
     ok("create_table: 建表", ct?.table_created === "e2e_roundtrip");
     // 真实往返：库中植入 =1+1 → export 中和（'=1+1）→ import strip_neutralization 还原（=1+1）

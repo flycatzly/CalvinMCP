@@ -25,7 +25,7 @@ process.env.DBMCP_NO_LISTEN = "1";
 process.env.DBMCP_CONFIG = path.join(here, "dbmcp.config.json");
 
 const SERVER = await import("./server.mjs");
-const { intArg, VERSION, handleRpc, guardReadOnly, guardWrite, enforceLimit, scrub, scrubWith, getConfiguredSecrets, stringify, countTruncatedCells, extractWriteTarget, splitIdent, exprHasColumn, rpcInternalError, peekRpcId, probeTcp, sampleSql, classifyError, ToolError, trackRpc, finishRpc, beginDispatch, isCancelNotification, cancelRpc, stripLeadingInvis } = SERVER;
+const { intArg, enumArg, VERSION, handleRpc, guardReadOnly, guardWrite, enforceLimit, scrub, scrubWith, scrubToBuffer, getConfiguredSecrets, stringify, countTruncatedCells, extractWriteTarget, splitIdent, exprHasColumn, rpcInternalError, peekRpcId, probeTcp, sampleSql, classifyError, ToolError, trackRpc, finishRpc, beginDispatch, isCancelNotification, cancelRpc, stripLeadingInvis } = SERVER;
 // v1.6.9 观测面打点（DBMCP_ERR_LOG）
 const { fmtLogLine, logToolCall, setScrub, MAX_FIELD } = await import("./observe.mjs");
 
@@ -33,12 +33,20 @@ let pass = 0;
 let fail = 0;
 // v1.6.14: 断言数自证常量——与 3 处文档计数同源。新增/删除断言必须同步改这里与文档，
 // 否则末尾自证检查 FAIL（防 298→301 那类静默口径漂移）。两口径实测 2026-10-05：
-// 未初始化 322 / 已初始化 336（差 14 = init 块 15 钉 vs else 分支 +1；
+// 未初始化 325 / 已初始化 339（差 14 = init 块 15 钉 vs else 分支 +1；
 // v1.6.20 +4 = import 批大小动态钉 ×2 + 直方图 LEAST-NULL/文本列锚定钉 ×2；
 // v1.6.21 +2 = import COPY 分方言路由钉 + COPY 文本转义逐字节保真钉；
 // v1.6.25 +6 = parseCsv 构建重写边界钉 + csvSegmenter 全偏移/随机多切分等价钉 ×2（并行工作线落的钉）
-//             + .dbp 参数简写解析钉 ×2 + install/import 解析接线钉 ×1）。
-const EXPECTED_TOTAL = { uninit: 322, init: 336 };
+//             + .dbp 参数简写解析钉 ×2 + install/import 解析接线钉 ×1；
+// v1.6.26 +3 = format 枚举校验钉（拒绝语义 E_PARAM/no-retry + 大小写归一与缺省 + 合法值恒等）；
+// v1.6.27 +2 = scrubToBuffer 字节恒等差分钉（对抗矩阵+种子模糊）+ 孤立代理回落/退化键跳过语义钉。
+// v1.6.28 +2 = exportToCsvBuffer 直出 Buffer 恒等差分钉（共用发射器差分+scrub 接线+早停边界+种子模糊）+ 孤立代理哨兵/scrubBuffer 直调语义钉。
+// v1.6.29 +2 = createScrubPipeline 流式清洗切分不变性钉（任意切分/跨块/跨替换边界/短 key/flush）+ measureCsv/streamCsvLines 整链恒等钉（三链差分+早停零写盘+哨兵口径）。
+// v1.6.30 +1 = createBatchWriter 集束写钉（批边界不变性+超大碎片零拷贝直写+flush 尾批+写调用收数）。
+// v1.6.31 +1 = 零物化组装差分钉（融合计数/直写/scratch vs 行串真源逐字节恒等 + 逐格哨兵等价 + 早停边界 + 种子模糊）。
+// v1.6.32 +2 = createCsvRowSink 行接收器钉（增量喂入 vs 整链逐字节恒等 + eager/惰性表头 + 哨兵旗/abort 中止 + E_LIMIT 零写盘 + 种子模糊）
+//             + writeFileStreamAtomic 异步 writeFn 钉（thenable 延迟占位 + 失败清理 + EEXIST/overwrite 与同步面同语义）。
+const EXPECTED_TOTAL = { uninit: 335, init: 349 };
 function check(name, fn) {
   try { fn(); pass += 1; console.log("PASS " + name); }
   catch (e) { fail += 1; console.log("FAIL " + name + " - " + e.message); }
@@ -204,6 +212,662 @@ check("arg guard: valid limit accepted", () => {
   if (intArg(undefined, "limit", 1, 5000, 500) !== 500) throw new Error("缺省应用默认值");
   if (intArg(999999, "limit", 1, 5000, 500) !== 5000) throw new Error("超大值应夹到上限");
 });
+
+/* --- v1.6.26 回归：format 枚举非法值应显式报 E_PARAM，而非静默兜底成默认格式（query_plan→text / export_data→csv） --- */
+check("arg guard: invalid enum rejected as E_PARAM no-retry", () => {
+  for (const bad of ["xml", "JSON5", "text2", 123, true, ["json"], ["csv"], new String("json")]) {
+    for (const [allowed, dflt] of [[["text", "json"], "text"], [["csv", "json"], "csv"]]) {
+      let err = null;
+      try { enumArg(bad, "format", allowed, dflt); } catch (e) { err = e; }
+      if (!err) throw new Error("invalid enum was silently accepted: " + JSON.stringify(bad));
+      if (err.errCode !== "E_PARAM" || err.errRetry !== "no-retry") {
+        throw new Error("应为 E_PARAM/no-retry，got " + err.errCode + "/" + err.errRetry);
+      }
+      if (!err.message.includes("[" + allowed.join(", ") + "]")) {
+        throw new Error("错误信息应列出允许值: " + err.message);
+      }
+    }
+  }
+});
+check("arg guard: enum trim/case normalize, missing uses default", () => {
+  if (enumArg("JSON", "format", ["text", "json"], "text") !== "json") throw new Error("JSON 应归一为 json");
+  if (enumArg(" Text ", "format", ["text", "json"], "text") !== "text") throw new Error("首尾空白+大小写应归一为 text");
+  if (enumArg(undefined, "format", ["csv", "json"], "csv") !== "csv") throw new Error("缺省应用默认值");
+  if (enumArg(null, "format", ["csv", "json"], "csv") !== "csv") throw new Error("null 应用默认值");
+  if (enumArg("", "format", ["csv", "json"], "csv") !== "csv") throw new Error("空串应用默认值");
+});
+check("arg guard: valid enum values pass byte-identical", () => {
+  if (enumArg("text", "format", ["text", "json"], "text") !== "text") throw new Error("text 应原样通过");
+  if (enumArg("json", "format", ["text", "json"], "text") !== "json") throw new Error("json 应原样通过");
+  if (enumArg("csv", "format", ["csv", "json"], "csv") !== "csv") throw new Error("csv 应原样通过");
+});
+
+/* --- v1.6.27 回归：export 落盘清洗流式化（scrubToBuffer 字节域）必须与旧字符串链 scrubWith 逐字节恒等 --- */
+check("scrubToBuffer: 字节域与 scrubWith 字符串链逐字节恒等（对抗矩阵 + 种子模糊）", () => {
+  const cases = [
+    ["abc", ["bc", "ab"]],               // key 集重叠：顺序 pass 语义
+    ["aaaaaa", ["aa", "aaa"]],           // 自重叠 key
+    ["aXb", ["X", "a***b"]],             // 后一 key 命中跨越前一 key 的替换边界
+    ["a***b***c", ["***"]],              // 替换串本身是 key
+    ["****", ["***"]],
+    ["p=s3cr3t;s3cr3t2", ["s3cr3t2", "s3cr3t"]],  // 长短口令嵌套（SECRET_LIST 长度降序的形态）
+    ["中文🔐emoji s3cr3t 尾", ["s3cr3t", "🔐"]],   // 多字节 UTF-8 / 代理对不得切碎
+    ["mysql://u:p%40ss@h/db", ["u:p%40ss", "p%40ss"]],  // user:pass 与裸口令变体
+    ["", ["x"]], ["no hits here", ["zzz", "qqq"]], ["tail", ["tail-longer-than-text"]],
+  ];
+  for (const [t, ks] of cases) {
+    const a = scrubToBuffer(t, ks);
+    const b = Buffer.from(scrubWith(t, ks), "utf8");
+    if (Buffer.compare(a, b) !== 0) throw new Error("byte divergence: " + JSON.stringify([t, ks]));
+  }
+  let seed = 42;  // 固定种子伪随机：确定性可复现
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const alpha = ["a", "b", "c", "*", "中", "🔐", "\n", ",", "s3cr3t"];
+  for (let i = 0; i < 200; i++) {
+    let t = "";
+    for (let j = 0; j < rnd(40); j++) t += alpha[rnd(alpha.length)];
+    const ks = [];
+    for (let j = 0; j < 1 + rnd(3); j++) {
+      let k = "";
+      for (let m = 0; m < 1 + rnd(4); m++) k += alpha[rnd(6)];
+      if (k) ks.push(k);
+    }
+    if (Buffer.compare(scrubToBuffer(t, ks), Buffer.from(scrubWith(t, ks), "utf8")) !== 0) {
+      throw new Error("fuzz divergence @" + i + ": " + JSON.stringify([t, ks]));
+    }
+  }
+});
+check("scrubToBuffer: 孤立代理项回落旧链路；空键/非字符串键明确跳过（退化输入语义钉）", () => {
+  for (const [t, ks] of [
+    ["pre\uD800post", ["post", "x"]], ["pre\uDC00post", ["post"]], ["\uD800", ["x"]], ["x\uDBFF", ["x"]],
+    ["abc\uD800def", ["c\ud800d"]],   // key 含孤立代理项同样回落
+  ]) {
+    const a = scrubToBuffer(t, ks);
+    const b = Buffer.from(scrubWith(t, ks), "utf8");
+    if (Buffer.compare(a, b) !== 0) throw new Error("lone-surrogate fallback divergence: " + JSON.stringify([t, ks]));
+  }
+  // 合法代理对（emoji）不触发回落，仍逐字节恒等
+  if (Buffer.compare(scrubToBuffer("a🔐b", ["🔐"]), Buffer.from(scrubWith("a🔐b", ["🔐"]), "utf8")) !== 0) {
+    throw new Error("emoji surrogate pair must stay byte-identical");
+  }
+  // 明确偏离（防语义漂移）：空 key 与非字符串 key 一律跳过——SECRET_LIST 不会产生，
+  // scrubWith 对 "" 会在码元间插 "***"、对非字符串会隐式强转，均无产品语义
+  if (Buffer.compare(scrubToBuffer("abc", ["", 123, null]), Buffer.from("abc", "utf8")) !== 0) {
+    throw new Error("empty/non-string keys must be skipped");
+  }
+});
+
+/* --- v1.6.28 回归：export CSV 两遍精确预铺直出 Buffer（消内容串驻留）——与字符串链逐字节恒等 --- */
+check("exportToCsvBuffer: 直出 Buffer 与字符串组装逐字节恒等（共用发射器差分 + scrubBuffer 接线 + 早停边界）", () => {
+  const f = ["a", "b", "c"];
+  const rows = [
+    { a: "plain", b: 1, c: null },
+    { a: 'q"uote,comma', b: "line\nbreak", c: "中文🔐emoji" },
+    { a: "=cmd|' /C calc'!A0", b: "+1-2", c: "@tab\tcr" },
+    { a: 123n, b: 4.5, c: Buffer.from([0, 1, 255]) },
+    { a: "", b: undefined, c: 'trail"' },
+    { a: "p=s3cr3t;s3cr3t2", b: "u:p%40ss@h", c: "normal" },
+  ];
+  for (const neutralize of [true, false]) {
+    const a = SERVER.exportToCsvBuffer(f, rows, neutralize);
+    const s = SERVER.exportToCsv(f, rows, neutralize);
+    if (Buffer.compare(a.content, Buffer.from(s.content, "utf8")) !== 0) throw new Error("builder divergence neutralize=" + neutralize);
+    if (a.formula_cells_neutralized !== s.formula_cells_neutralized) throw new Error("neutralized count divergence: " + a.formula_cells_neutralized + " vs " + s.formula_cells_neutralized);
+    // 整链接线（doExportData CSV 无哨兵分支语义）：Buffer 直洗 === 字符串链洗后转字节
+    const ks = ["s3cr3t2", "s3cr3t", "u:p%40ss"];
+    if (Buffer.compare(SERVER.scrubBuffer(a.content, ks), Buffer.from(scrubWith(s.content, ks), "utf8")) !== 0) {
+      throw new Error("scrub chain divergence neutralize=" + neutralize);
+    }
+  }
+  // 早停边界：恰等 totalBytes 放行且直出缓冲长度恰等；少 1 字节两条链同文案拒绝（未写盘如实）
+  const exact = Buffer.byteLength(SERVER.exportToCsv(f, rows, true).content, "utf8");
+  const okBuf = SERVER.exportToCsvBuffer(f, rows, true, exact);
+  if (okBuf.content.length !== exact) throw new Error("exact-size alloc mismatch: " + okBuf.content.length + " vs " + exact);
+  if (!okBuf.content.toString("utf8").endsWith("\r\n")) throw new Error("CSV content must end with CRLF");
+  let msgB = "", msgS = "";
+  try { SERVER.exportToCsvBuffer(f, rows, true, exact - 1); } catch (e) { msgB = e.message || ""; }
+  try { SERVER.exportToCsv(f, rows, true, exact - 1); } catch (e) { msgS = e.message || ""; }
+  if (!/超过上限/.test(msgB) || !/未写盘/.test(msgB)) throw new Error("exportToCsvBuffer early-abort message drifted: " + msgB.slice(0, 120));
+  if (!/超过上限/.test(msgS) || !/未写盘/.test(msgS)) throw new Error("exportToCsv early-abort message drifted: " + msgS.slice(0, 120));
+  // 种子模糊：随机行集两链逐字节恒等 + scrub 接线恒等（含字面 U+FFFD：无孤立代理时字节域零分叉）
+  let seed = 20261005;  // 固定种子伪随机：确定性可复现
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const alpha = ["a", "b", '"', ",", "\r", "\n", "中", "🔐", "*", "=", "s3cr3t", "\uFFFD", ""];
+  for (let i = 0; i < 60; i++) {
+    const ff = Array.from({ length: 1 + rnd(3) }, (_, j) => "c" + j);
+    const rr = [];
+    for (let j = 0; j < rnd(6); j++) {
+      const o = {};
+      for (const name of ff) {
+        const roll = rnd(4);
+        o[name] = roll === 0 ? rnd(1000) : roll === 1 ? null : Array.from({ length: rnd(6) }, () => alpha[rnd(alpha.length)]).join("");
+      }
+      rr.push(o);
+    }
+    for (const neutralize of [true, false]) {
+      const a = SERVER.exportToCsvBuffer(ff, rr, neutralize);
+      const s = SERVER.exportToCsv(ff, rr, neutralize);
+      if (Buffer.compare(a.content, Buffer.from(s.content, "utf8")) !== 0) throw new Error("fuzz builder divergence @" + i);
+      const ks = ["s3cr3t", "ab"];
+      if (Buffer.compare(SERVER.scrubBuffer(a.content, ks), Buffer.from(scrubWith(s.content, ks), "utf8")) !== 0) {
+        throw new Error("fuzz chain divergence @" + i);
+      }
+    }
+  }
+});
+check("exportToCsvBuffer: 孤立代理哨兵 saw_lone_surrogate + scrubBuffer 直调恒等/退化键跳过（字节域 scrub 安全前置）", () => {
+  const f = ["t"];
+  const clean = SERVER.exportToCsvBuffer(f, [{ t: "a🔐b" }, { t: "plain" }], true);
+  if (clean.saw_lone_surrogate !== false) throw new Error("valid surrogate pair must not set saw_lone_surrogate");
+  for (const bad of ["pre\uD800post", "pre\uDC00post", "\uD800", "x\uDBFF"]) {
+    const r = SERVER.exportToCsvBuffer(f, [{ t: bad }], true);
+    if (r.saw_lone_surrogate !== true) throw new Error("lone surrogate must set saw_lone_surrogate: " + JSON.stringify(bad));
+    // 哨兵触发时调用方回落字符串链（doExportData 哨兵分支语义）：回落产物与旧链逐字节一致
+    const s = SERVER.exportToCsv(f, [{ t: bad }], true);
+    if (Buffer.compare(scrubToBuffer(s.content, ["post", "x"]), Buffer.from(scrubWith(s.content, ["post", "x"]), "utf8")) !== 0) {
+      throw new Error("fallback chain divergence for lone surrogate: " + JSON.stringify(bad));
+    }
+  }
+  // scrubBuffer 直调（doExportData CSV 无哨兵分支的实际入口）：无孤立代理前置下与 scrubWith 逐字节恒等
+  for (const [t, ks] of [
+    ["p=s3cr3t;s3cr3t2 tail", ["s3cr3t2", "s3cr3t"]],
+    ["aXb", ["X", "a***b"]],              // 后一 key 命中跨越前一 key 的替换边界
+    ["中文🔐 s3cr3t", ["s3cr3t", "🔐"]],   // 多字节 UTF-8 / 代理对不得切碎
+  ]) {
+    if (Buffer.compare(SERVER.scrubBuffer(Buffer.from(t, "utf8"), ks), Buffer.from(scrubWith(t, ks), "utf8")) !== 0) {
+      throw new Error("scrubBuffer direct divergence: " + JSON.stringify([t, ks]));
+    }
+  }
+  // 退化键跳过语义与 scrubToBuffer 同口径：空 key/非字符串 key 一律跳过
+  if (Buffer.compare(SERVER.scrubBuffer(Buffer.from("abc", "utf8"), ["", 123, null]), Buffer.from("abc", "utf8")) !== 0) {
+    throw new Error("scrubBuffer must skip empty/non-string keys");
+  }
+});
+
+/* --- v1.6.29 回归：export 整链流式写盘（createScrubPipeline 流式清洗 + measureCsv/streamCsvLines） --- */
+check("createScrubPipeline: 流式清洗与整段替换逐字节恒等（任意切分不变 + 跨块/跨替换边界/短 key/多级 + flush 尾部）", () => {
+  const cases = [
+    ["p=s3cr3t;s3cr3t2 tail", ["s3cr3t2", "s3cr3t"]],   // 多 key 重叠前缀
+    ["aXb", ["X", "a***b"]],                             // 后 key 命中跨越前 key 的替换边界
+    ["xxabxx", ["ab", "x"]],                             // 后 key 重扫前 key 替换产物
+    ["中文🔐s3cr3t🔐中", ["🔐", "s3cr3t"]],              // 多字节/代理对跨切分
+    ["aaaa", ["aa"]],                                    // 贪心非重叠（与 split/join 同语义）
+    ["abc", ["c"]],                                      // 命中收尾
+    ["abc", ["abcd"]],                                   // key 长于内容
+    ["a\r\nb-crlf", ["a\r\nb"]],                         // key 跨行边界（CRLF 是流字节）
+    ["s3cr3ts3cr3ts3cr3t", ["s3cr3t"]],                  // 连续命中
+    ["tab\tcr=+@", ["\t"]],                              // 单字节 key（|k|-1=0 无暂存）
+    ["ab-then-more", ["ab"]],                            // 短 key（|k|<3 输出可增长）
+    ["", ["s3cr3t"]],                                    // 空内容
+  ];
+  for (const [t, ks] of cases) {
+    const want = Buffer.from(scrubWith(t, ks), "utf8");
+    const tb = Buffer.from(t, "utf8");
+    const chunkings = [
+      [tb],                                                       // 整段
+      Array.from(tb, (b) => Buffer.from([b])),                    // 逐字节（切碎多字节序列）
+    ];
+    for (const sz of [2, 3, 5, 7]) {                              // 固定宽度循环切分
+      const parts = [];
+      for (let i = 0; i < tb.length; i += sz) parts.push(Buffer.from(tb.subarray(i, Math.min(i + sz, tb.length))));
+      chunkings.push(parts);
+    }
+    let seed = 20261005 + tb.length;                              // 种子随机切分（确定性可复现）
+    const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (let round = 0; round < 3; round++) {
+      const parts = [];
+      let i = 0;
+      while (i < tb.length) {
+        const n = 1 + rnd(4);
+        parts.push(Buffer.from(tb.subarray(i, Math.min(i + n, tb.length))));
+        i += n;
+      }
+      parts.splice(rnd(Math.max(1, parts.length)), 0, Buffer.alloc(0));  // 空块注入不得扰动输出
+      chunkings.push(parts);
+    }
+    for (const parts of chunkings) {
+      const p = SERVER.createScrubPipeline(ks);
+      const got = [];
+      for (const c of parts) got.push(p.feed(c));
+      got.push(p.flush());
+      const merged = Buffer.concat(got.filter((b) => b.length));
+      if (Buffer.compare(merged, want) !== 0) {
+        throw new Error("pipeline divergence: " + JSON.stringify([t, ks]) + " chunks=" + parts.length);
+      }
+      // emit 形态（产品路径实际形态：碎片零拷贝流出，回调即拷贝留存）与返回形态同恒等
+      const pE = SERVER.createScrubPipeline(ks);
+      const gotE = [];
+      const emit = (b) => gotE.push(Buffer.from(b));
+      for (const c of parts) pE.feed(c, emit);
+      pE.flush(emit);
+      if (Buffer.compare(Buffer.concat(gotE), want) !== 0) {
+        throw new Error("pipeline emit-form divergence: " + JSON.stringify([t, ks]) + " chunks=" + parts.length);
+      }
+    }
+  }
+  // 退化键跳过与 scrubBuffer 同口径；零 key 管线直通
+  const p2 = SERVER.createScrubPipeline(["", 123, null]);
+  const pass = p2.feed(Buffer.from("abc", "utf8"));
+  if (Buffer.compare(pass, Buffer.from("abc", "utf8")) !== 0 || p2.flush().length !== 0) {
+    throw new Error("degenerate/zero-key pipeline must pass through");
+  }
+  // flush 尾部语义：尾部 < |k| 不可能藏完整匹配——喂到只剩尾部即停，flush 原样放出且恒等
+  const t3 = "xxs3cr3txx", k3 = ["s3cr3t"];
+  const p3 = SERVER.createScrubPipeline(k3);
+  const a3 = p3.feed(Buffer.from("xxs3cr", "utf8"));   // 停在 key 中间（尾部 6 字节暂存）
+  const b3 = p3.feed(Buffer.from("3txx", "utf8"));     // 跨块补完匹配
+  const c3 = p3.flush();
+  const m3 = Buffer.concat([a3, b3, c3]);
+  if (Buffer.compare(m3, Buffer.from(scrubWith(t3, k3), "utf8")) !== 0) {
+    throw new Error("flush tail semantics divergence: " + m3.toString("hex"));
+  }
+});
+check("measureCsv/streamCsvLines: 流式整链与 Buffer/字符串链逐字节恒等 + 早停零写盘 + 哨兵口径一致", () => {
+  const f = ["a", "b", "c"];
+  const rows = [
+    { a: "plain", b: 1, c: null },
+    { a: 'q"uote,comma', b: "line\nbreak", c: "中文🔐emoji" },
+    { a: "=cmd|' /C calc'!A0", b: "+1-2", c: "@tab\tcr" },
+    { a: 123n, b: 4.5, c: Buffer.from([0, 1, 255]) },
+    { a: "", b: undefined, c: 'trail"' },
+    { a: "p=s3cr3t;s3cr3t2", b: "u:p%40ss@h", c: "normal" },
+  ];
+  const ks = ["s3cr3t2", "s3cr3t", "u:p%40ss", "ab"];   // 含短 key "ab"（|k|<3 流式同口径）
+  let strChain = null;
+  for (const neutralize of [true, false]) {
+    const scan = SERVER.measureCsv(f, rows, neutralize);
+    strChain = Buffer.from(scrubWith(SERVER.exportToCsv(f, rows, neutralize).content, ks), "utf8");
+    const bufChain = SERVER.scrubBuffer(SERVER.exportToCsvBuffer(f, rows, neutralize).content, ks);
+    const w = [];
+    const bytes = SERVER.streamCsvLines((b) => w.push(Buffer.from(b)), f, rows, ks, neutralize);
+    const streamed = Buffer.concat(w);
+    if (Buffer.compare(streamed, strChain) !== 0) throw new Error("stream vs string-chain divergence neutralize=" + neutralize);
+    if (Buffer.compare(streamed, bufChain) !== 0) throw new Error("stream vs buffer-chain divergence neutralize=" + neutralize);
+    if (bytes !== streamed.length) throw new Error("streamCsvLines byte count wrong: " + bytes + " vs " + streamed.length);
+    if (bytes !== strChain.length) throw new Error("bytes must keep scrubbed.length semantics: " + bytes + " vs " + strChain.length);
+    // pass 1 计量与既有两链口径一致（totalBytes/neutralized/saw_lone_surrogate）
+    const ref = SERVER.exportToCsvBuffer(f, rows, neutralize);
+    if (scan.totalBytes !== ref.content.length) throw new Error("measureCsv totalBytes divergence: " + scan.totalBytes + " vs " + ref.content.length);
+    if (scan.neutralized !== ref.formula_cells_neutralized) throw new Error("measureCsv neutralized divergence");
+    if (scan.saw_lone_surrogate !== false) throw new Error("clean rows must not set saw_lone_surrogate");
+  }
+  // 早停零写盘：measureCsv/streamCsvLines 超限同文案（/超过上限/未写盘/），小批负载下 write 零回调
+  const exact = Buffer.byteLength(SERVER.exportToCsv(f, rows, true).content, "utf8");
+  let msgM = "", msgS = "";
+  const preWrites = [];
+  try { SERVER.measureCsv(f, rows, true, exact - 1); } catch (e) { msgM = e.message || ""; }
+  try { SERVER.streamCsvLines((b) => preWrites.push(b), f, rows, ks, true, exact - 1); } catch (e) { msgS = e.message || ""; }
+  if (!/超过上限/.test(msgM) || !/未写盘/.test(msgM)) throw new Error("measureCsv early-abort message drifted: " + msgM.slice(0, 120));
+  if (!/超过上限/.test(msgS) || !/未写盘/.test(msgS)) throw new Error("streamCsvLines early-abort message drifted: " + msgS.slice(0, 120));
+  if (preWrites.length) throw new Error("early-stop must not write anything (未写盘如实)");
+  // 恰等上限放行：流式字节数 = 洗后长度（与 scrubbed.length 同口径；注意中和模式会改长度，用同模式参照）
+  const wantTrue = Buffer.from(scrubWith(SERVER.exportToCsv(f, rows, true).content, ks), "utf8");
+  const okBytes = SERVER.streamCsvLines(() => {}, f, rows, ks, true, exact);
+  if (okBytes !== wantTrue.length) throw new Error("exact-limit stream bytes wrong: " + okBytes + " vs " + wantTrue.length);
+  // 哨兵口径：measureCsv 与 exportToCsvBuffer 同报 saw_lone_surrogate（doExportData 回落门的判定源）
+  for (const bad of ["pre\uD800post", "pre\uDC00post", "\uD800"]) {
+    const m = SERVER.measureCsv(f, [{ a: bad, b: 0, c: null }], true);
+    const r = SERVER.exportToCsvBuffer(f, [{ a: bad, b: 0, c: null }], true);
+    if (m.saw_lone_surrogate !== true || r.saw_lone_surrogate !== true) {
+      throw new Error("sentinel divergence for lone surrogate: " + JSON.stringify(bad));
+    }
+  }
+  // 种子模糊 40 轮：随机行集流式 == Buffer 链 == 字符串链（含短 key / 中文 / emoji / 引号换行）
+  let seed = 20261005;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const alpha = ["a", "b", '"', ",", "\r", "\n", "中", "🔐", "*", "=", "s3cr3t", "ab", "\uFFFD", ""];
+  for (let i = 0; i < 40; i++) {
+    const ff = Array.from({ length: 1 + rnd(3) }, (_, j) => "c" + j);
+    const rr = [];
+    for (let j = 0; j < rnd(6); j++) {
+      const o = {};
+      for (const name of ff) {
+        const roll = rnd(4);
+        o[name] = roll === 0 ? rnd(1000) : roll === 1 ? null : Array.from({ length: rnd(8) }, () => alpha[rnd(alpha.length)]).join("");
+      }
+      rr.push(o);
+    }
+    const want = Buffer.from(scrubWith(SERVER.exportToCsv(ff, rr, true).content, ks), "utf8");
+    const w = [];
+    const bytes = SERVER.streamCsvLines((b) => w.push(Buffer.from(b)), ff, rr, ks, true);
+    const streamed = Buffer.concat(w);
+    if (Buffer.compare(streamed, want) !== 0) throw new Error("fuzz stream divergence @" + i);
+    if (bytes !== want.length) throw new Error("fuzz byte count wrong @" + i);
+    if (Buffer.compare(SERVER.scrubBuffer(SERVER.exportToCsvBuffer(ff, rr, true).content, ks), want) !== 0) {
+      throw new Error("fuzz buffer chain divergence @" + i);
+    }
+  }
+  // writeFileStreamAtomic：流式写入 + 原子占位语义与 writeFileAtomic 一致（EEXIST 显式拒绝/overwrite 放行）
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dbmcp-streamw-"));
+  const target = path.join(tmp, "out.bin");
+  SERVER.writeFileStreamAtomic(target, (fd) => { fs.writeSync(fd, "hello-"); fs.writeSync(fd, "stream"); });
+  if (fs.readFileSync(target, "utf8") !== "hello-stream") throw new Error("writeFileStreamAtomic content wrong");
+  let eexist = "";
+  try { SERVER.writeFileStreamAtomic(target, (fd) => { fs.writeSync(fd, "x"); }); } catch (e) { eexist = e.message || ""; }
+  if (!/目标文件已存在/.test(eexist)) throw new Error("writeFileStreamAtomic must reject existing target: " + eexist.slice(0, 80));
+  if (fs.readFileSync(target, "utf8") !== "hello-stream") throw new Error("failed link must not clobber target");
+  SERVER.writeFileStreamAtomic(target, (fd) => { fs.writeSync(fd, "over"); }, true);
+  if (fs.readFileSync(target, "utf8") !== "over") throw new Error("overwrite=true must replace target");
+  let failKept = "";
+  try { SERVER.writeFileStreamAtomic(path.join(tmp, "fail.bin"), (fd) => { fs.writeSync(fd, "partial"); throw new Error("boom"); }); } catch (e) { failKept = e.message || ""; }
+  if (failKept !== "boom") throw new Error("writeFn error must propagate unchanged: " + failKept);
+  if (fs.existsSync(path.join(tmp, "fail.bin"))) throw new Error("failed write must not leave target");
+  if (fs.readdirSync(tmp).some((n) => n.endsWith(".tmp"))) throw new Error("tmp residue must be cleaned");
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/* --- v1.6.32 回归：query 侧行集流式（createCsvRowSink 行接收器 + writeFileStreamAtomic 异步形态） --- */
+check("createCsvRowSink: 增量喂入与整链逐字节恒等（eager/惰性表头 + 账面口径 + 哨兵旗/abort + E_LIMIT 零写盘）", () => {
+  const f = ["a", "b", "c"];
+  const rows = [
+    { a: "plain", b: 1, c: null },
+    { a: 'q"uote,comma', b: "line\nbreak", c: "中文🔐emoji" },
+    { a: "=cmd|' /C calc'!A0", b: "+1-2", c: "@tab\tcr" },
+    { a: 123n, b: 4.5, c: Buffer.from([0, 1, 255]) },
+    { a: "", b: undefined, c: 'trail"' },
+    { a: "p=s3cr3t;s3cr3t2", b: "u:p%40ss@h", c: "normal" },
+  ];
+  const ks = ["s3cr3t2", "s3cr3t", "u:p%40ss", "ab"];
+  for (const neutralize of [true, false]) {
+    const want = Buffer.from(scrubWith(SERVER.exportToCsv(f, rows, neutralize).content, ks), "utf8");
+    const ref = SERVER.measureCsv(f, rows, neutralize);
+    // eager 表头（fields 数组构造即发）逐行喂入 == 字符串链 == streamCsvLines 账面
+    const w = [];
+    const sink = SERVER.createCsvRowSink((b) => w.push(Buffer.from(b)), f, ks, neutralize);
+    for (const r of rows) sink.row(r);
+    const fin = sink.finish();
+    if (Buffer.compare(Buffer.concat(w), want) !== 0) throw new Error("sink eager divergence neutralize=" + neutralize);
+    if (fin.written !== want.length) throw new Error("sink written wrong: " + fin.written + " vs " + want.length);
+    if (fin.neutralized !== ref.neutralized) throw new Error("sink neutralized divergence: " + fin.neutralized + " vs " + ref.neutralized);
+    if (fin.saw_lone_surrogate !== false) throw new Error("clean rows must not set saw_lone_surrogate");
+    // 惰性表头（fields=null，首行 Object.keys 定列）与 eager 逐字节恒等（fixture 列序一致）
+    const w2 = [];
+    const sink2 = SERVER.createCsvRowSink((b) => w2.push(Buffer.from(b)), null, ks, neutralize);
+    for (const r of rows) sink2.row(r);
+    const fin2 = sink2.finish();
+    if (Buffer.compare(Buffer.concat(w2), want) !== 0) throw new Error("lazy-header divergence neutralize=" + neutralize);
+    if (fin2.written !== want.length || fin2.neutralized !== ref.neutralized) throw new Error("lazy sink accounting wrong");
+  }
+  // 零行双形态：eager 表头 = 列名行；惰性 finish() 发空列表头——分别与 exportToCsv(f, [])/([], []) 恒等
+  const wantH = Buffer.from(scrubWith(SERVER.exportToCsv(f, [], true).content, ks), "utf8");
+  const wH = [];
+  const finH = SERVER.createCsvRowSink((b) => wH.push(Buffer.from(b)), f, ks, true).finish();
+  if (Buffer.compare(Buffer.concat(wH), wantH) !== 0 || finH.written !== wantH.length) throw new Error("eager zero-row header divergence");
+  const wantE = Buffer.from(scrubWith(SERVER.exportToCsv([], [], true).content, ks), "utf8");
+  const wE = [];
+  const finE = SERVER.createCsvRowSink((b) => wE.push(Buffer.from(b)), null, ks, true).finish();
+  if (Buffer.compare(Buffer.concat(wE), wantE) !== 0 || finE.written !== wantE.length) throw new Error("lazy zero-row empty-header divergence");
+  // 表头重复设置显式拒绝（onFields 双发即内部不变量破坏，不静默双表头）
+  let dupMsg = "";
+  const sinkD = SERVER.createCsvRowSink(() => {}, f, ks, true);
+  try { sinkD.header(f); } catch (e) { dupMsg = e.message || ""; }
+  if (!/表头重复设置/.test(dupMsg)) throw new Error("duplicate header must be rejected: " + dupMsg.slice(0, 80));
+  // 哨兵旗标模式（默认）：孤立代理项记旗不中止，输出与字符串链仍逐字节恒等
+  //（ks 无 U+FFFD/代理项键——该键型才是字节域/字符串域分叉面，键哨兵由 doExportData 门挡）
+  const D800 = String.fromCharCode(0xd800);
+  const DC00 = String.fromCharCode(0xdc00);
+  for (const bad of ["pre" + D800 + "post", "pre" + DC00 + "post", D800]) {
+    const rr = [{ a: bad, b: 0, c: null }];
+    const want = Buffer.from(scrubWith(SERVER.exportToCsv(f, rr, true).content, ks), "utf8");
+    const w = [];
+    const sink = SERVER.createCsvRowSink((b) => w.push(Buffer.from(b)), f, ks, true);
+    for (const r of rr) sink.row(r);
+    const fin = sink.finish();
+    if (fin.saw_lone_surrogate !== true) throw new Error("sink sentinel flag missing");
+    if (Buffer.compare(Buffer.concat(w), want) !== 0) throw new Error("flag-mode sentinel must not change bytes");
+    if (fin.written !== want.length) throw new Error("flag-mode written wrong");
+  }
+  // abort 模式（流式产品路径）：首格命中即抛 ContentSentinelAbort，scratch 未冲刷 → 零写回调
+  const wA = [];
+  let abortErr = null;
+  const sinkA = SERVER.createCsvRowSink((b) => wA.push(b), f, ks, true, 20 * 1024 * 1024, { sentinel: "abort" });
+  try {
+    for (const r of [{ a: "ok", b: 1, c: null }, { a: D800, b: 2, c: null }, { a: "never", b: 3, c: null }]) sinkA.row(r);
+    sinkA.finish();
+  } catch (e) { abortErr = e; }
+  if (!abortErr || !SERVER.isContentSentinelAbort(abortErr) || abortErr.name !== "ContentSentinelAbort") {
+    throw new Error("abort mode must raise ContentSentinelAbort");
+  }
+  if (wA.length) throw new Error("abort before flush must not write anything");
+  if (SERVER.isContentSentinelAbort(new Error("x")) || SERVER.isContentSentinelAbort(null)) {
+    throw new Error("isContentSentinelAbort must not misclassify");
+  }
+  // abort 对惰性表头格同样生效（首行 Object.keys → emitHeader 命中哨兵即中止）
+  let abortHdr = null;
+  const sinkB = SERVER.createCsvRowSink((b) => {}, null, ks, true, 20 * 1024 * 1024, { sentinel: "abort" });
+  try { sinkB.row({ [D800]: 1 }); sinkB.finish(); } catch (e) { abortHdr = e; }
+  if (!abortHdr || !SERVER.isContentSentinelAbort(abortHdr)) throw new Error("lazy header sentinel must abort");
+  // E_LIMIT：行边界早停与 eachCsvLine 同文案（/超过上限/未写盘/），小批负载零写回调；恰等上限放行
+  const exact = Buffer.byteLength(SERVER.exportToCsv(f, rows, true).content, "utf8");
+  let msgL = "";
+  const wL = [];
+  const sinkL = SERVER.createCsvRowSink((b) => wL.push(b), f, ks, true, exact - 1);
+  try {
+    for (const r of rows) sinkL.row(r);
+    sinkL.finish();
+  } catch (e) { msgL = e.message || ""; }
+  if (!/超过上限/.test(msgL) || !/未写盘/.test(msgL)) throw new Error("sink E_LIMIT message drifted: " + msgL.slice(0, 120));
+  if (wL.length) throw new Error("sink early-stop must not write anything (未写盘如实)");
+  const wantT = Buffer.from(scrubWith(SERVER.exportToCsv(f, rows, true).content, ks), "utf8");
+  const wT = [];
+  const sinkT = SERVER.createCsvRowSink((b) => wT.push(Buffer.from(b)), f, ks, true, exact);
+  for (const r of rows) sinkT.row(r);
+  const finT = sinkT.finish();
+  if (finT.written !== wantT.length) throw new Error("exact-limit sink wrong: " + finT.written + " vs " + wantT.length);
+  if (Buffer.compare(Buffer.concat(wT), wantT) !== 0) throw new Error("exact-limit sink divergence");
+  // 种子模糊 20 轮：随机行集增量喂入 == 字符串链（惰性表头；含短 key/中文/emoji/引号换行）
+  let seed = 20261005;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const alpha = ["a", "b", '"', ",", "\r", "\n", "中", "🔐", "*", "=", "s3cr3t", "ab", ""];
+  for (let i = 0; i < 20; i++) {
+    const ff = Array.from({ length: 1 + rnd(3) }, (_, j) => "c" + j);
+    const rr = [];
+    for (let j = 0; j < rnd(6); j++) {
+      const o = {};
+      for (const name of ff) {
+        const roll = rnd(4);
+        o[name] = roll === 0 ? rnd(1000) : roll === 1 ? null : Array.from({ length: rnd(8) }, () => alpha[rnd(alpha.length)]).join("");
+      }
+      rr.push(o);
+    }
+    const want = Buffer.from(scrubWith(SERVER.exportToCsv(ff, rr, true).content, ks), "utf8");
+    const w = [];
+    // 惰性表头仅在有行时等价（首行 Object.keys）；零行产品面必有 onFields 列名 → 走 eager
+    //（惰性零行的空列表头语义已单独钉为 exportToCsv([], []) 恒等）
+    const sink = SERVER.createCsvRowSink((b) => w.push(Buffer.from(b)), rr.length ? null : ff, ks, true);
+    for (const r of rr) sink.row(r);
+    const fin = sink.finish();
+    if (Buffer.compare(Buffer.concat(w), want) !== 0) throw new Error("fuzz sink divergence @" + i);
+    if (fin.written !== want.length) throw new Error("fuzz sink byte count wrong @" + i);
+  }
+});
+await checkAsync("writeFileStreamAtomic: 异步 writeFn 形态与同步面同语义（thenable 延迟占位 + 失败清理 + EEXIST/overwrite 一致）", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dbmcp-streamw-async-"));
+  try {
+    const target = path.join(tmp, "async.bin");
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const p = SERVER.writeFileStreamAtomic(target, async (fd) => {
+      fs.writeSync(fd, "async-");
+      await gate;
+      fs.writeSync(fd, "done");
+    });
+    if (!(p && typeof p.then === "function")) throw new Error("async writeFn must return a Promise");
+    // 消费未完成 → 目标不出现（原子占位延迟到 writeFn 的 Promise 落定）
+    if (fs.existsSync(target)) throw new Error("target must not appear before writeFn settles");
+    release();
+    await p;
+    if (fs.readFileSync(target, "utf8") !== "async-done") throw new Error("async content wrong");
+    // 异步失败：错误原样上抛、目标不出现、无 .tmp 残骸
+    let failMsg = "";
+    try {
+      await SERVER.writeFileStreamAtomic(path.join(tmp, "fail.bin"), async (fd) => {
+        fs.writeSync(fd, "partial");
+        await Promise.resolve();
+        throw new Error("async-boom");
+      });
+    } catch (e) { failMsg = e.message || ""; }
+    if (failMsg !== "async-boom") throw new Error("async writeFn error must propagate unchanged: " + failMsg);
+    if (fs.existsSync(path.join(tmp, "fail.bin"))) throw new Error("failed async write must not leave target");
+    // EEXIST / overwrite 与同步面逐字一致（同 copy、失败不覆盖）
+    let eexist = "";
+    try {
+      await SERVER.writeFileStreamAtomic(target, async (fd) => { fs.writeSync(fd, "x"); });
+    } catch (e) { eexist = e.message || ""; }
+    if (!/目标文件已存在/.test(eexist)) throw new Error("async EEXIST copy drifted: " + eexist.slice(0, 80));
+    if (fs.readFileSync(target, "utf8") !== "async-done") throw new Error("failed async link must not clobber target");
+    await SERVER.writeFileStreamAtomic(target, async (fd) => { await Promise.resolve(); fs.writeSync(fd, "over"); }, true);
+    if (fs.readFileSync(target, "utf8") !== "over") throw new Error("async overwrite=true must replace target");
+    if (fs.readdirSync(tmp).some((n) => n.endsWith(".tmp"))) throw new Error("tmp residue must be cleaned");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+/* --- v1.6.30 回归：createBatchWriter 集束写（高频小块收成低频大块，export 耗时回收本体） --- */
+check("createBatchWriter: 集束写逐字节恒等（批边界不变 + 超大碎片零拷贝直写 + flush 尾批幂等 + 写调用收数）", () => {
+  for (const batchBytes of [4096, 8192]) {
+    const collected = [];
+    const calls = [];
+    const bw = SERVER.createBatchWriter((b) => { calls.push(b); collected.push(Buffer.from(b)); }, batchBytes);
+    const pushed = [];
+    const oversizeObjs = [];
+    let seed = 20261005 + batchBytes;
+    const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (let i = 0; i < 400; i++) {
+      const pick = rnd(6);
+      let sz;
+      if (pick === 0) sz = 0;
+      else if (pick === 1) sz = 1 + rnd(8);                    // 微片（"***" 3 字节同口径）
+      else if (pick === 2) sz = batchBytes - 1 + rnd(3);        // 批边界 -1/0/+1
+      else if (pick === 3) sz = batchBytes + rnd(batchBytes);   // 超大碎片（≥ BATCH，直写路径）
+      else if (pick === 4) sz = 3;
+      else sz = 1 + rnd(2000);
+      const frag = Buffer.alloc(sz, 97 + (i % 26));
+      if (sz >= batchBytes) oversizeObjs.push(frag);
+      pushed.push(frag);
+      bw.push(frag);
+      if (i % 37 === 0) bw.flush();                             // 随机冲刷：批边界不得丢/重字节
+    }
+    bw.flush();
+    bw.flush();                                                 // 幂等：二次 flush 不得多写
+    if (Buffer.compare(Buffer.concat(collected), Buffer.concat(pushed)) !== 0) {
+      throw new Error("batch writer byte divergence (batch=" + batchBytes + ")");
+    }
+    // 批块 ≤ batchBytes；超大碎片必须零拷贝整块直写（写回调收到同一缓冲对象）
+    for (const b of calls) {
+      if (b.length > batchBytes && !oversizeObjs.includes(b)) throw new Error("unexpected oversized block leaked");
+    }
+    for (const obj of oversizeObjs) {
+      if (!calls.some((b) => b === obj)) throw new Error("oversize fragment must be written as-is (no copy)");
+    }
+    // 写调用收数：碎片数远多于落出块数（退回逐片直写须被钉住）
+    const bound = oversizeObjs.length + Math.ceil(Buffer.concat(pushed).length / batchBytes) + 2;
+    if (calls.length > bound) throw new Error("write calls not batched: " + calls.length + " > " + bound);
+  }
+  // 尾批只有 flush 才落出；flush 后 push 续写不丢
+  const out = [];
+  const bw = SERVER.createBatchWriter((b) => out.push(Buffer.from(b)));
+  bw.push(Buffer.from("尾批"));
+  if (out.length !== 0) throw new Error("partial batch must not leak before flush");
+  bw.push(Buffer.from("-tail"));
+  bw.flush();
+  if (Buffer.concat(out).toString("utf8") !== "尾批-tail") throw new Error("flush must release tail batch");
+  bw.push(Buffer.from("again"));
+  bw.flush();
+  if (Buffer.concat(out).toString("utf8") !== "尾批-tailagain") throw new Error("push after flush must keep working");
+});
+/* --- v1.6.31 回归：零物化行格式化（融合计数/直写/scratch 直写 vs 行串真源逐字节恒等） --- */
+check("零物化组装差分钉（融合计数/直写/scratch vs 行串真源 + 逐格哨兵等价 + 早停边界 + 种子模糊）", () => {
+  const truth = (ff, rr, nt) => SERVER.exportToCsv(ff, rr, nt).content;   // 行串真源（eachCsvLine）
+  // 对抗字符以 fromCharCode 运行时构造（原始未配对代理字符不可写入源文本层）
+  const HI = String.fromCharCode(0xD800);                                // 孤立高位代理
+  const LO = String.fromCharCode(0xDC00);                                // 孤立低位代理
+  const EMOJI = String.fromCharCode(0xD83D, 0xDE00);                     // 合法代理对（必须不误报哨兵）
+  const FFFF = String.fromCharCode(0xFFFF);
+  // 对抗行集：孤立代理在格首/格尾/格中、相邻格拼成合法代理对（必须不误报）、引号/逗号/CR/LF、
+  // 公式中和、CJK、空值、非字符串（number/bigint/BLOB）、超大格（>21845 码元走 scratch 精确路径）
+  const fields = ["a", "b", "c", "=head", "e"];
+  const big = "x".repeat(30000);                                        // 超大格：scratch 整格直喂分支
+  const rowsAdv = [
+    { a: HI + "pre", b: "post" + LO, c: "ok", "=head": 1, e: null },
+    { a: "x" + HI, b: LO + "y", c: "\"q,\" \r\n z", "=head": "=cmd", e: "好" },
+    { a: EMOJI, b: EMOJI + "tail", c: "", "=head": "@x", e: 123n },
+    { a: big, b: "z".repeat(21846), c: "t", "=head": -1, e: "u" },
+    { a: null, b: undefined, c: 0.5, "=head": "\tT", e: Buffer.from([222, 173]) },
+    { a: HI, b: LO, c: "\r", "=head": "\n", e: "s" },
+  ];
+  for (const nt of [true, false]) {
+    const content = truth(fields, rowsAdv, nt);
+    const want = Buffer.from(content, "utf8");
+    // 1) 计量恒等：measureCsv.totalBytes ≡ 行串真源字节数；中和计数 ≡ 真源口径
+    const scan = SERVER.measureCsv(fields, rowsAdv, nt);
+    if (scan.totalBytes !== want.length) throw new Error("measure totalBytes divergence: " + scan.totalBytes + " vs " + want.length);
+    const expectNeutral = (() => {
+      let c = 0;
+      const bump = (v) => { if (nt && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) c++; };
+      for (const f of fields) bump(f);
+      for (const r of rowsAdv) for (const f of fields) bump(r?.[f]);
+      return c;
+    })();
+    if (scan.neutralized !== expectNeutral) throw new Error("neutralized divergence: " + scan.neutralized + " vs " + expectNeutral);
+    // 2) 逐格哨兵 ≡ 逐行哨兵（行串真源逐行 LONE 判定为基准）
+    const wantLone = content.split("\r\n").some((l) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(l));
+    if (scan.saw_lone_surrogate !== wantLone) throw new Error("sentinel divergence: per-cell " + scan.saw_lone_surrogate + " vs per-line " + wantLone);
+    // 3) 直写恒等：exportToCsvBuffer ≡ 行串真源字节（含超大格的精确 byteLength 分支）
+    const got = SERVER.exportToCsvBuffer(fields, rowsAdv, nt);
+    if (Buffer.compare(got.content, want) !== 0) throw new Error("buffer chain divergence (adversarial)");
+    if (got.saw_lone_surrogate !== wantLone) throw new Error("buffer sentinel divergence");
+    // 4) scratch 直写恒等：streamCsvLines ≡ scrub(行串真源)，早停口径与真源同点位
+    for (const list of [[], ["s3cr3t", "ok"], ["x"], ["好", EMOJI]]) {
+      const w = [];
+      const bytes = SERVER.streamCsvLines((b) => w.push(Buffer.from(b)), fields, rowsAdv, list, nt);
+      const wantScrub = Buffer.from(SERVER.scrubWith(content, list), "utf8");
+      if (Buffer.compare(Buffer.concat(w), wantScrub) !== 0) throw new Error("stream chain divergence (adversarial, keys=" + list.length + ")");
+      if (bytes !== wantScrub.length) throw new Error("stream byte count divergence: " + bytes + " vs " + wantScrub.length);
+    }
+  }
+  // 5) 早停边界：exact-1 抛 E_LIMIT 同一文案、零 write 回调；exact 过
+  const ff = ["a", "b"];
+  const rr = [{ a: "1", b: "2" }, { a: "3", b: "4" }];
+  const base = SERVER.measureCsv(ff, rr, true);
+  const over = base.totalBytes - 1;
+  let msg = "";
+  try { SERVER.measureCsv(ff, rr, true, over); } catch (e) { msg = e.message || ""; }
+  if (!/超过上限/.test(msg) || !/组装期早停，未写盘/.test(msg)) throw new Error("early-stop copy drift: " + msg.slice(0, 60));
+  let wmsg = "", wcalls = 0;
+  try { SERVER.streamCsvLines(() => { wcalls++; }, ff, rr, [], true, over); } catch (e) { wmsg = e.message || ""; }
+  if (!/超过上限/.test(wmsg) || !/组装期早停，未写盘/.test(wmsg)) throw new Error("stream early-stop copy drift: " + wmsg.slice(0, 60));
+  if (wcalls !== 0) throw new Error("early-stop must not write (calls=" + wcalls + ")");
+  if (SERVER.measureCsv(ff, rr, true, base.totalBytes).totalBytes !== base.totalBytes) throw new Error("exact-limit must pass");
+  // 6) 种子模糊：随机行集三链逐字节恒等（真源 vs 融合计数/直写/scratch）
+  let seed = 20261005;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const alpha = ["p", "q\"", ",", "\n", "\r", "=", "@", "好", EMOJI, HI, FFFF, "'", "x".repeat(300), ""];
+  for (let i = 0; i < 40; i++) {
+    const nf = 1 + rnd(4);
+    const ffs = Array.from({ length: nf }, (_, j) => "f" + j + (rnd(3) === 0 ? "名" : ""));
+    const rrs = Array.from({ length: rnd(12) }, () => {
+      const o = {};
+      for (const f of ffs) {
+        const p = rnd(5);
+        o[f] = p === 0 ? rnd(1000) : p === 1 ? (rnd(2) ? "pre" + rnd(50) : "") : alpha[rnd(alpha.length)];
+      }
+      return o;
+    });
+    const content = truth(ffs, rrs, true);
+    const want = Buffer.from(content, "utf8");
+    const scan = SERVER.measureCsv(ffs, rrs, true);
+    if (scan.totalBytes !== want.length) throw new Error("fuzz measure divergence @" + i);
+    if (Buffer.compare(SERVER.exportToCsvBuffer(ffs, rrs, true).content, want) !== 0) throw new Error("fuzz buffer divergence @" + i);
+    const w = [];
+    const bytes = SERVER.streamCsvLines((b) => w.push(Buffer.from(b)), ffs, rrs, ["f0", "x"], true);
+    const wantScrub = Buffer.from(SERVER.scrubWith(content, ["f0", "x"]), "utf8");
+    if (Buffer.compare(Buffer.concat(w), wantScrub) !== 0) throw new Error("fuzz stream divergence @" + i);
+    if (bytes !== wantScrub.length) throw new Error("fuzz stream bytes divergence @" + i);
+  }
+});
+
 
 /* --- v1.0.2 回归：末尾行注释不得吞掉包裹括号（旧版生成语法错误的 SQL） --- */
 for (const [s, tail] of [

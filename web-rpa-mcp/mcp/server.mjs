@@ -30,7 +30,7 @@ import {
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.5.10';
+const VERSION = '1.5.19';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';
@@ -358,7 +358,7 @@ tool('flow_run',
       allowLintErrors: { type: 'boolean', description: '忽略静态检查的阻断项强制运行' },
       learn: { type: 'boolean', description: '是否把自愈成功的定位符回写进流程文件，默认 true' },
       evidenceOn: { type: 'string', enum: ['always', 'failure', 'never'] },
-      maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）' },
+      maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）。计时自运行开始，含 profile 锁等待（被剩余预算夹取）与浏览器启动（不可中断，越线≤启动时长）；报告与响应带 budgetOverrunMs/budgetSource 可观测字段' },
       saveVideo: { type: 'boolean', description: '本次是否全程录像留证；不传用配置 run.saveVideo（流程含敏感输入时自动跳过，防录像泄露密码画面）' },
       videoOn: { type: 'string', enum: ['failure', 'always'], description: '成功时是否保留录像（failure=删成功录像省空间）' },
       trigger: { type: 'string' },
@@ -389,6 +389,8 @@ tool('flow_run',
       videoNote: report.videoNote || null,
       timedOut: !!report.timedOut,
       maxDurationMs: report.maxDurationMs,
+      budgetOverrunMs: report.budgetOverrunMs,
+      budgetSource: report.budgetSource || null,
       reportPath: report.reportPath,
       notifications: report.notifications,
     }, head);
@@ -421,8 +423,8 @@ tool('run_report', '读取某次执行的完整报告（默认 latest）。',
 
 tool('status_report',
   '无人值守总览：所有流程的总运行次数（totalRuns=真实总数，含进行中/中断，不受摘要窗口封顶）、最后状态、' +
-  '连续失败次数（consecutiveFailures 只数已定论的失败 fail/blocked，进行中 running/崩溃 interrupted 不计）、' +
-  '是否中断/正在执行/等待人工、自愈趋势、定时配置，以及需要关注的问题清单。' +
+  '连续失败次数（consecutiveFailures 只数已定论的失败 fail/blocked，进行中 running/崩溃 interrupted 不计；全量真值不受摘要窗口封顶）、' +
+  '是否中断/正在执行/等待人工、自愈趋势（healedTotal=全量累计自愈次数，同样不受摘要窗口封顶）、定时配置，以及需要关注的问题清单。' +
   '每天早上（或定时任务跑完后）先看这一个就够。',
   { type: 'object', properties: { onlyProblems: { type: 'boolean', description: '只返回有问题的流程' } } },
   async (a) => {
@@ -686,7 +688,7 @@ tool('profile_reset',
   async (a) => {
     if (a.confirm !== true) return fail('为防误操作，需要显式传 confirm: true');
     const before = profileInfo();
-    const r = resetProfile();
+    const r = await resetProfile();
     return ok({ before, result: r }, r.removed ? '已清空 profile（下次执行需要重新登录）' : 'profile 目录不存在，无需清理');
   });
 

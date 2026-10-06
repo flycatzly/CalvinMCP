@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { formatDate, addDays, slugify, maskSecret, redactByKey, redactPath, maskingEnabled, redactKeyList, log, readConfig, writeConfig, DIRS } from '../lib/core.mjs';
 import { readTable, resolveColumn, readXlsx } from '../lib/table.mjs';
 import { resolveTemplate, resolveBuiltin, resolveToken, autodetectVariables, fromTable, resolveParams } from '../lib/vars.mjs';
+import { acquireLock, acquireLockWithWait, releaseLock } from '../lib/ops.mjs';
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -522,7 +523,7 @@ t('SAFE_ID_PATTERN 编译为合法正则且与 assertSafeId 同向', () => {
 });
 
 await ta('schedule.taskPrefix 配置驱动系统任务名前缀（恢复默认不残留）', async () => {
-  const { taskName } = await import('../lib/schedule.mjs');
+  const { taskName, defaultTaskPrefix } = await import('../lib/schedule.mjs');
   const before = readConfig().schedule;
   writeConfig({ schedule: { taskPrefix: 'XPA' } });
   try {
@@ -530,7 +531,57 @@ await ta('schedule.taskPrefix 配置驱动系统任务名前缀（恢复默认�
   } finally {
     writeConfig({ schedule: before });
   }
-  assert.equal(taskName('f1'), 'WebRPA\\f1', 'taskPrefix 未恢复默认');
+  // 默认前缀随实例隔离漂移（WEBRPA_ROOT 注入时带 ROOT 短哈希），断言"恢复到默认"而非字面量
+  assert.equal(taskName('f1'), defaultTaskPrefix() + '\\f1', 'taskPrefix 未恢复默认');
+});
+
+/* ---------- 锁：有界等待 acquireLockWithWait（profile 锁等待语义的底层件） ---------- */
+await ta('acquireLockWithWait 无竞争立即拿到（含 waitMs=0 不等待路径）', async () => {
+  const id = 't-unit-lock-w0';
+  try {
+    const r = await acquireLockWithWait(id, { trigger: 'unit' }, 2000);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(r.waitedMs < 200, '无竞争不应有可观等待: ' + r.waitedMs);
+    const r0 = await acquireLockWithWait(id + '-0', { trigger: 'unit' }, 0);
+    assert.equal(r0.ok, true, JSON.stringify(r0));
+  } finally { releaseLock(id); releaseLock(id + '-0'); }
+});
+
+await ta('acquireLockWithWait 撞活锁后预算内等对方放（waitedMs 如实上报）', async () => {
+  const id = 't-unit-lock-w1';
+  acquireLock(id, { trigger: 'unit-holder' });
+  const releaser = setTimeout(() => releaseLock(id), 400);
+  try {
+    const r = await acquireLockWithWait(id, { trigger: 'unit-waiter' }, 2000);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(r.waitedMs >= 300, '应真等到对方放锁（约 400ms 后才放）: ' + r.waitedMs);
+  } finally { clearTimeout(releaser); releaseLock(id); }
+});
+
+await ta('acquireLockWithWait 超预算诚实失败：ok=false 带 heldBy 与 waitedMs', async () => {
+  const id = 't-unit-lock-w2';
+  acquireLock(id, { trigger: 'unit-holder' });
+  try {
+    const r = await acquireLockWithWait(id, { trigger: 'unit-waiter' }, 300);
+    assert.equal(r.ok, false);
+    assert.ok(r.heldBy && r.heldBy.held === true, 'heldBy 应指向仍持有锁的一方: ' + JSON.stringify(r.heldBy));
+    assert.ok(r.waitedMs >= 250, '超预算失败也要如实报等待时长: ' + r.waitedMs);
+    assert.ok(r.waitedMs < 1500, '不应远超预算: ' + r.waitedMs);
+  } finally { releaseLock(id); }
+});
+
+await ta('browser.profileWaitMs 配置键可写可读（默认 3000；0=撞上即报的旧行为口径）', async () => {
+  const before = readConfig().browser;
+  assert.equal(typeof before.profileWaitMs, 'number', 'DEFAULT_CONFIG.browser 应带 profileWaitMs');
+  writeConfig({ browser: Object.assign({}, before, { profileWaitMs: 4321 }) });
+  try {
+    assert.equal(readConfig().browser.profileWaitMs, 4321);
+    writeConfig({ browser: Object.assign({}, readConfig().browser, { profileWaitMs: 0 }) });
+    assert.equal(readConfig().browser.profileWaitMs, 0, '0 必须原样保留（不被默认值吞掉）');
+  } finally {
+    writeConfig({ browser: before });
+  }
+  assert.equal(readConfig().browser.profileWaitMs, before.profileWaitMs, '恢复后不残留');
 });
 
 console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');

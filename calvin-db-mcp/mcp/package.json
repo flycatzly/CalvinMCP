@@ -1,6 +1,6 @@
 {
   "name": "calvin-db-mcp",
-  "version": "1.6.25",
+  "version": "1.6.32",
   "private": true,
   "type": "module",
   "description": "MySQL + PostgreSQL + SQLite MCP server, LLM-friendly with read-only guard and data verification tools",

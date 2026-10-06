@@ -6,7 +6,7 @@
  *      请求形态与响应解析 —— 不 mock fetch，走真 socket，请求体/鉴权头都能断言；
  *   2) nlplan/agent/explore 纯函数层：动作白名单拒绝静默丢弃、危险目标拒绝、
  *      生产地址审批口径、fail-fast 执行、JSON 报告形状、死链坏图判定口径；
- *   3) 工具面：tools/list 14 个工具、nl_test_goal 的拒绝路径（不开浏览器）；
+ *   3) 工具面：tools/list 16 个工具、nl_test_goal 的拒绝路径（不开浏览器）；
  *   4) 自愈线与采集线纯函数（v1.8.0）：语义词提取、候选排序、选择题边界、翻页归并与两期对比；
  *   5) 自愈 LLM 预算闸门（v1.8.1）：整次运行调用预算、耗尽短路零调用、穿线与报告用量；
  *   6) 探活预算闸门（v1.8.5）：慢死主机单探测超时、整段总预算、耗尽诚实 partial 不静默吞链接。
@@ -23,8 +23,9 @@ import { fileURLToPath } from 'node:url';
 import { resolveLlm, llmChatJson, llmStatus, maskSecrets } from '../lib/llmclient.js';
 import { normalizePlan, fallbackPlan, verdictOf, buildPlanMessages, ACTS, PLAN_MAX_STEPS } from '../lib/nlplan.js';
 import {
-  assertGoalAllowed, assertTargetAllowed, executePlan, buildReport, writeReport, DANGEROUS_GOAL_PATTERNS,
+  assertGoalAllowed, assertTargetAllowed, executePlan, buildReport, writeReport, DANGEROUS_GOAL_PATTERNS, stepCliArgs, judgeExpectation,
 } from '../lib/agent.js';
+import { browserChannelFlags } from '../lib/cli.js';
 import {
   parseFactsFile, judgeImages, classifyLinks, probeLinks, judgeExplore, parseConsoleErrors,
   formHash, formsSummary, diffForms,
@@ -439,18 +440,19 @@ log('=== D) explore：事实解析与死链坏图判定 ===');
 }
 
 /* ================= E) 工具面与拒绝路径（不开浏览器） ================= */
-log('=== E) 工具面：14 个工具 + nl_test_goal 拒绝路径 ===');
+log('=== E) 工具面：16 个工具 + nl_test_goal 拒绝路径 ===');
 
 {
   const list = await handleMessage({ id: 1, method: 'tools/list', params: {} });
   const tools = list.result.tools;
-  check('tools/list 返回 14 个工具', tools.length === 14, `${tools.length} 个`);
+  check('tools/list 返回 16 个工具', tools.length === 16, `${tools.length} 个`);
   const EXPECTED = [
-    'check_config', 'lint_spec', 'summarize_report', 'run_verify', 'cli_session', 'cli_health',
+    'check_config', 'lint_spec', 'summarize_report', 'run_verify', 'setup-browser-config',
+    'cli_session', 'cli_batch', 'cli_health',
     'explore_page', 'nl_test_goal', 'generate_scripts', 'check_standards', 'orchestrate_excel',
     'explain_rules', 'collect_table', 'selfcheck',
   ];
-  check('14 个工具名齐全', EXPECTED.every((t) => tools.some((x) => x.name === t)),
+  check('16 个工具名齐全', EXPECTED.every((t) => tools.some((x) => x.name === t)),
     EXPECTED.filter((t) => !tools.some((x) => x.name === t)).join(','));
 
   const call = (name, args) => handleMessage({ id: 2, method: 'tools/call', params: { name, arguments: args } });
@@ -806,6 +808,77 @@ log('=== G) 自愈 LLM 预算闸门：总闸/短路/穿线/用量 ===');
   check('G buildReport 增量字段：healLlmBudget/healLlmUsed 有则带、无则缺席',
     rep.healLlmBudget === 2 && rep.healLlmUsed === 1
     && !('healLlmBudget' in repOld) && !('healLlmUsed' in repOld));
+
+  // 步骤→CLI 位置参数映射（单一源 stepCliArgs）：click 的第二位置参数是鼠标键
+  // （left|right|middle），value 绝不得透传成 button —— 真浏览器矩阵抓到的回归：
+  // 带 value 的 click 步在 cliBatch 路径每次必炸。runStep/cliBatch 两路径共用，钉死不再分叉。
+  check('G stepCliArgs click 只传 target（第二位置参数是鼠标键，value 不得透传成 button）',
+    JSON.stringify(stepCliArgs({ act: 'click', target: 'e12', value: '提交订单' })) === JSON.stringify(['e12']));
+  check('G stepCliArgs click 空 value 不产第二位（undefined 不得变成 "undefined"）',
+    JSON.stringify(stepCliArgs({ act: 'click', target: 'e7' })) === JSON.stringify(['e7']));
+  check('G stepCliArgs fill 双位置参数 target+value',
+    JSON.stringify(stepCliArgs({ act: 'fill', target: 'e5', value: 'abc' })) === JSON.stringify(['e5', 'abc']));
+  check('G stepCliArgs goto 取 target、press 按键取 value（都空才容错回退）',
+    JSON.stringify(stepCliArgs({ act: 'goto', value: 'http://t' })) === JSON.stringify(['http://t'])
+    && JSON.stringify(stepCliArgs({ act: 'press', target: 'Enter' })) === JSON.stringify(['Enter'])
+    && JSON.stringify(stepCliArgs({ act: 'press', target: 'e12', value: 'Enter' })) === JSON.stringify(['Enter']));
+  check('G stepCliArgs 未知动作返回空数组（不瞎猜参数）',
+    JSON.stringify(stepCliArgs({ act: 'expect_text', target: 'x', value: 'y' })) === JSON.stringify([]));
+}
+
+/* ============ G2) 执行语义收敛：结果形状 + 断言判定（v1.8.16） ============ */
+log('=== G2) executePlan 双路径语义收敛：结果带 act / expect_* 按快照判定 ===');
+{
+  const tmpSnap = path.join(os.tmpdir(), `pv-judge-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.txt`);
+  fs.writeFileSync(tmpSnap, 'welcome result-ok page');
+  const J = judgeExpectation;
+  check('G2 judgeExpectation 命中：ok 且文案「页面包含」',
+    J({ act: 'expect_text', value: 'RESULT-OK' }, tmpSnap).ok === true
+    && J({ act: 'expect_text', value: 'RESULT-OK' }, tmpSnap).detail.includes('页面包含'));
+  check('G2 judgeExpectation 不命中：ok=false 且文案钉「断言不成立，不放宽」',
+    J({ act: 'expect_text', value: 'NOPE' }, tmpSnap).ok === false
+    && J({ act: 'expect_text', value: 'NOPE' }, tmpSnap).detail.includes('断言不成立，不放宽'));
+  check('G2 judgeExpectation 大小写不敏感 + evidence 透传快照路径',
+    J({ act: 'expect_text', value: 'result-ok' }, tmpSnap).ok === true
+    && J({ act: 'expect_text', value: 'result-ok' }, tmpSnap).evidence === tmpSnap);
+  const resPass = await executePlan({
+    steps: [
+      { act: 'click', target: 'e12', value: '提交订单' },
+      { act: 'expect_text', value: 'RESULT-OK' },
+    ],
+    cwd: '.', session: 'pin',
+    cliBatch: async () => [
+      { ok: true, detail: '操作已完成' },
+      { ok: true, detail: '已取快照', evidence: tmpSnap },
+    ],
+  });
+  check('G2 cliBatch 动作步结果带 act/target/value 且 expect_* 按快照判定（缺 act 误判 Blocked / 不判定则断言虚过）',
+    resPass.steps[0].act === 'click' && resPass.steps[0].target === 'e12' && resPass.steps[0].value === '提交订单'
+    && resPass.steps[1].ok === true && (resPass.steps[1].detail || '').includes('页面包含')
+    && resPass.stopped === false && verdictOf(resPass.steps) === 'Pass');
+  const resFail = await executePlan({
+    steps: [{ act: 'expect_text', value: 'NOPE' }],
+    cwd: '.', session: 'pin',
+    cliBatch: async () => [{ ok: true, detail: '已取快照', evidence: tmpSnap }],
+  });
+  check('G2 判定不成立 → fail fast：verdict=Fail、detail 含「不放宽」',
+    resFail.stopped === true && resFail.steps[0].ok === false
+    && verdictOf(resFail.steps) === 'Fail' && (resFail.steps[0].detail || '').includes('不放宽'));
+  fs.unlinkSync(tmpSnap);
+}
+
+/* ============ G3) 浏览器通道环境适配（v1.8.16） ============ */
+log('=== G3) PVMCP_CLI_BROWSER：会话创建点注入，环境不设零变化 ===');
+{
+  check('G3 环境不设 → open/goto/click 全部零注入（默认 chromium 语义不变）',
+    browserChannelFlags('open', {}).length === 0
+    && browserChannelFlags('goto', {}).length === 0
+    && browserChannelFlags('click', {}).length === 0);
+  check('G3 设 msedge → 仅 open 注入 --browser（goto/click 附着既有会话不注入）',
+    JSON.stringify(browserChannelFlags('open', { PVMCP_CLI_BROWSER: 'msedge' })) === JSON.stringify(['--browser', 'msedge'])
+    && browserChannelFlags('goto', { PVMCP_CLI_BROWSER: 'msedge' }).length === 0
+    && browserChannelFlags('click', { PVMCP_CLI_BROWSER: 'msedge' }).length === 0
+    && browserChannelFlags('open', { PVMCP_CLI_BROWSER: '  ' }).length === 0);
 }
 
 /* ================= H) 断点续采计划与守门（v1.8.2） ================= */

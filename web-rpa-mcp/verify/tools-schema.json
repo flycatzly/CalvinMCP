@@ -1,7 +1,7 @@
 {
  "serverInfo": {
   "name": "web-rpa-mcp",
-  "version": "1.5.6"
+  "version": "1.5.18"
  },
  "protocolVersion": "2024-11-05",
  "tools": [
@@ -494,7 +494,7 @@
      "maxDurationMs": {
       "type": "integer",
       "minimum": 0,
-      "description": "本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）"
+      "description": "本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）。计时自运行开始，含 profile 锁等待（被剩余预算夹取）与浏览器启动（不可中断，越线≤启动时长）；报告与响应带 budgetOverrunMs/budgetSource 可观测字段"
      },
      "saveVideo": {
       "type": "boolean",
@@ -581,7 +581,7 @@
   },
   {
    "name": "status_report",
-   "description": "无人值守总览：所有流程的最后状态、连续失败次数、是否中断/正在执行/等待人工、自愈趋势、定时配置，以及需要关注的问题清单。每天早上（或定时任务跑完后）先看这一个就够。",
+   "description": "无人值守总览：所有流程的总运行次数（totalRuns=真实总数，含进行中/中断，不受摘要窗口封顶）、最后状态、连续失败次数（consecutiveFailures 只数已定论的失败 fail/blocked，进行中 running/崩溃 interrupted 不计；全量真值不受摘要窗口封顶）、是否中断/正在执行/等待人工、自愈趋势（healedTotal=全量累计自愈次数，同样不受摘要窗口封顶）、定时配置，以及需要关注的问题清单。每天早上（或定时任务跑完后）先看这一个就够。",
    "inputSchema": {
     "type": "object",
     "properties": {
@@ -594,7 +594,7 @@
   },
   {
    "name": "runs_prune",
-   "description": "按留存策略清理历史运行记录（默认每流程保留最近 50 次且 30 天内；录像默认每流程只留最近 20 段）。**默认只预演不删除**，确认后再传 dryRun:false。",
+   "description": "按留存策略清理历史运行记录（默认每流程保留最近 50 次且 30 天内；录像默认每流程只留最近 20 段）。规则：只传 keepCount 或 keepDays 之一时按该单一维度清理（另一维度不限）；两者都传=超出保留次数且超过天龄才删；都不传=按配置 run.keepRunsPerFlow / run.keepRunDays 双约束。**默认只预演不删除**，确认后再传 dryRun:false。",
    "inputSchema": {
     "type": "object",
     "properties": {
@@ -606,12 +606,12 @@
      "keepCount": {
       "type": "integer",
       "minimum": 0,
-      "description": "每流程保留最近多少次"
+      "description": "每流程保留最近多少次；0=不按次数清理（注意：0 不是\"全删\"）。只传它时按次数单维度清理"
      },
      "keepDays": {
       "type": "integer",
       "minimum": 0,
-      "description": "保留多少天"
+      "description": "保留多少天；0=不按天龄清理（注意：0 不是\"全删\"）。只传它时按天龄单维度清理"
      },
      "keepVideos": {
       "type": "integer",

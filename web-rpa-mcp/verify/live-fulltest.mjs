@@ -7,18 +7,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startAutobotServer } from './autobot-site.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
+// WEBRPA_ROOT：实例隔离的数据根注入。server.mjs 跟随该 env 把 flows/runs/.work 落到数据根，
+// 本 harness 核验产物必须用同一个数据根（CODE/DATA 分离：ROOT 只管代码——server.mjs/demo/playwright 解析）；
+// spawn 时把解析后的绝对值回注子进程，避免相对 env 在两个 cwd 下解析不一致。
+const DATA = process.env.WEBRPA_ROOT ? path.resolve(process.env.WEBRPA_ROOT) : ROOT;
 const SERVER = path.join(ROOT, 'mcp', 'server.mjs');
 const FLOW_MAIN = 't-live-订单日报导出';
 const FLOW_COPY = 't-live-copy';
 const FLOW_BAD = 't-live-bad';
 const SECRET_NAME = 't-live-db-pwd';
 const SECRET_VALUE = 'T-LIVE-SECRET-9137';
-const CSV_FILE = path.join(__dirname, 't-live.csv');
+// 测试夹具归数据根：放代码区会让并发 live 实例互写/互删同一文件（resolveParams 运行期全量解析时会读它，缺失只落 notice 不红=静默降级）
+const CSV_FILE = path.join(DATA, '.work', 't-live.csv');
+const CSV_SRC = 'csv:' + CSV_FILE.replace(/\\/g, '/') + '#客户';
 
 /* ---------------- 结果收集 ---------------- */
 const results = [];
@@ -50,7 +57,7 @@ function startAlarmReceiver() {
 /* ---------------- MCP 客户端（stdio JSON-RPC） ---------------- */
 const child = spawn(process.execPath, [SERVER], {
   cwd: ROOT,
-  env: { ...process.env, T_LIVE_ENV_EMP: '2002' },
+  env: { ...process.env, T_LIVE_ENV_EMP: '2002', ...(process.env.WEBRPA_ROOT ? { WEBRPA_ROOT: DATA } : {}) },
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 child.stderr.on('data', () => {});
@@ -113,7 +120,7 @@ async function callAny(name, args, timeoutMs) {
 const called = new Set();
 
 /* ---------------- 文件系统产物核验 ---------------- */
-function runsDir(flowId) { return path.join(ROOT, 'runs', flowId); }
+function runsDir(flowId) { return path.join(DATA, 'runs', flowId); }
 function runStampDirs(flowId) {
   const dir = runsDir(flowId);
   if (!fs.existsSync(dir)) return [];
@@ -146,6 +153,14 @@ function countWebm(flowId) {
 const stepSig = (steps) => steps.map((s) => s.op + ':' + (s.value || s.url || (s.locators && s.locators[0] ? s.locators[0].value : ''))).join('|');
 
 async function main() {
+  // 诚实 SKIP 口径（同 e2e/tools 套件）：环境真解析不到 playwright 才整体降级 exit 3，
+  // 明示不冒充失败（假红）也不冒充通过（假绿）；装了仍报错 = 产品/环境缺陷 = 照旧 FAIL
+  try {
+    createRequire(path.join(ROOT, 'mcp', 'package.json')).resolve('playwright');
+  } catch {
+    console.log('实测 SKIP（整体）（诚实 SKIP：环境缺 playwright 依赖——先在 mcp 目录 npm install）');
+    process.exit(3);
+  }
   const autobot = await startAutobotServer();
   const demoMod = await import(pathToFileURL(path.join(ROOT, 'demo', 'app.mjs')).href);
   const demo = await demoMod.startDemoServer(0);
@@ -349,7 +364,7 @@ async function main() {
     for (const [n, src, extra] of [
       ['empNo', 'const', { default: '1001' }],
       ['dbpwd', 'secret:' + SECRET_NAME, { secret: true, label: '库密码' }],
-      ['csvCust', 'csv:verify/t-live.csv#客户', {}],
+      ['csvCust', CSV_SRC, {}],
       ['envEmp', 'env:T_LIVE_ENV_EMP', {}],
     ]) {
       const d = await call('flow_param_add', { flowId: FLOW_COPY, name: n, source: src, ...extra });
@@ -359,7 +374,7 @@ async function main() {
   await T('flow_show(json) 参数来源可见且 secret 明文零泄漏', async () => {
     const d = await call('flow_show', { flowId: FLOW_COPY, format: 'json' });
     const s = JSON.stringify(d.data);
-    for (const token of ['const', 'secret:' + SECRET_NAME, 'csv:verify/t-live.csv#客户', 'env:T_LIVE_ENV_EMP']) assert(s.includes(token), '缺参数来源 ' + token);
+    for (const token of ['const', 'secret:' + SECRET_NAME, CSV_SRC, 'env:T_LIVE_ENV_EMP']) assert(s.includes(token), '缺参数来源 ' + token);
     assert(!s.includes(SECRET_VALUE), 'flow_show 泄漏 secret 明文');
   });
   await T('flow_param_remove 删除变量（定义随之消失）', async () => {
@@ -699,7 +714,9 @@ async function main() {
   console.log('通过 ' + passed + ' / ' + results.length + (failed.length ? '，失败 ' + failed.length : '，全部通过'));
   for (const f of failed) console.log('  FAIL [' + f.group + '] ' + f.name + ' — ' + f.detail.split('\n')[0]);
   fs.writeFileSync(path.join(__dirname, 'live-report.json'), JSON.stringify({
-    time: new Date().toISOString(), server: 'web-rpa-mcp 1.5.6', calledTools: [...called].sort(),
+    time: new Date().toISOString(),
+    server: init.result.serverInfo.name + ' ' + init.result.serverInfo.version,
+    calledTools: [...called].sort(),
     passed, failed: failed.length, results,
   }, null, 1));
   console.log('报告已写: verify/live-report.json');
@@ -731,11 +748,20 @@ async function cleanup() {
     try { fs.rmSync(runsDir(fid), { recursive: true, force: true }); } catch { /* ignore */ }
   }
   try {
-    const bdir = path.join(ROOT, '.work', 'backups');
+    const bdir = path.join(DATA, '.work', 'backups');
     for (const f of fs.readdirSync(bdir)) if (f.indexOf('t-live') === 0) fs.rmSync(path.join(bdir, f), { force: true });
   } catch { /* ignore */ }
   try { fs.rmSync(CSV_FILE, { force: true }); } catch { /* ignore */ }
-  try { fs.rmSync(path.join(ROOT, '.work', 'sched'), { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    // 只清本套件 t-live* 的定时产物（wrapper/params/索引条目），绝不整目录删——默认根的 .work/sched 里有用户自己的任务包装器
+    const sdir = path.join(DATA, '.work', 'sched');
+    for (const f of fs.readdirSync(sdir)) if (f.indexOf('t-live') === 0) fs.rmSync(path.join(sdir, f), { force: true });
+    const idxPath = path.join(sdir, 'index.json');
+    const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+    let hit = false;
+    for (const k of Object.keys(idx)) if (k.indexOf('t-live') === 0) { delete idx[k]; hit = true; }
+    if (hit) fs.writeFileSync(idxPath, JSON.stringify(idx, null, 2));
+  } catch { /* ignore */ }
   console.log('  完成');
 }
 

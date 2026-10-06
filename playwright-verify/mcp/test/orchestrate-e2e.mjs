@@ -127,6 +127,8 @@ export default defineConfig({
   use: {
     actionTimeout: 5_000,
     trace: 'off',
+    // 环境适配：PVMCP_CLI_BROWSER=msedge → 系统自带 Edge 通道（不设零变化）。
+    ...(process.env.PVMCP_CLI_BROWSER === 'msedge' ? { channel: 'msedge' } : {}),
   },
 });
 `;

@@ -168,5 +168,18 @@ const toolParams = [];
 mentionGroup('工具参数（inputSchema）', toolParams.map((d) => [d, d.split('.')[1]]));
 mentionGroup('配置键（DEFAULT_CONFIG）', cfgKeys.map((d) => [d, d.split('.')[1]]));
 
+// 监控信号必须有分诊文档：status_report 的预算越线信号若排障手册不认识，无人值守链路就断在最后一环
+const triageDoc = read(path.join(MCP, '..', 'workflows', '排障与自愈.md'));
+{
+  const need = ['经常性越线', 'budgetOverrunMs', 'recentOverruns', 'run.maxDurationMs'];
+  const missing = need.filter((s) => !triageDoc.includes(s));
+  if (missing.length) {
+    fail++;
+    console.log('  FAIL 监控信号闭环（workflows/排障与自愈.md）：缺 ' + JSON.stringify(missing) + '——status_report 的预算越线信号没有分诊指引');
+  } else {
+    console.log('  ok   监控信号闭环（workflows/排障与自愈.md）：预算越线信号有分诊指引');
+  }
+}
+
 console.log('\n' + (fail ? '覆盖度自检失败：有 ' + fail + ' 组能力从未被测试' : '覆盖度自检通过：所有能力都有测试覆盖'));
 process.exit(fail ? 1 : 0);

@@ -18,9 +18,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleMessage } from '../server.mjs';
+import { installStandaloneReap } from './reap.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
+// 单跑兜底：任何退出分支（含中途抛错）都收掉本机孤儿 daemon/浏览器。
+// 在 verify-all 调度下自动跳过，由统一收尾负责（见 reap.mjs 注释）。
+installStandaloneReap(ROOT, { label: 'nl-agent-e2e' });
 
 let failures = 0;
 const log = (s) => process.stdout.write(`${s}\n`);

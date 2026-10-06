@@ -2,12 +2,12 @@
 // 对应上游 intelligence_views.py + wechat_intelligence_hub.py 的 build_contact_daily_rows 等视图。
 // 全部视图复用 store()（node:sqlite 本地索引）与 signals.mjs（情报引擎），不重复实现信号规则。
 import { store, rowToMessage, messagesInWindow, messagesForAnalyze, listSessions, labelsOf, storeStats, crossGroupLinks as storeCrossGroupLinks, linkAppearances } from "./store.mjs";
-import { analyze, classifyChat, extractAmounts, isAck, isClosing, isOwnerName } from "./signals.mjs";
+import { analyze, classifyChat, extractAmounts, extractDueDates, isAck, isClosing, isOwnerName } from "./signals.mjs";
 import { freshness } from "./ingest.mjs";
-import { listInbox, listOpportunities, listToday, countByStatus } from "./opportunities.mjs";
+import { listInbox, listOpportunities, listToday, countByStatus, countInbox, countToday } from "./opportunities.mjs";
 import { draftReply, learnChatStyle, learnStyle, resolveChatName, resolvePerson, resolveSelfNames, isSelfSender } from "./replystyle.mjs";
 import { loadProfile } from "./profile.mjs";
-import { clamp, extractUrls, fmtDay, fmtLocal, isHeatLink, normalizeUrl, truncate, uniq } from "./util.mjs";
+import { clamp, extractUrls, fmtDay, fmtLocal, isHeatLink, normalizeUrl, truncate, truncateOutsideUrl, uniq } from "./util.mjs";
 
 // ---------------- 词表（参照上游 intelligence_views.py） ----------------
 export const COMMERCIAL_TERMS = /合作|商单|推广|投放|品牌|报价|预算|brief|排期|发布|审核|结算|付款|培训|讲师|授课|工作坊|咨询|项目|招募|佣金|返佣|campaign|sponsor|invoice|payment/i;
@@ -121,7 +121,7 @@ function senderMessages(sender, { sinceMs, untilMs, limit = 500, order = "asc" }
 }
 
 function shortText(value, limit) {
-  return truncate(String(value == null ? "" : value).replace(/\s+/g, " ").trim(), limit || 220);
+  return truncateOutsideUrl(String(value == null ? "" : value).replace(/\s+/g, " ").trim(), limit || 220);
 }
 
 function rowBrief(m) {
@@ -132,6 +132,19 @@ function rowBrief(m) {
     is_owner: Boolean(m.is_owner),
     content: shortText(m.content, 240),
   };
+}
+
+/**
+ * 承诺逾期口径：优先按承诺文本里的到期日判定（与 signals.mjs promises 的 overdue 同源
+ * extractDueDates，brief「已逾期」即此口径）；文本无日期可解析时退化为「发出超 3 天未兑现」
+ * 兜底（保留本文件原启发式，避免无日期的陈旧承诺永不上榜）。上游 find_open_contact_promise
+ * 的精确 overdue 语义待确认。
+ */
+function promiseOverdue(content, ts, nowMs, delivered = false) {
+  if (delivered) return false;
+  const due = extractDueDates(String(content ?? ""), new Date(ts))[0] ?? null;
+  if (due) return due.date.getTime() < nowMs;
+  return nowMs - ts > 3 * 86400000;
 }
 
 /**
@@ -162,7 +175,7 @@ export function openPromisesOf(messages, { selfNames, lookbackDays = 30, now } =
       content: shortText(promise.content, 220),
       action: inferPromiseAction(promise.content),
       state: "待兑现",
-      overdue: false,
+      overdue: promiseOverdue(promise.content, promise.ts, nowMs),
     },
   ];
 }
@@ -191,7 +204,7 @@ function promiseEntries(messages, { selfNames, now } = {}) {
       content: shortText(m.content, 220),
       action: inferPromiseAction(m.content),
       state: delivered ? "已兑现" : "待兑现",
-      overdue: !delivered && nowMs - m.ts > 3 * 86400000,
+      overdue: promiseOverdue(m.content, m.ts, nowMs, delivered),
     });
   });
   return out;
@@ -786,7 +799,7 @@ export function crossGroupLinks({ sinceMs, untilMs, minChats = 2, limit = 50 } =
   for (const r of storeCrossGroupLinks({ sinceMs, untilMs, minChats, limit })) {
     const rawNorm = String(r.norm || "");
     if (!rawNorm || entries.has(rawNorm)) continue;
-    const apps = linkAppearances(rawNorm, 60);
+    const apps = linkAppearances(rawNorm, 60, sinceMs ?? 0, untilMs ?? Date.now());
     // 只保留真正的 http(s) 链接：历史索引里可能存在非 URL 的脏 norm
     const rawUrl = String((apps.find((a) => a && a.url) || {}).url || rawNorm);
     if (!/^https?:\/\//i.test(rawUrl)) continue;
@@ -923,14 +936,54 @@ export function dealRadar(analysis, { messages, sinceMs, untilMs, now } = {}) {
 }
 
 // ---------------- 首页 ----------------
+/** 首页行瘦身：保留 rowToOpportunity 信封全部字段，只收缩长文本与数组（F6） */
+function slimValue(v, n) {
+  return typeof v === "string" ? truncateOutsideUrl(v, n) : v;
+}
+
+function slimHomeRow(row) {
+  const out = { ...row };
+  for (const k of ["title", "next_action", "note", "notes", "qualification_reasons", "chat", "contact", "role", "amount"]) {
+    out[k] = slimValue(out[k], 120);
+  }
+  out.evidence = (Array.isArray(row.evidence) ? row.evidence : []).slice(0, 2).map((e) => {
+    if (e && typeof e === "object" && !Array.isArray(e)) {
+      const o = {};
+      for (const [k, v] of Object.entries(e)) o[k] = slimValue(v, 120);
+      return o;
+    }
+    return slimValue(e, 120);
+  });
+  out.links = (Array.isArray(row.links) ? row.links : []).slice(0, 3).map((l) => slimValue(l, 120));
+  return out;
+}
+
+/** 首页输出硬预算：textResult 走 JSON.stringify(obj, null, 2)，超宿主输出预算会被截断，
+ *  消费方拿到不完整 JSON（F6）。逐级降载：清 evidence → 清 links → 从尾部裁数组行；
+ *  counts.* 始终是诚实总数，不随数组缩水。48KB 留 2KB 余量给信封/summary（宿主截断阈值待确认）。 */
+const HOME_TEXT_BUDGET = 48000;
+function fitHomeBudget(state) {
+  const size = () => JSON.stringify(state, null, 2).length;
+  if (size() <= HOME_TEXT_BUDGET) return;
+  for (const row of [...state.today, ...state.inbox]) row.evidence = [];
+  if (size() <= HOME_TEXT_BUDGET) return;
+  for (const row of [...state.today, ...state.inbox]) row.links = [];
+  while (size() > HOME_TEXT_BUDGET && state.inbox.length) state.inbox.pop();
+  while (size() > HOME_TEXT_BUDGET && state.today.length) state.today.pop();
+}
+
 export function homeState({ now } = {}) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now) || Date.now();
   const fresh = freshness();
   const stats = storeStats();
   const status = countByStatus();
-  const today = listToday({ today: new Date(nowMs), minPriority: 3, limit: 10 });
-  const inbox = listInbox({ minPriority: 4, limit: 20 });
+  const today = listToday({ today: new Date(nowMs), minPriority: 3, limit: 10 }).map(slimHomeRow);
+  const inbox = listInbox({ minPriority: 4, limit: 20 }).map(slimHomeRow);
   const due = listOpportunities({ dueOnly: true, includeClosed: false, limit: 100 });
+  // counts.inbox / counts.today 用同口径 COUNT（不受 limit 截断）；wai_status.inbox 是
+  // inbox_entries 暂存表行数，另一套数据，另设 counts.inbox_entries 消除同名歧义（F6）
+  const inboxTotal = countInbox({ minPriority: 4 });
+  const todayTotal = countToday({ today: new Date(nowMs), minPriority: 3 });
   const entries = [
     { id: "today", title: "今日总览", description: "近 24 小时变化、待回复、重点私聊和群聊。", action: "调用 today 工具" },
     { id: "topic", title: "主题搜索", description: "跨群聊和私聊检索一个主题，不受日报日期限制。", action: "调用 topic 工具" },
@@ -939,7 +992,7 @@ export function homeState({ now } = {}) {
     { id: "radar", title: "商单雷达", description: "查看今日行动、待分流候选和完整商机管线。", action: "调用 inbox / opportunities 工具" },
   ];
   const surfaced = new Set([...today.map((o) => o.chat), ...inbox.map((o) => o.chat)]);
-  return {
+  const state = {
     now: nowMs,
     freshness: fresh,
     counts: {
@@ -951,13 +1004,14 @@ export function homeState({ now } = {}) {
       opportunities_open: status.open,
       opportunities_due: due.length,
       candidates: status.candidates,
-      inbox: inbox.length,
-      today: today.length,
+      inbox: inboxTotal,
+      inbox_entries: stats.inbox,
+      today: todayTotal,
     },
     entries,
     triage: {
       立即处理: due.length + today.filter((o) => o.next_follow_up).length,
-      值得关注: inbox.length,
+      值得关注: inboxTotal,
       仅供存档: Math.max(0, stats.messages - surfaced.size),
     },
     today,
@@ -966,6 +1020,8 @@ export function homeState({ now } = {}) {
     note: fresh.messages ? "" : "本地索引还没有数据：先运行 ingest / index 工具建立索引。",
     freshnessLabel: fresh.last_message_ts ? "最新索引 " + fmtLocal(new Date(fresh.last_message_ts)) + "（约 " + fresh.data_age_hours + " 小时前）" : "暂无索引",
   };
+  fitHomeBudget(state);
+  return state;
 }
 
 // ---------------- 会话历史 ----------------

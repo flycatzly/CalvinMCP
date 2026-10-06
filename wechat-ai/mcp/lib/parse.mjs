@@ -34,7 +34,7 @@ const TIME = "(?:\\d{4}[-/.\u5e74]\\d{1,2}[-/.\u6708]\\d{1,2}\u65e5?(?:[ T]+\\d{
 
 /** 逐行解析：
  *  A) [2026-06-30 10:12] 张三: 内容
- *  B) 2026-06-30 10:12:33 张三  /  内容(下一行起)
+ *  B) 2026-06-30 10:12:33 张三: 内容（单行） / 2026-06-30 10:12:33 张三 + 内容(下一行起)
  *  C) 张三 2026-06-30 10:12  /  内容(下一行起)
  *  D) 张三: 内容        （沿用上一条时间，逐条 +1 秒）
  *  E) 【群名】张三: 内容
@@ -58,6 +58,9 @@ export function parseChatText(text, opts = {}) {
   };
 
   const reA = new RegExp("^\\[(" + TIME + ")\\]\\s*([^:：]{1,40})[:：]\\s*([\\s\\S]*)$");
+  // 单行「时间 昵称: 内容」：必须先于 reB/reD——reB 会把「昵称: 内容」整段当发送者，
+  // 内容超 40 字时又会落到 reD 把时间里的冒号当分隔（sender 变成 "2026-10-05 16"）
+  const reT = new RegExp("^(" + TIME + ")\\s+([^:：]{1,40})[:：]\\s*([\\s\\S]*)$");
   const reB = new RegExp("^(" + TIME + ")\\s+(.{1,40})$");
   const reC = new RegExp("^(.{1,40}?)\\s+(" + TIME + ")\\s*$");
   const reD = new RegExp("^([^:：\\[\\]]{1,40})[:：]\\s*([\\s\\S]*)$");
@@ -105,6 +108,17 @@ export function parseChatText(text, opts = {}) {
       const ts = parseMessageTime(mA[1], refDate);
       lastTs = ts;
       current = mkMsg(mA[2].trim(), ts, mA[3], isOwner(mA[2]));
+      continue;
+    }
+
+    const mT = trimmed.match(reT);
+    // 守卫：sender 为纯 1-2 位数字时是 TIME 回溯假匹配（如「2026-10-05 16:45 王五」被切成
+    // TIME=日期 + sender=16 + 冒号），放行给 reB 按「时间 + 发送者」整行处理
+    if (mT && !/^\d{1,2}$/.test(mT[2].trim())) {
+      push();
+      const ts = parseMessageTime(mT[1], refDate);
+      lastTs = ts;
+      current = mkMsg(mT[2].trim(), ts, mT[3], isOwner(mT[2]));
       continue;
     }
 

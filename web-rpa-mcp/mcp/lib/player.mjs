@@ -54,7 +54,7 @@ function runTimeoutError(ctx) {
   const e = new Error(
     '总超时：本次运行超过 maxDurationMs=' + (ctx.maxDurationMs || 0) + 'ms（已运行 ' +
     Math.round((Date.now() - (ctx.t0 || Date.now())) / 1000) + 's，共 ' + (ctx.steps || []).length +
-    ' 步，停在第 ' + (ctx.currentStep || 0) + ' 步），已中断执行并优雅收尾（留证截图、写报告、发告警、释放锁）'
+    ' 步，' + (ctx.currentStep ? '停在第 ' + ctx.currentStep + ' 步' : '尚未进入任何步骤') + '），已中断执行并优雅收尾（留证截图、写报告、发告警、释放锁）'
   );
   e.code = 'RUN_TIMEOUT';
   return e;
@@ -709,6 +709,10 @@ export async function runFlow(flow, opts = {}) {
     notifications: [],
     reportPath: null,
     maxDurationMs: maxDurationMs || null,
+    // 预算来源（口径与 resolveRunBudget 一致）：explicit（显式参数，含显式 0=确要不限）> config（run.maxDurationMs）> unattendedMaxDurationMs（schedule 兜底）；null=未设预算
+    budgetSource: (opts.maxDurationMs !== undefined && opts.maxDurationMs !== null && !(typeof opts.maxDurationMs === 'string' && String(opts.maxDurationMs).trim() === ''))
+      ? 'explicit'
+      : ((Number(cfg.run.maxDurationMs) || 0) > 0 ? 'config' : (budget.cappedBy || null)),
     videos: [],
   };
 
@@ -796,9 +800,15 @@ export async function runFlow(flow, opts = {}) {
   };
 
   try {
+    // 预算在启动前就已用尽（或剩余不足 100ms——浏览器启动 ~0.5s 起步且不可中断，启动后必越线）：
+    // 直接走超时收尾，不白启浏览器。100ms 下限远低于任何真实浏览器的启动耗时，不会误杀可完成的运行；
+    // 也钉死 Date.now() 粒度擦边：剩余读数 0/1ms 时两种粒度结局都 <100ms，预检判定确定性成立。
+    if (deadline && deadline - Date.now() < 100) throw runTimeoutError(ctx);
     handle = await launchContext({
       headed: !!opts.headed || !cfg.browser.headless,
       downloadsDir: dlDir,
+      // profile 锁等待被剩余预算夹取：等锁不得把运行推过 run.maxDurationMs（未设总时限时按配置值全量等待）
+      profileWaitMs: Math.min(Number(cfg.browser.profileWaitMs ?? 3000) || 0, remainingMs(ctx)),
       ...(wantVideo ? {
         extraContext: {
           recordVideo: {
@@ -891,7 +901,8 @@ export async function runFlow(flow, opts = {}) {
         stepRec.error = String(lastErr && lastErr.message ? lastErr.message : lastErr);
         if (deadline && Date.now() >= deadline) {
           report.timedOut = true;
-          stepRec.error += '  —— ' + runTimeoutError(ctx).message;
+          // 步骤失败本身就是总超时抛出的就别再追加一遍收尾文案——否则报告里"总超时"会出现两遍
+          if (!(lastErr && lastErr.code === 'RUN_TIMEOUT')) stepRec.error += '  —— ' + runTimeoutError(ctx).message;
         }
         report.failedStep = i + 1;
         report.error = stepRec.error;
@@ -1088,6 +1099,10 @@ function secretValuesOf(flow, values) {
 
 /** 脱敏 -> 清中断标记 -> 落盘报告 -> 留存清理 -> 发告警 -> 释放并发锁 */
 async function finalize(report, cfg, opts, secrets, flowId, keyHits = []) {
+  // 预算越线显式化：无人值守监控不必拿 durationMs-maxDurationMs 事后算；越线含锁等待轮询粒度与不可中断的启动时长（R9 语义）
+  report.budgetOverrunMs = (report.maxDurationMs && report.durationMs > report.maxDurationMs)
+    ? report.durationMs - report.maxDurationMs
+    : 0;
   const rk = redactKeyList(cfg);
   const keysOn = maskingEnabled(cfg);
   deepRedact(report, secrets || [], keyHits || [], rk, keysOn, false);

@@ -1,8 +1,0 @@
-# 敏感与生成物（装机时 install.mjs 也会生成/补缺）
-node_modules/
-.work/
-runs/
-logs/
-web-rpa.config.json
-mcp-register.example.json
-*.tmp-*

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MCP_DIR, ROOT, DIRS, ensureDirs, readConfig, readJson, writeJson, logger, nowIso } from './core.mjs';
-import { acquireLock, releaseLock, lockInfo } from './ops.mjs';
+import { acquireLockWithWait, releaseLock, lockInfo } from './ops.mjs';
 
 /** 持久化 profile 的全局锁名：同一时间只允许一个浏览器用它（Playwright 不允许同一 user-data-dir 开两次） */
 export const PROFILE_LOCK = '__profile__';
@@ -318,10 +318,32 @@ function touchProfile(dir, extra = {}) {
   } catch { /* ignore */ }
 }
 
-export function resetProfile(cfg = readConfig()) {
+export async function resetProfile(cfg = readConfig()) {
   const dir = profilePath(cfg);
   if (!fs.existsSync(dir)) return { removed: false, dir, reason: '目录不存在' };
-  fs.rmSync(dir, { recursive: true, force: true });
+  // Windows 下 profile 可能被尚未退净的浏览器句柄（内存映射/lockfile）短暂占用：
+  // EPERM/EBUSY/ENOTEMPTY 有限退避重试吸收瞬时锁，总等待有界（≤3.75s，工具不会挂死）；
+  // 超预算必须抛错而不是返回成功——无人值守下"假清空"会让登录态残留成事故。
+  const backoffMs = [250, 500, 1000, 2000];
+  let lastErr = null;
+  for (let i = 0; i <= backoffMs.length; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      const locked = e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'ENOTEMPTY');
+      if (!locked || i === backoffMs.length) break;
+      await new Promise((r) => setTimeout(r, backoffMs[i]));
+    }
+  }
+  if (lastErr) {
+    const locked = lastErr.code === 'EPERM' || lastErr.code === 'EBUSY' || lastErr.code === 'ENOTEMPTY';
+    throw new Error(locked
+      ? 'profile 目录正被浏览器进程占用（' + lastErr.code + '），已重试 ' + (backoffMs.length + 1) + ' 次仍无法删除；请稍候重试，或先关闭占用它的浏览器后重试'
+      : '删除 profile 目录失败（' + (lastErr.code || lastErr.message) + '）');
+  }
   try { fs.unlinkSync(PROFILE_MARKER()); } catch { /* ignore */ }
   L.warn('已清空浏览器 profile（登录态一并清除）', { dir });
   return { removed: true, dir };
@@ -343,7 +365,7 @@ function attachDownloads(handle, downloadsDir) {
   });
 }
 
-export async function launchContext({ headed = false, viewport, slowMo, downloadsDir, extraContext = {}, persistent } = {}) {
+export async function launchContext({ headed = false, viewport, slowMo, downloadsDir, extraContext = {}, persistent, profileWaitMs } = {}) {
   const cfg = readConfig();
   const pw = await getPlaywright();
   const all = candidatePlans(cfg);
@@ -377,15 +399,24 @@ export async function launchContext({ headed = false, viewport, slowMo, download
   /* 持久化 profile 路径：人工登录一次，之后无人值守直接复用登录态 */
   if (usePersistent) {
     const dir = profilePath(cfg);
-    const lock = acquireLock(PROFILE_LOCK, { trigger: 'browser', profileDir: dir });
+    // profile 锁有界等待（browser.profileWaitMs，默认 3s）：短并发撞锁先等活锁自己放，超预算诚实报错；
+    // 0=旧行为撞上即报 PROFILE_BUSY。只对活锁有意义——过期锁（pid 死/超龄）acquireLock 本来就会自动清。
+    // 调用方可传 profileWaitMs 覆盖配置值：flow_run 用它把等待夹到 run.maxDurationMs 剩余预算内。
+    const waitMs = profileWaitMs !== undefined
+      ? Math.max(0, Number(profileWaitMs) || 0)
+      : (Number(cfg.browser.profileWaitMs ?? 3000) || 0);
+    const lock = await acquireLockWithWait(PROFILE_LOCK, { trigger: 'browser', profileDir: dir }, waitMs);
     if (!lock.ok) {
+      if (lock.waitedMs > 0) L.warn('profile 锁等待超预算仍未拿到', { waitedMs: lock.waitedMs, pid: lock.heldBy && lock.heldBy.pid });
       const e = new Error(
         '浏览器 profile 正被另一个执行占用（pid ' + lock.heldBy.pid + '，开始于 ' + lock.heldBy.at + '，触发方式 ' + (lock.heldBy.trigger || '未知') + '）。' +
-        '同一个用户目录不能被两个浏览器同时打开，请等它结束，或用 lock_release 释放过期锁。'
+        '同一个用户目录不能被两个浏览器同时打开，请等它结束，或用 lock_release 释放过期锁。' +
+        (lock.waitedMs > 0 ? '（已等待 ' + lock.waitedMs + 'ms 仍未释放，可调大 browser.profileWaitMs；设有 run.maxDurationMs 时等待以剩余预算为限）' : '')
       );
       e.code = 'PROFILE_BUSY';
       throw e;
     }
+    if (lock.waitedMs > 0) L.info('profile 锁等待后拿到', { waitedMs: lock.waitedMs });
     fs.mkdirSync(dir, { recursive: true });
     const pAttempts = [];
     for (const cand of order) {

@@ -110,7 +110,7 @@
 
 - 用途：在全部已导入微信内容里检索关键词（实时、覆盖全量，不受标签限制），并把命中写入本地索引。
 - 参数（query 必填）：query、chat（限定会话）、limit（返回条数，默认 100）、maxTextChars（正文截断，默认 500）、source、out、时间窗（hours / days / since / until / week / month）。
-- 返回与组合：source、query、count、inserted、query_meta、messages（最多 80 条）。 组合：别名逐个搜 → wai_topic 聚合；精确取证配合 wai_chat_history。
+- 返回与组合：source、query、count、inserted、query_meta、messages（最多 80 条）、out（指定 out 时=chat_search.md 检索证据路径，正文按隐私设置打码）。 组合：别名逐个搜 → wai_topic 聚合；精确取证配合 wai_chat_history。
 ### wai_db_search
 
 - 用途：在本地索引里快速检索（已索引范围，速度更快）。支持限定会话与时间。

@@ -1,6 +1,7 @@
 // web-rpa-mcp — 定时：Windows 任务计划程序封装（生成 .cmd 包装器 + schtasks 注册）
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DIRS, MCP_DIR, ROOT, ensureDirs, readConfig, readJson, writeJson, logger, formatDate, assertSafeId } from './core.mjs';
@@ -13,7 +14,16 @@ const INDEX_FILE = () => path.join(DIRS.work, 'sched', 'index.json');
 function loadIndex() { return readJson(INDEX_FILE(), {}) || {}; }
 function saveIndex(o) { writeJson(INDEX_FILE(), o); }
 
-export function taskPrefix() { return (readConfig().schedule && readConfig().schedule.taskPrefix) || 'WebRPA'; }
+/** 默认任务前缀：普通运行恒为 WebRPA；实例隔离（WEBRPA_ROOT 注入）下追加 ROOT 短哈希——
+ *  Windows 任务计划是全局命名空间，两实例同前缀会互相覆盖对方注册的任务，必须实例隔离。 */
+export function defaultTaskPrefix() {
+  if (!process.env.WEBRPA_ROOT) return 'WebRPA';
+  return 'WebRPA-' + crypto.createHash('sha1').update(ROOT).digest('hex').slice(0, 8);
+}
+export function taskPrefix() {
+  const p = readConfig().schedule && readConfig().schedule.taskPrefix;
+  return (p && p !== 'WebRPA') ? p : defaultTaskPrefix();
+}
 export function taskName(flowId) { return taskPrefix() + '\\' + assertSafeId(flowId, '流程 id'); }
 
 /** sched/ 下的文件名都由 flowId 拼出，统一过安全闸并复核落在 sched/ 内（防路径穿越） */
@@ -39,14 +49,15 @@ export function writeWrapper(flowId, opts = {}) {
   if (opts.headed) args.push('--headed');
   const runner = path.join(MCP_DIR, 'runner.mjs');
   const q = (s) => '"' + String(s) + '"';
-  const line = [
-    '@echo off',
-    'chcp 65001 >nul',
+  const line = ['@echo off', 'chcp 65001 >nul'];
+  // 实例隔离时把数据根烘焙进包装器：schtasks 触发的进程不带调用方环境变量，不烘焙会回落到默认根
+  if (process.env.WEBRPA_ROOT) line.push('set "WEBRPA_ROOT=' + ROOT + '"');
+  line.push(
     'cd /d ' + q(ROOT),
     q(process.execPath) + ' ' + q(runner) + ' ' + args.map(q).join(' ') + ' >> ' + q(logFile) + ' 2>&1',
     'exit /b %ERRORLEVEL%',
-  ].join('\r\n');
-  fs.writeFileSync(wrapperPath(flowId), line + '\r\n', 'utf8');
+  );
+  fs.writeFileSync(wrapperPath(flowId), line.join('\r\n') + '\r\n', 'utf8');
   return wrapperPath(flowId);
 }
 
