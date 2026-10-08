@@ -37,6 +37,7 @@ description: 当需要把每天重复的一串网页操作（点菜单、填日�
 | 定时 | 注册 Windows 任务计划，每天定点自动跑，失败即告警 | `schedule_add` / `schedule_list` / `schedule_run_now` |
 | 告警 | 企业微信/钉钉/飞书/Slack/通用 Webhook；含失败步骤、校验明细、自愈提示、报告路径 | `notify_config` / `notify_test` |
 | 串联 | 取数 → 填表 → 发邮件 一条线跑完，前一步提取值传给后一步 | `chain_run` |
+| 浏览器插件控制台 | 可选控制面：网页悬浮球（所有网页常驻，🎬 录当前页/⏹ 结束/🔁 重播/👁 查看步骤/⚙ 管理）+ /console 全窗口网页版（六页签 + live 进度）；走本地桥接调同一批 44 工具，见「五之三」 | `node mcp/bridge.mjs` + `extension/` |
 
 ### 超出原始需求的强化（都是踩过的坑换来的）
 
@@ -60,6 +61,7 @@ description: 当需要把每天重复的一串网页操作（点菜单、填日�
 - **配置可撤销**：`config_set` 里把某项设为 `null` 即"恢复默认"，不会再出现"设过一次就再也改不回去"。
 - **无表头格式正确处理**：`.txt` 逐行文本、标量 JSON 数组不再被当成"有表头"而吞掉第一个值（`excel:/csv:/table:` 取值同样受益）。
 - **覆盖度自检**：`node test/audit.mjs` 会检查每个工具/步骤/断言/规则/命令是否都有测试，任何"没人用过的能力"都会让它失败（曾借此发现 L061 是永远触发不了的死代码）。
+- **浏览器插件控制台**（可选，零 MCP 改动）：悬浮球 + /console 网页版通过本地桥接（`node mcp/bridge.mjs`，默认 127.0.0.1:8317）调用同一批 44 工具；带 token 鉴权（`WEBRPA_BRIDGE_TOKEN`）、录制器被其他会话占用时只观察不干预的防护、回放 live 进度面板。详见「五之三」。
 
 ## 三、快速开始（三步）
 
@@ -115,7 +117,7 @@ status_report { onlyProblems: true }
 典型的一天：
 
 1. 早上先看 `status_report`：结论是"全部流程最近一次执行正常"就结束，不用点开任何东西。
-2. 有问题的流程 → `run_report { flowId }` 看失败步骤与截图 → 按《workflows/排障与自愈.md》分诊。报告里的 `budgetOverrunMs>0` 表示该次运行越过了 `run.maxDurationMs` 总时限（计时含 profile 锁等待与浏览器启动，越线幅度在收尾开销量级属正常）；`timedOut:true` 才是"被总时限拦停"。
+2. 有问题的流程 → `run_report { flowId }` 看失败步骤与截图 → 按《workflows/排障与自愈.md》分诊。报告里的 `budgetOverrunMs>0` 表示该次运行越过了 `run.maxDurationMs` 总时限（计时含 profile 锁等待与浏览器启动，越线幅度在收尾开销量级属正常）；`timedOut:true` 才是"被总时限拦停"。`launchMs` 是该次启动耗时（含 profile 锁等待与浏览器启动，未启动无此字段）——越线时它占 `durationMs` 大头=启动慢，远小于越线=步骤慢。
 3. 自愈次数持续上升 → 页面在改版，安排重录，不要等它彻底失效。
 4. 出现 **interrupted** → 上一次执行是被强杀/断电中断的；确认业务是否只做了一半，必要时人工补做。
 5. 提示"正在执行中"但实际没在跑 → `lock_status` 确认持有者，`lock_release` 释放过期锁。
@@ -128,6 +130,34 @@ node mcp\runner.mjs status --problems     # 总览，有问题时退出码 1（�
 node mcp\runner.mjs prune                 # 预演清理
 node mcp\runner.mjs prune --apply --logs  # 真正清理运行记录与日志
 ```
+
+## 五之三、浏览器插件控制台（可选控制面，零 MCP 改动）
+
+不想敲命令/等 Agent 时，用浏览器控制全部 44 个工具：本地零依赖桥接把 MCP 暴露成 HTTP，`extension/` 目录的 MV3 插件（或不装插件直接开 `/console` 网页版）通过它操作。
+
+```powershell
+node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317，只监听本机）
+# 第 2 步（二选一）：chrome://extensions → 开发者模式 → 加载已解压的扩展程序 → 选 extension/ 目录
+#                 或：浏览器打开 http://127.0.0.1:8317/console（网页版，全窗口自适应 + 可缩放）
+```
+
+- **网页悬浮球**：所有 http/https 页面常驻可拖拽猫耳球——🎬 一键录制当前页 / ⏹ 结束保存 / 🔁 重播刚生成的技能 / 👁 查看步骤（行内 stepLabel 清单）/ ⚙ 管理（重命名/删除）/ ▶ 快速回放最近流程；录制中球体脉冲 + 步数角标。
+- **插拔式双模（v1.20.0 起，v1.21.1 增强）**：桥接未连接时自动落**独立模式**（面板模式徽章 + 控制台「运行模式」横幅）——本地录制（content 直接捕获当前页 click/input/change/hover/press，密码框不录；a[href] 跨页点击识别为 goto 步）/ 本地回放（**同源跨页自动续播**：goto 与**表单提交类点击**均预存续播、新页面 content script 接续，submit 场景 1.5s 未导航自清防误触发；跨源诚实停止）/ 本地流程管理、导出与**导入**（本地/MCP 格式均可）；本地流程可一键「升级到 MCP」（映射 goto+click/fill DSL → flow_import）与「从 MCP 导入」（反向映射）形成双向闭环。下载/弹窗/iframe/定时告警仍需桥接。验证：`node verify/standalone.mjs`（15 用例）+ `node verify/ui-ext.mjs --quick`（16 用例）+ 总入口 `node verify/all.mjs --quick`。
+- **/console 六页签**：状态（doctor/status_report + **▶ 运行中回放 live 进度**：进行中流程的触发方式/pid/已运行时长/等待人工接管，3s 轮询）/ 录制 / 流程（含结构化编辑器）/ 定时 / 系统 / 控制台（任意工具原始调用）。
+- **安全**：桥接只绑 127.0.0.1 + Host/Origin 校验，零 CORS 放行头；可选 token 鉴权（启动 `WEBRPA_BRIDGE_TOKEN=令牌 node mcp/bridge.mjs`，插件设置页或 `/console?token=令牌` 配对）。**不要把 8317 转发到公网**。
+- **录制器单例**：全局同时只允许一个录制会话；被其他会话占用时，悬浮球与 /console 录制页**只显示只读提示、不提供结束/取消**（防误结束他人录制）。
+- 完整功能与工具对照见仓库 `extension/README.md`（装机副本可能不含 extension/，以仓库为准）。
+- **改扩展后回归**：仓库 `verify/ui-ext.mjs`（`node verify/ui-ext.mjs`，约 3-4 分钟；`--quick` 约 2 分钟）覆盖插件 UI 全链路（/console 全页签 + 悬浮球录制/重播/查看/管理/重录表单/右键菜单/拖拽/隐藏/live 进度），需桥接运行中、自动用隔离实例避开录制器占用。
+- **全量验证总入口**：`node verify/all.mjs`（`--quick` 跳过 selftest 与 live-fulltest 且 ui-ext 用 --quick）一条命令顺序跑完六套电池——自检 427 项 / MCP 44 工具 68 链路（live-fulltest）/ /console 全按钮清扫（button-sweep，32 用例含安全分级跳过清单与 splice 执行闭环）/ 扩展 UI 回归（**默认完整版 17 含 live 长流程**）/ 双模（standalone 15 用例）/ 点名链条（fullchain 8 用例）；失败自动重试一次（时序竞态类兜底）；**收尾电池残件自密封**（自动清理测试前缀 runs/backups/live-report.json——绝不碰用户与外部流程，防门禁哈希污染）+ 残件自检行；末尾汇总表 + 非零退出码可接告警；顺序执行防跑批互踩。另有 **verify/journey.mjs**（新用户插拔旅程 8 环：开箱独立→本地录制/👁/回放→插桥升级→依赖重播→拔桥回落）单独跑。
+
+## 五之四、外部真实网站回放规范（实测教训）
+
+对**有风控的外部真实网站**（gitee/企微文档类）回放时，以下四条是真实踩坑换来的：
+
+1. **回放必须 `headed: true`**：无头（headless）浏览器特征会被目标站风控拦截——实测 gitee.com 在 headless 下定位步骤报「定位失败且无指纹可用于自愈」，同一 headed 真实浏览器稳定 pass（8.8s/轮，多轮一致）。内部系统无风控时无头照旧更快。
+2. **title/url 断言用页面真实大小写与格式**：断言 `contains` 是大小写敏感的——实测 gitee 仓库页真实标题是 `CalvinMCP: mcp仓库`（与 URL slug `calvin-mcp` 大小写不一致），写错即判失败（断言正确工作，不是产品 bug）。录完先 `run_report` 或浏览器标签确认真实标题再写断言。
+3. **`waitFor` 的 text 策略对动态 SPA 不可靠时用 sleep 兜底**：复杂 SPA 渲染的文本节点在不同加载阶段可见性不一致，text 定位可能失败；`sleep`（如 3500ms）等渲染完成是更稳的等待方式。多轮稳定性测试优先 sleep。
+4. **点击类交互可能被风控重定向，优先 URL 导航型流程**：实测 gitee 会把 Playwright 可信点击的导航 tab 重定向到首页（JS `a.click()` 与 URL 直接访问均不受影响，探针复现 2/2），失败现场只看「定位失败」会误判为页面改版。外部风控站的回放流程优先用 goto 链导航 + `url` 断言兜底（偏离起始地址即失败）；失败报告的 `attribution` 字段会对此类「最终 URL 偏离 + 含点击步」的失败自动给出「疑似风控重定向」提示。
 
 ## 六、安全红线（最高优先级，强制）
 

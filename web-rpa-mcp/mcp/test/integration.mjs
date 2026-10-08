@@ -2049,7 +2049,7 @@ async function main() {
       });
     }
     const idx = JSON.parse(fs.readFileSync(path.join(DIRS.runs, id, 'index.json'), 'utf8'));
-    assert.equal(idx.version, 2, '索引应带版本号（v2=摘要带预算可观测投影）');
+    assert.equal(idx.version, 3, '索引应带版本号（v3=摘要带启动耗时投影，shape 变更必须 bump 强制重建）');
     assert.equal(idx.runs.length, 3, '3 次运行应有 3 条摘要: ' + idx.runs.length);
     const runs = listRuns(id, 10);
     assert.deepEqual(runs.map((r) => r.stamp), ['20251002-120000-002', '20251002-120000-001', '20251002-120000-000']);
@@ -2058,6 +2058,8 @@ async function main() {
       durationMs: 101, trigger: 'cli', healedCount: 0, failedStep: 2, error: 'boom',
       // v2 预算可观测投影缺省口径：报告无预算字段时 timedOut=false、maxDurationMs/budgetOverrunMs=null
       timedOut: false, maxDurationMs: null, budgetOverrunMs: null,
+      // v3 启动耗时投影缺省口径：报告无 launchMs（未启动/旧报告/启动前预检拦停）时=null
+      launchMs: null,
     }, '摘要字段/缺省值口径必须与直读 report.json 一致');
     assert.equal(runs[0].healedCount, 2, 'healedCount 应取报告 healed[] 长度');
   });
@@ -2546,6 +2548,50 @@ async function main() {
     const item2 = again.items.find((i) => i.flowId === id);
     assert.ok(item2.recentOverruns && item2.recentOverruns.hits === 1, '删两份后应只剩 1 次命中: ' + JSON.stringify(item2.recentOverruns));
     assert.ok(!again.problems.some((p) => p.flowId === id && /越过 run\.maxDurationMs/.test(p.message)), '单次命中不该点名');
+  });
+
+  await A('启动耗时投影：report.launchMs + runSummary 投影 + recentOverruns 启动/步骤归因（R14）', async () => {
+    // 修前：浏览器启动（不可中断段）没有任何耗时数据面——R9 残余「启动越线 ~0.4-0.5s」只能靠墙钟肉眼估；
+    // recentOverruns 只有 maxOverrunMs，分不清「启动慢」还是「步骤慢」。
+    const id = 't-r14-launch';
+    created.push(id);
+    fs.rmSync(path.join(DIRS.runs, id), { recursive: true, force: true }); // 用例自密封：上一轮残件会让摘要窗口混入杂音
+    const rep = await run(F(id, [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] }));
+    assert.equal(rep.status, 'pass', rep.error);
+    assert.equal(typeof rep.launchMs, 'number', '报告应带 launchMs 启动耗时（修前 undefined）: ' + rep.launchMs);
+    assert.ok(rep.launchMs >= 0, 'launchMs 不应为负: ' + rep.launchMs);
+    assert.ok(rep.launchMs <= rep.durationMs, '启动耗时不应超过总时长: launchMs=' + rep.launchMs + ' durationMs=' + rep.durationMs);
+    const runs = listRuns(id, 5);
+    assert.equal(runs[0].launchMs, rep.launchMs, '摘要 launchMs 应与报告一致: ' + JSON.stringify(runs[0]));
+    // 聚合归因：recentOverruns.maxLaunchMs 与 maxOverrunMs 对读——越线≈启动耗时=启动慢，远小于越线=步骤慢
+    const id2 = 't-r14-overlaunch';
+    saveFlow(F(id2, [gt(DEMO + '/form')], { assertions: [{ kind: 'textPresent', text: '提交工单' }] }));
+    created.push(id2);
+    const base = path.join(DIRS.runs, id2);
+    fs.rmSync(base, { recursive: true, force: true });
+    const mk = (stamp, timedOut, overrun, launchMs) => {
+      const d = path.join(base, stamp);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'report.json'), JSON.stringify({
+        flowId: id2, stamp, status: timedOut ? 'fail' : 'pass', startedAt: '2025-10-06T12:00:00.000Z',
+        durationMs: 4000, trigger: 'schedule', healed: [],
+        timedOut: !!timedOut, maxDurationMs: 1500, budgetOverrunMs: overrun,
+        ...(launchMs === undefined ? {} : { launchMs }),
+      }));
+    };
+    mk('20251006-120001-001', true, 500, 3200);  // 拦停且启动占大头
+    mk('20251006-120002-002', true, 500, 900);   // 拦停但启动不慢
+    mk('20251006-120003-003', false, 2500);      // 旧报告口径：无 launchMs
+    const item = statusReport({}).items.find((i) => i.flowId === id2);
+    assert.ok(item && item.recentOverruns, '应有 recentOverruns: ' + JSON.stringify(item));
+    assert.equal(item.recentOverruns.maxLaunchMs, 3200, 'maxLaunchMs 应取命中项最大启动耗时: ' + JSON.stringify(item.recentOverruns));
+    assert.equal(item.recentOverruns.maxOverrunMs, 2500, 'maxOverrunMs 口径不变: ' + JSON.stringify(item.recentOverruns));
+    // 命中项全部无 launchMs（旧报告）时=null，不假装有数据
+    fs.rmSync(path.join(base, '20251006-120001-001'), { recursive: true, force: true });
+    fs.rmSync(path.join(base, '20251006-120002-002'), { recursive: true, force: true });
+    const item2 = statusReport({}).items.find((i) => i.flowId === id2);
+    assert.ok(item2.recentOverruns, '仍应有 recentOverruns: ' + JSON.stringify(item2));
+    assert.equal(item2.recentOverruns.maxLaunchMs, null, '无 launchMs 数据应诚实报 null: ' + JSON.stringify(item2.recentOverruns));
   });
 
   /* ================= 收尾 ================= */

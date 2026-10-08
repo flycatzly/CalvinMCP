@@ -9,9 +9,11 @@
  *   sqlite-validate 全工具面活库验证（自建临时库 + 最高权限，含 execute/create_table 真写链路）—— 总是跑
  *   mysql-validate  真实 MySQL 全工具面（自建临时库 dbmcp_probe_hist 自删，需 CREATE DATABASE 权限）——
  *                   FULLCHAIN_MYSQL=1 才跑（重套件，最小权限账号跑不了，故不自动）；无 mysql 源时退出码 3 诚实 SKIP
- *   docsync         文档一致性门禁（版本标记 / 用例数口径 / RUN_ALL 汇总行引文）—— 总是跑，纯 fs 秒级
+ *   docsync         文档一致性门禁（版本标记 / 用例数口径 / RUN_ALL 汇总行引文 / 目录树双向完整性 / 引用完整性 / 示例结构 / 格式模板骨架 / 工作流口径 / 巡检示例对齐）—— 总是跑，纯 fs 秒级
  *   config-lint     护栏配置门禁（references/ 两份配置：YAML 子集解析 fail-closed / 结构键类型 /
  *                   白名单红线 / 契约↔白名单跨文件一致性）—— 总是跑，纯 fs 秒级
+ *   inspect-one     巡检一键 CLI 门禁（预审四门/落盘守门/manifest 门/consistency 门/参数面）——
+ *                   总是跑，免 DB 秒级（v1.4.33 起）
  *   全链路 E2E      fixture 隔离副本 + live 段自动门控（FULLCHAIN_MYSQL/PG：未设自动发现、=1 强开、=0 关）
  * live 段随环境变量门控（与 fullchain_test.mjs 同口径）：
  *   FULLCHAIN_MYSQL=1 / FULLCHAIN_PG=1 时 E2E 含对应真实源只读段。
@@ -19,7 +21,7 @@
  * 退出码（统一诚实 SKIP 口径，与 mysql-validate 退出码 3 同义）：
  *   0 = 全部通过且无诚实 SKIP；1 = 存在失败或套件无法运行；3 = 无失败但有诚实 SKIP
  *   （缺 fixture / 开了 live 门却没源 / 缺依赖起不来）—— 未跑的部分明示出来，不冒充全绿。
- * 汇总行：RUN_ALL selftest=<p>/<f>[/<s>] sqlite-val=<p>/<f> mysql-val=<p>/<f>[/<s>|off] docsync=<p>/<f> config-lint=<p>/<f> e2e=<p>/<f>[/<s>] gates=<...> => OK|SKIP|FAIL
+ * 汇总行：RUN_ALL selftest=<p>/<f>[/<s>] sqlite-val=<p>/<f> mysql-val=<p>/<f>[/<s>|off] docsync=<p>/<f> config-lint=<p>/<f> inspect=<p>/<f> e2e=<p>/<f>[/<s>] gates=<...> => OK|SKIP|FAIL
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -33,6 +35,7 @@ const SQLITE_VAL = path.join(MCP_DIR, "sqlite-validate.mjs");
 const MYSQL_VAL = path.join(MCP_DIR, "mysql-validate.mjs");
 const DOCSYNC = path.join(here, "docsync_test.mjs");
 const CFG_LINT = path.join(here, "config_lint_test.mjs");
+const INSPECT = path.join(here, "inspect_one_test.mjs");
 const E2E = path.join(here, "fullchain_test.mjs");
 
 const gates = [];
@@ -52,7 +55,7 @@ const pick = (text, re) => {
   return m ? [m[1], m[2], m[3] ?? "0"] : ["-", "-", "-"];
 };
 
-let sP = "-", sF = "-", sS = "-", svP = "-", svF = "-", mvP = "-", mvF = "-", mvS = "-", dP = "-", dF = "-", cP = "-", cF = "-", eP = "-", eF = "-", eS = "-";
+let sP = "-", sF = "-", sS = "-", svP = "-", svF = "-", mvP = "-", mvF = "-", mvS = "-", dP = "-", dF = "-", cP = "-", cF = "-", iP = "-", iF = "-", eP = "-", eF = "-", eS = "-";
 let failedAny = false, skippedAny = false;
 
 // 子套件退出码口径：1（或其它非 0/3）= 失败；3 = 无失败但有诚实 SKIP；0 = 全绿
@@ -99,7 +102,7 @@ if (process.env.FULLCHAIN_MYSQL === "1") {
   mvP = "off";
 }
 
-// docsync：文档一致性门禁（版本标记 / 用例数口径 / RUN_ALL 汇总行引文）——纯 fs 秒级，先跑早报
+// docsync：文档一致性门禁（版本标记 / 用例数口径 / RUN_ALL 汇总行引文 / 目录树双向完整性 / 引用完整性 / 示例结构）——纯 fs 秒级，先跑早报
 if (!fs.existsSync(DOCSYNC)) {
   console.error("✗ 未找到 docsync：" + DOCSYNC);
   failedAny = true;
@@ -119,6 +122,16 @@ if (!fs.existsSync(CFG_LINT)) {
   noteStatus("config-lint", r.status);
 }
 
+// inspect-one：巡检一键 CLI 门禁（预审四门/落盘守门/manifest/consistency/参数面）——免 DB 秒级，先跑早报
+if (!fs.existsSync(INSPECT)) {
+  console.error("✗ 未找到 inspect-one：" + INSPECT);
+  failedAny = true;
+} else {
+  const r = run("巡检一键 CLI 门禁 inspect-one", [INSPECT], { cwd: here });
+  [iP, iF] = pick((r.stdout || "") + (r.stderr || ""), /=== inspect-one: (\d+) passed, (\d+) failed ===/);
+  noteStatus("inspect-one", r.status);
+}
+
 if (!fs.existsSync(E2E)) {
   console.error("✗ 未找到全链路 E2E：" + E2E);
   failedAny = true;
@@ -129,5 +142,5 @@ if (!fs.existsSync(E2E)) {
 }
 
 const verdict = failedAny ? "FAIL" : skippedAny ? "SKIP" : "OK";
-console.log(`\nRUN_ALL selftest=${sP}/${sF}/${sS} sqlite-val=${svP}/${svF} mysql-val=${mvP}/${mvF}/${mvS} docsync=${dP}/${dF} config-lint=${cP}/${cF} e2e=${eP}/${eF}/${eS} gates=${gates.join("+") || "core"} => ${verdict}`);
+console.log(`\nRUN_ALL selftest=${sP}/${sF}/${sS} sqlite-val=${svP}/${svF} mysql-val=${mvP}/${mvF}/${mvS} docsync=${dP}/${dF} config-lint=${cP}/${cF} inspect=${iP}/${iF} e2e=${eP}/${eF}/${eS} gates=${gates.join("+") || "core"} => ${verdict}`);
 process.exit(failedAny ? 1 : skippedAny ? 3 : 0);

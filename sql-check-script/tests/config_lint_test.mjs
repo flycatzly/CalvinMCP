@@ -6,13 +6,14 @@
  * 敏感列脱敏、生产库默认禁止），此前无任何机器校验：键被删、列表写空、重复条目、
  * 超集 YAML 语法被当字符串静默吞掉，都要到运行期才暴露。
  *
- * 检查项（18）：
+ * 检查项（21）：
  *   解析 2：两份配置 YAML 子集解析成功（超集语法 fail-closed，不静默误解析）
  *   whitelist 7：必备键 / allowed_databases / allowed_tables / sensitive_columns /
  *                max_result_rows / environment_allowlist 取值合法 / 不含 PROD（生产库默认禁止）
  *   contract 8：必备键（13）/ mode ∈ {check, analysis} / sql 非空 / tables 非空唯一 /
  *               has_explain 布尔 / return_contract 六工具口径键 /
  *               environment ∈ {TEST/PRE/UAT/DEV/PROD}（大小写不敏感）/ environment 命中 environment_allowlist
+ *   inspect_manifest 3：三层键清单结构合法 / ↔巡检一键.mjs 源码字段互证 / ↔manifest_example.json 示例互证
  *   跨文件 1：契约 tables 全部命中 allowed_tables（跨库「库名.表名」时库 ∈ allowed_databases）——
  *             白名单文件头「校验规则」原文的机器化
  *
@@ -212,6 +213,39 @@ const RC_KEYS = ["query", "count_rows", "distinct_values", "find_database", "lis
 ok("contract: return_contract 六工具口径键齐全（query/count_rows/distinct_values/find_database/list_tables/describe_table）",
   isObj(ct.return_contract) && RC_KEYS.every((k) => isObj(ct.return_contract[k]) && Object.keys(ct.return_contract[k]).length > 0),
   "缺失/空：" + RC_KEYS.filter((k) => !(isObj(ct.return_contract?.[k]) && Object.keys(ct.return_contract?.[k] || {}).length > 0)).join(","));
+
+// inspect_manifest（v1.4.34 起 2 检查）：巡检一键 --manifest JSON 清单的契约面——
+// yaml 记三层键清单（top/item/consistency），并与 巡检一键.mjs 源码字段互证：
+// 文档记了脚本没收的键（或脚本字段被删）即 FAIL——契约漂移双向报警。
+const IM_KEYS = ["top_keys", "item_keys", "consistency_keys"];
+ok("contract: inspect_manifest 三层键清单结构合法（top_keys/item_keys/consistency_keys 非空唯一字符串列表）",
+  isObj(ct.inspect_manifest) && IM_KEYS.every((k) => isStrList(ct.inspect_manifest[k]) && isUnique(ct.inspect_manifest[k])),
+  JSON.stringify(ct.inspect_manifest));
+const inspectSrc = fs.readFileSync(path.join(ROOT, "巡检一键.mjs"), "utf8");
+const imUnbacked = isObj(ct.inspect_manifest) && IM_KEYS.every((k) => isStrList(ct.inspect_manifest[k]))
+  ? IM_KEYS.flatMap((k) => ct.inspect_manifest[k]).filter((f) => !new RegExp(`\\b${f}\\b`).test(inspectSrc))
+  : ["(结构不合法，跳过互证)"];
+ok("contract↔巡检一键.mjs: inspect_manifest 字段与脚本解析面互证（yaml 记了脚本没收的键 = 漂移）",
+  imUnbacked.length === 0, "脚本源码中未见的字段：" + imUnbacked.join(","));
+
+// manifest_example.json ↔ inspect_manifest 契约互证（示例即文档，v1.4.46 起）：
+// 示例里的顶层/条目/一致性键全部必须命中 yaml 三层键清单——示例越契约即漂移。
+const EX_MANIFEST = path.join(ROOT, "assets", "sample_sql", "manifest_example.json");
+let exOk = false, exDetail = "";
+try {
+  const ex = JSON.parse(fs.readFileSync(EX_MANIFEST, "utf8"));
+  const topKeys = new Set(ct.inspect_manifest.top_keys);
+  const itemKeys = new Set(ct.inspect_manifest.item_keys);
+  const consKeys = new Set(ct.inspect_manifest.consistency_keys);
+  const badTop = Object.keys(ex).filter((k) => !topKeys.has(k));
+  const badItem = (ex.items ?? []).flatMap((it, i) => Object.keys(it ?? {}).filter((k) => !itemKeys.has(k)).map((k) => `items[${i}].${k}`));
+  const badCons = (ex.consistency ?? []).flatMap((c, i) => Object.keys(c ?? {}).filter((k) => !consKeys.has(k)).map((k) => `consistency[${i}].${k}`));
+  const badAll = [...badTop, ...badItem, ...badCons];
+  exOk = badAll.length === 0;
+  exDetail = badAll.length ? "越契约键：" + badAll.join(",") : `示例键全部命中契约（top=${Object.keys(ex).length}）`;
+} catch (e) { exDetail = "示例 manifest 读取/解析失败（fail-closed）：" + e.message; }
+ok("contract↔manifest_example: 示例 manifest 键全部命中 inspect_manifest 契约（示例越契约即漂移）",
+  exOk, exDetail);
 
 // 跨文件（1）—— 白名单文件头「校验规则」原文：每个表名必须命中 allowed_tables；
 // 跨库「库名.表名」时库也必须在 allowed_databases 内。

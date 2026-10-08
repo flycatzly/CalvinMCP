@@ -22,6 +22,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decideCliConfig, pickChannel, buildCliConfig } from './scripts/cli-config.mjs';
+// 排除口径单一源（r40）：SKIP 派生自 mcp/lib/exclude.js，不写字面量。
+import { EXCLUDE_DIRS as EXCLUDE_DIR_NAMES } from '../../mcp/lib/exclude.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));   // <项目>/skill/playwright-verify
 const PROJECT_ROOT = path.resolve(HERE, '..', '..');          // <项目>
@@ -87,9 +89,10 @@ if (OPT.printConfig) {
   record('安装 Skill', 'skip', '--print-config 模式，不写文件');
 } else {
   fs.mkdirSync(SKILLS_DIR, { recursive: true });
-  // 复制时跳过大目录：node_modules 太大且可重装，.git 与运行产物没有分发价值。
+  // 复制时跳过大目录：排除口径单一源（r40，mcp/lib/exclude.js）——依赖/产物/试验场
+  // 一律不进副本；demo/generated-* 由 deployed-check 的运行时产物豁免面兜底（双向）。
   // 注意 @playwright/* 是可选的（只有执行类工具需要），所以不复制也不会坏。
-  const SKIP = new Set(['node_modules', '.git', '.playwright-artifacts', 'test-results', 'dist', '__pycache__']);
+  const SKIP = new Set(EXCLUDE_DIR_NAMES);
   const copyRec = (src, dst) => {
     fs.mkdirSync(dst, { recursive: true });
     for (const e of fs.readdirSync(src, { withFileTypes: true })) {
@@ -101,7 +104,7 @@ if (OPT.printConfig) {
     }
   };
 
-  // 布局：INSTALL_ROOT/{mcp, skill/playwright-verify, demo, package.json}
+  // 布局：INSTALL_ROOT/{mcp, skill/playwright-verify, demo, extension, package.json}
   // 这正是脚本的 verify-lib.mjs 会向上找到 mcp/lib 的那种布局，
   // 也让 PVMCP_HOME=INSTALL_ROOT 能成立。
   try {
@@ -109,13 +112,18 @@ if (OPT.printConfig) {
     // 为什么默认就清：合并式复制对「源码已删的文件」零处理（实测残留机制成立），而
     // deployed-check 的「多余陈旧文件」会一直红到有人手动删或 --force 为止 —— 会自愈的
     // 门禁才配叫门禁。INSTALL_ROOT 整目录归本安装器管理（名字是我们的），子树里没有别人的东西。
-    for (const sub of ['mcp', 'skill', 'demo']) rmDeep(path.join(INSTALL_ROOT, sub));
+    for (const sub of ['mcp', 'skill', 'demo', 'extension']) rmDeep(path.join(INSTALL_ROOT, sub));
     // --force 升级为整目录重置：node_modules / .playwright 配置 / dsh-bundle / 用户杂散文件一并重来。
     if (OPT.force) rmDeep(INSTALL_ROOT);
     copyRec(path.join(PROJECT_ROOT, 'mcp'), path.join(INSTALL_ROOT, 'mcp'));
     copyRec(path.join(PROJECT_ROOT, 'skill'), path.join(INSTALL_ROOT, 'skill'));
     if (fs.existsSync(path.join(PROJECT_ROOT, 'demo'))) {
       copyRec(path.join(PROJECT_ROOT, 'demo'), path.join(INSTALL_ROOT, 'demo'));
+    }
+    // extension/（浏览器插件控制台）也是交付物：部署副本缺它时「加载已解压的扩展程序」
+    // 没得可选 —— deployed-check 的全树比对同样会把它当丢文件报出来。
+    if (fs.existsSync(path.join(PROJECT_ROOT, 'extension'))) {
+      copyRec(path.join(PROJECT_ROOT, 'extension'), path.join(INSTALL_ROOT, 'extension'));
     }
     // package-lock.json 也要带过去：安装目录若需补装依赖，有锁文件才能复现同一套版本。
     // .gitignore / .gitattributes 也要：装到 skills 目录后如果被纳入某个仓库，

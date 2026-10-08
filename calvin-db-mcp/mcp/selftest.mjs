@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
+import * as OBSM from "./observe.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,7 +26,7 @@ process.env.DBMCP_NO_LISTEN = "1";
 process.env.DBMCP_CONFIG = path.join(here, "dbmcp.config.json");
 
 const SERVER = await import("./server.mjs");
-const { intArg, enumArg, VERSION, handleRpc, guardReadOnly, guardWrite, enforceLimit, scrub, scrubWith, scrubToBuffer, getConfiguredSecrets, stringify, countTruncatedCells, extractWriteTarget, splitIdent, exprHasColumn, rpcInternalError, peekRpcId, probeTcp, sampleSql, classifyError, ToolError, trackRpc, finishRpc, beginDispatch, isCancelNotification, cancelRpc, stripLeadingInvis } = SERVER;
+const { intArg, enumArg, VERSION, handleRpc, guardReadOnly, guardWrite, enforceLimit, scrub, scrubWith, scrubToBuffer, getConfiguredSecrets, stringify, stringifyReplacer, countTruncatedCells, extractWriteTarget, splitIdent, exprHasColumn, rpcInternalError, peekRpcId, probeTcp, sampleSql, classifyError, ToolError, trackRpc, finishRpc, beginDispatch, isCancelNotification, cancelRpc, stripLeadingInvis, csvCellDigitMask, normalizeCfg, computeChangedSources } = SERVER;
 // v1.6.9 观测面打点（DBMCP_ERR_LOG）
 const { fmtLogLine, logToolCall, setScrub, MAX_FIELD } = await import("./observe.mjs");
 
@@ -46,7 +47,48 @@ let fail = 0;
 // v1.6.31 +1 = 零物化组装差分钉（融合计数/直写/scratch vs 行串真源逐字节恒等 + 逐格哨兵等价 + 早停边界 + 种子模糊）。
 // v1.6.32 +2 = createCsvRowSink 行接收器钉（增量喂入 vs 整链逐字节恒等 + eager/惰性表头 + 哨兵旗/abort 中止 + E_LIMIT 零写盘 + 种子模糊）
 //             + writeFileStreamAtomic 异步 writeFn 钉（thenable 延迟占位 + 失败清理 + EEXIST/overwrite 与同步面同语义）。
-const EXPECTED_TOTAL = { uninit: 335, init: 349 };
+// v1.6.33 +1 = PG_FETCH_BATCH 单一真源钉（FETCH 语句/游标退出阈值共用常量，消字面量漂移→静默截断 bug 类）。
+// v1.6.34 +7 = where 顶层子句关键字拒绝钉 + 括号子查询/标识符/字面量放行钉 + 注释尾巴 semiAt 钉
+//             + stripStatementTail 形态钉 + 注释藏语句/可执行注释尾巴仍拒钉 + enforceLimit 注释尾巴包裹钉
+//             + findcol 字面子串形状钉（LIKE 通配符→INSTR/strpos 字面量）。
+// v1.6.35 +4 = sanitizeSql 嵌套缓存键钉（命中同对象/k-m 与方言槽不串/等长不变量）+ setSanitizeCache
+//             绕过与溢出整清恒等钉 + sqlite 预编译句柄缓存钉 ×2（参数化重绑定/BigInt 保真/重名前置拒绝
+//             在缓存路径 + 早停再全量流式/64 上限轮转/逃生阀语义等价）。
+// v1.6.36 +3 = stringify 规范化 walk 差分钉（vs 冻结 stringifyReplacer 真源：对抗行集+边界载荷
+//             ×响应/导出/pretty/导出pretty 四模式逐字节恒等 + 根级边界 + 抛出同责）
+//             + stringify 手写期望钉（bigint 串化/截断后缀逐字/二进制预览 3B·9B/导出 hex/
+//             装箱 NaN→null/链式 toJSON 只作用一次/toJSON 键非函数保留）
+//             + scrubWith 预筛等价钉（零命中/命中/重叠键双序/元字符不误伤/空键/空表/非串输入
+//             与旧循环逐字恒等 + 同表缓存命中不漂移）；ctc 语义边界内扩进「truncated cell
+//             counting」钉（零计数漂移：阈值严格大于/同行多长串计 1/数组·嵌套·键名不计/非对象行）。
+// v1.6.37 +4 = zipRows 常量键工厂差分钉（vs 冻结逐格循环真源：常规/重复消歧/空名/数字形名/
+//             对抗名（引号/反斜杠/换行/U+2028/孤立代理项）/多类型值（BigInt/NaN/Inf/undefined）/
+//             空结果/600 列逃生阀逐字节恒等 + 键序恒等）
+//             + __proto__ 列名手写期望钉（自有属性+值存活/原型不被换/JSON 视图含值/
+//             对象值不设原型/与消歧并存）
+//             + 对抗列名+工厂缓存隔离钉（10 形态键值存活 + 交替列名集不串味）
+//             + sqlite 数组行产品路径钉（setReturnArrays+zip 值类型口径/BigInt/BLOB/键序/
+//             空结果带列名/缓存开关两分支同口径/重名前置拒绝不放宽）。
+// v1.6.38 +1 = resultContent 双份序列化契约钉（wire 双重编码还原数据 + text 含转义内引号；
+//             剖析定盘 pass2 为协议必需，单遍预转义 emitter 负优化 2× 回退后的防漂移钉）。
+// v1.6.39 +1 = pg 命名预编译缓存正确性钉（字面量缓存命中两次查询恒等 + 坏 SQL 两次同错误且
+//             无 "prepared statement does not exist" 毒化；v1.6.41 扩展为参数化 named 跨值复用可用）。
+// v1.6.42 +1 = 数字口令上下文清洗钉（数字 token 保留/字符串字面量掩/pretty 空格回扫/
+//             长数字片段防误伤/已知取舍显式钉/非数字键行为不漂移）。
+// v1.6.43 +1 = csv 数字口令单元格级处置钉（全数字单元保真/文本内部掩/引号格内掩/
+//             JSON-CSV 不对称显式钉/三链 digitKeys 恒等+手写期望整文件/无 digitKeys 零变化）。
+// v1.6.53 +2 = offset 分页形状钉（sampleSql OFFSET 追加/零不追加字节不变/enforceLimit 外层
+//             耦合锁定/负值直通）+ e2e 分页钉（init 仅：query offset 三页无重叠无遗漏 +
+//             sample_data offset 页 + 不包裹语句 slice 层偏移）。
+// v1.6.54 +3 = server_stats 纯函数钉（计数/错误/慢计数/ring 顺序与 cap32/scrub 注入/avg）
+//             + e2e 钉（init 仅：计数接线/version/慢阈值默认）+ 部署态钉（双口径：未初始化
+//             显式 init_required 提示 / 已初始化 version+形状）。
+// v1.6.55 +2 = reload 纯函数钉（normalizeCfg 形态校验/clamp/init_required +
+//             computeChangedSources 新增/删除/改file/enc轮换/零差异）+ reload_config e2e 钉
+//             （init 仅：同内容零差异/增源生效+list_sources 反映/坏 JSON 回滚内存态+复位清 dummy）。
+// v1.6.56 +1 = report 聚合钉（错误码分布含 UNKNOWN 兜底 + 慢查询按类型聚合/排序 +
+//             非慢错误不入慢表 + 注释开头归 other；e2e 钉内扩 report 形状断言）。
+const EXPECTED_TOTAL = { uninit: 361, init: 380 };
 function check(name, fn) {
   try { fn(); pass += 1; console.log("PASS " + name); }
   catch (e) { fail += 1; console.log("FAIL " + name + " - " + e.message); }
@@ -182,6 +224,102 @@ check("sample: order_by lowercase asc normalized", () => {
 check("sample: order_by injection rejected", throws(() => sampleSql("mysql", MYSQL_REF, { orderBy: "id DESC; DROP TABLE x", limit: 5 }), /Invalid order_by/));
 check("sample: order_by comment injection rejected", throws(() => sampleSql("mysql", MYSQL_REF, { orderBy: "id -- x", limit: 5 }), /Invalid order_by/));
 check("sample: order_by with two columns rejected", throws(() => sampleSql("mysql", MYSQL_REF, { orderBy: "id, name", limit: 5 }), /Invalid order_by/));
+
+check("cfg: reload 纯函数钉（v1.6.55）normalizeCfg 形态校验/clamp/init_required + computeChangedSources 差异面", () => {
+  const eq = (got, want, label) => { if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(label + "\n  got:  " + JSON.stringify(got) + "\n  want: " + JSON.stringify(want)); };
+  // normalizeCfg：非法形态拒绝（ToolError）
+  for (const bad of [null, 42, "x", [1, 2]]) {
+    let threw = false;
+    try { normalizeCfg(bad, "f"); } catch (e) { threw = e instanceof ToolError || /E_CONFIG/.test(String(e)); }
+    if (!threw) throw new Error("非法 raw 未拒: " + JSON.stringify(bad));
+  }
+  let threw2 = false;
+  try { normalizeCfg({ sources: [1] }, "f"); } catch (e) { threw2 = true; }
+  if (!threw2) throw new Error("sources 数组形态未拒");
+  // clamp + __initRequired
+  const c1 = normalizeCfg({ maxRows: 99999, timeoutMs: 5, allowWrites: "yes", maxAffectedRows: -1, sources: { a: { type: "sqlite", file: "/x" } } }, "f");
+  eq([c1.maxRows, c1.timeoutMs, c1.allowWrites, c1.maxAffectedRows, c1.__initRequired], [5000, 1000, false, 1, false], "clamp 面（maxAffectedRows=-1→1；500 仅 NaN 默认）");
+  const c2 = normalizeCfg({}, "f");
+  eq([c2.maxRows, c2.sources && Object.keys(c2.sources).length, c2.__initRequired], [200, 0, true], "默认面/空源=init_required");
+  // computeChangedSources：新增/删除/改 url|file/未变
+  const oldS = { keep: { type: "mysql", url: "mysql://u:p@h/db" }, gone: { type: "sqlite", file: "/a" }, chg: { type: "sqlite", file: "/old" } };
+  const newS = { keep: { type: "mysql", url: "mysql://u:p@h/db" }, chg: { type: "sqlite", file: "/new" }, add: { type: "sqlite", file: "/b" } };
+  const ch = computeChangedSources(oldS, newS).sort();
+  eq(ch, ["add", "chg", "gone"], "差异面（新增/改file/删除；keep 不动）");
+  eq(computeChangedSources(oldS, { ...oldS }), [], "同配置零差异");
+  // enc 变化也算差异（同 url 不同密文=凭据轮换）
+  eq(computeChangedSources({ s: { enc: "enc:v1:x" } }, { s: { enc: "enc:v2:y" } }), ["s"], "enc 轮换=变更");
+});
+
+check("obs: report 聚合钉（v1.6.56）错误码分布 + 慢查询按类型 + 排序 + UNKNOWN 兜底 + 非慢错误不入慢表", () => {
+  const st = OBSM.createObsState(100);
+  OBSM.obsRecord(st, "s1", 50, false, "SELECT ok", null);            // 非慢成功：哪儿都不进
+  OBSM.obsRecord(st, "s1", 150, false, "SELECT slow a", null);       // 慢成功 → slow_by_type select
+  OBSM.obsRecord(st, "s1", 30, true, "UPDATE t SET x=1", "E_DB");    // 非慢错误 → 仅 error_codes
+  OBSM.obsRecord(st, "s1", 250, true, "DELETE FROM t", "E_PARAM");   // 慢错误 → 两侧都进
+  OBSM.obsRecord(st, "s1", 300, false, "INSERT INTO t VALUES (1)", null);
+  OBSM.obsRecord(st, "s2", 400, true, "SELECT x FROM y", null);      // 无码 → UNKNOWN
+  const rep = OBSM.obsSnapshot(st, (t) => t).report;
+  const ec = rep.error_codes;
+  if (JSON.stringify(ec) !== JSON.stringify([{ code: "E_DB", count: 1 }, { code: "E_PARAM", count: 1 }, { code: "UNKNOWN", count: 1 }])) throw new Error("error_codes（同 count 按插入序）: " + JSON.stringify(ec));
+  const styp = rep.slow_by_type;
+  const sel = styp.find((x) => x.type === "select");
+  const del = styp.find((x) => x.type === "delete");
+  const ins = styp.find((x) => x.type === "insert");
+  const upd = styp.find((x) => x.type === "update");
+  if (!sel || sel.count !== 2 || sel.total_ms !== 550 || sel.avg_ms !== 275) throw new Error("select 聚合（150+s2 的 400，均 ≥100 慢阈值）: " + JSON.stringify(sel));
+  if (!del || del.count !== 1 || del.total_ms !== 250) throw new Error("delete 聚合: " + JSON.stringify(del));
+  if (!ins || ins.count !== 1 || ins.total_ms !== 300) throw new Error("insert 聚合: " + JSON.stringify(ins));
+  if (upd) throw new Error("非慢错误不应入 slow_by_type: " + JSON.stringify(upd));
+  // 排序：count 降序（select 2 领先；同 count 保持插入序）
+  if (styp[0].type !== "select") throw new Error("slow_by_type 未按 count 降序: " + JSON.stringify(styp.map((x) => x.type)));
+  // 语句类型归类兜底：注释开头 → other
+  const st2 = OBSM.createObsState(50);
+  OBSM.obsRecord(st2, "s", 90, false, "-- c SELECT 1", null);
+  const ty = OBSM.obsSnapshot(st2, (t) => t).report.slow_by_type;
+  if (ty.length !== 1 || ty[0].type !== "other") throw new Error("注释开头应归 other: " + JSON.stringify(ty));
+});
+
+check("obs: server_stats 纯函数钉（v1.6.54）计数/错误/慢计数/ring 顺序与 cap/scrub 注入/avg", () => {
+  const st = OBSM.createObsState(100);
+  const snap0 = OBSM.obsSnapshot(st, (t) => t);
+  if (snap0.per_source.length !== 0 || snap0.recent_slow.length !== 0 || snap0.slow_ms_threshold !== 100) throw new Error("空状态形状: " + JSON.stringify(snap0));
+  OBSM.obsRecord(st, "s1", 50, false, "SELECT ok");
+  OBSM.obsRecord(st, "s1", 150, false, "SELECT slow");
+  OBSM.obsRecord(st, "s1", 30, true, "SELECT bad");
+  OBSM.obsRecord(st, "s2", 200, false, "SELECT s2slow");
+  const snap = OBSM.obsSnapshot(st, (t) => t);
+  const s1 = snap.per_source.find((x) => x.source === "s1");
+  if (!s1 || s1.count !== 3 || s1.errors !== 1 || s1.slow !== 1 || s1.total_ms !== 230 || s1.avg_ms !== 77) throw new Error("s1 计数: " + JSON.stringify(s1));
+  if (snap.recent_slow.length !== 2 || snap.recent_slow[0].source !== "s1" || snap.recent_slow[1].source !== "s2") throw new Error("ring 顺序/内容: " + JSON.stringify(snap.recent_slow));
+  // scrub 注入（head 脱敏）
+  OBSM.obsRecord(st, "s3", 500, false, "token=secret-x");
+  const snap2 = OBSM.obsSnapshot(st, (t) => String(t).split("secret").join("***"));
+  const last = snap2.recent_slow[snap2.recent_slow.length - 1];
+  if (last.sql_head !== "token=***-x") throw new Error("scrub 未生效: " + last.sql_head);
+  // ring cap 32（43 条慢记录 → 保尾 32，首条=h8）
+  for (let i = 0; i < 40; i++) OBSM.obsRecord(st, "s4", 999, false, "h" + i);
+  const snap3 = OBSM.obsSnapshot(st, (t) => t);
+  if (snap3.recent_slow.length !== 32) throw new Error("ring cap: " + snap3.recent_slow.length);
+  if (snap3.recent_slow[0].sql_head !== "h8" || snap3.recent_slow[31].sql_head !== "h39") throw new Error("ring 首尾漂移: " + snap3.recent_slow[0].sql_head + " / " + snap3.recent_slow[31].sql_head);
+});
+
+check("v1.6.53: offset 分页形状钉——sampleSql OFFSET 追加/零不追加字节不变 + enforceLimit 外层耦合锁定", () => {
+  const eq = (got, want, label) => { if (got !== want) throw new Error(label + "\n  got:  " + got + "\n  want: " + want); };
+  // sampleSql：offset=0/缺省 → 旧形状字节不变（既有钉零漂移的显式锁定）
+  eq(sampleSql("mysql", MYSQL_REF, { limit: 10 }), "SELECT * FROM `db`.`log_record` LIMIT 10", "缺省不追加");
+  eq(sampleSql("mysql", MYSQL_REF, { limit: 10, offset: 0 }), "SELECT * FROM `db`.`log_record` LIMIT 10", "offset=0 不追加");
+  // offset>0 → LIMIT..OFFSET（三驱动同形；纯数字直拼零注入面——intArg 在 handler 层校验）
+  eq(sampleSql("mysql", MYSQL_REF, { limit: 10, offset: 20 }), "SELECT * FROM `db`.`log_record` LIMIT 10 OFFSET 20", "mysql OFFSET");
+  eq(sampleSql("postgres", PG_REF, { orderBy: "id DESC", limit: 5, offset: 15 }), 'SELECT * FROM "public"."log_record" ORDER BY "id" DESC LIMIT 5 OFFSET 15', "pg 组合 OFFSET");
+  eq(sampleSql("sqlite", 's"."t', { where: "a > 1", limit: 3, offset: 7 }), 'SELECT * FROM s"."t WHERE a > 1 LIMIT 3 OFFSET 7', "sqlite OFFSET");
+  // 负 offset 直通旧行为（intArg 在 handler 层拒绝负值；纯函数层 >0 判定）
+  eq(sampleSql("mysql", MYSQL_REF, { limit: 10, offset: -5 }), "SELECT * FROM `db`.`log_record` LIMIT 10", "负 offset 不追加");
+  // enforceLimit 外层耦合：offset>0 时包裹语句 = LIMIT maxRows+1 OFFSET offset（doQuery 的
+  // wrappedOffset 判定与该前缀输出耦合，此钉锁定耦合面）
+  eq(enforceLimit("SELECT 1 AS a", 100, "mysql", 0), "SELECT * FROM (\nSELECT 1 AS a\n) AS _za_mcp_limit LIMIT 101", "enforceLimit offset=0 旧形状");
+  eq(enforceLimit("SELECT 1 AS a", 100, "mysql", 25), "SELECT * FROM (\nSELECT 1 AS a\n) AS _za_mcp_limit LIMIT 101 OFFSET 25", "enforceLimit OFFSET 外层");
+});
 check("sample: where applied before order/limit", () => {
   const s = sampleSql("mysql", MYSQL_REF, { where: "status = 'SENT'", orderBy: "id DESC", limit: 3 });
   if (s !== "SELECT * FROM `db`.`log_record` WHERE status = 'SENT' ORDER BY `id` DESC LIMIT 3") throw new Error(s);
@@ -724,6 +862,17 @@ await checkAsync("writeFileStreamAtomic: 异步 writeFn 形态与同步面同语
   }
 });
 
+/* --- v1.6.33 回归：pg 游标批量单一真源（消「FETCH 批量/退出阈值两处字面量漂移→超首批行静默截断」bug 类） --- */
+check("pool.mjs: PG_FETCH_BATCH 单一真源（FETCH 语句与游标退出阈值共用常量，无裸数字字面量）", () => {
+  const src = fs.readFileSync(path.join(here, "pool.mjs"), "utf8");
+  const m = src.match(/const PG_FETCH_BATCH = (\d+);/);
+  if (!m) throw new Error("PG_FETCH_BATCH 常量缺失");
+  if (/FETCH FORWARD \d+/.test(src)) throw new Error("FETCH 批量存在裸数字字面量（须引用 PG_FETCH_BATCH）");
+  if (/rows\.length < \d+/.test(src)) throw new Error("游标退出阈值存在裸数字字面量（须引用 PG_FETCH_BATCH）");
+  if (!src.includes("res.rows.length < PG_FETCH_BATCH")) throw new Error("游标退出阈值未引用 PG_FETCH_BATCH");
+  if (!src.includes("FETCH FORWARD ${PG_FETCH_BATCH} FROM qm_cur")) throw new Error("FETCH 语句未引用 PG_FETCH_BATCH");
+});
+
 /* --- v1.6.30 回归：createBatchWriter 集束写（高频小块收成低频大块，export 耗时回收本体） --- */
 check("createBatchWriter: 集束写逐字节恒等（批边界不变 + 超大碎片零拷贝直写 + flush 尾批幂等 + 写调用收数）", () => {
   for (const batchBytes of [4096, 8192]) {
@@ -1188,10 +1337,59 @@ check("findcol: mysql SQL shape + params", () => {
   if (!/information_schema\.COLUMNS/.test(sql) || !/LIMIT 101/.test(sql)) throw new Error(sql);
   if (values.length !== 2 || values[0] !== null || values[1] !== "order") throw new Error(JSON.stringify(values));
 });
-check("findcol: pg SQL shape (pg_attribute + ILIKE)", () => {
+check("findcol: pg SQL shape (pg_attribute + 字面子串)", () => {
   const { sql, values } = SERVER.findColumnsSql("postgres", { schema: "public", column: "order", limit: 50 });
-  if (!/pg_attribute/.test(sql) || !/ILIKE/.test(sql) || !/LIMIT 51/.test(sql)) throw new Error(sql);
+  // v1.6.34: strpos(lower…) 字面子串匹配——旧 ILIKE 模式让 %/_ 当通配符，与"子串"语义不符
+  if (!/pg_attribute/.test(sql) || !/strpos\(lower\(/.test(sql) || /ILIKE/.test(sql) || !/LIMIT 51/.test(sql)) throw new Error(sql);
   if (values[0] !== "public" || values[1] !== "order") throw new Error(JSON.stringify(values));
+});
+/* --- v1.6.34: 真实对抗测试抓获的产品缺陷回归钉（where 尾句静默错数 / 注释尾巴误判多语句 / 通配符子串） --- */
+check("where: 顶层子句关键字拒绝（尾句 GROUP BY 曾让 count 静默错数）", () => {
+  for (const w of ["id > 0 GROUP BY id", "id > 0 ORDER BY id", "id > 0 LIMIT 1", "id > 0 UNION SELECT 999",
+                   "id > 0 HAVING count(*) > 1", "(id) > 0 OFFSET 2", "id > 0 WINDOW w AS ()"]) {
+    let msg = "";
+    try { SERVER.checkWhereFragment(w, "mysql"); } catch (e) { msg = e.message || ""; }
+    if (!/plain condition expression/.test(msg)) throw new Error(w + " -> " + (msg || "放行"));
+  }
+});
+check("where: 括号子查询放行 + 标识符/字面量子句词不误伤", () => {
+  SERVER.checkWhereFragment("id IN (SELECT x FROM t ORDER BY x LIMIT 3)", "mysql");
+  SERVER.checkWhereFragment("id = (SELECT max(y) FROM u GROUP BY z LIMIT 1)", "postgres");
+  SERVER.checkWhereFragment("x_limit > 1 AND limit_flag = 1 AND order_no = 2", "mysql");
+  SERVER.checkWhereFragment("name = 'GROUP BY x' AND note = 'LIMIT 1' AND `window` = 1", "mysql");
+});
+check("sanitize: 分号后注释尾巴不算多语句（semiAt 记录原文下标）", () => {
+  const sql = "SELECT 1; -- done";
+  const s = SERVER.sanitizeSql(sql, "mysql");
+  if (s.error) throw new Error(JSON.stringify(s));
+  if (s.semiAt !== sql.indexOf(";")) throw new Error("semiAt=" + s.semiAt);
+  guardReadOnly(sql, "mysql"); // 不应抛
+});
+check("stripStatementTail: 注释尾巴/结尾分号/普通语句各形态", () => {
+  const t = SERVER.stripStatementTail;
+  if (t("SELECT 1; -- done", "mysql") !== "SELECT 1") throw new Error("line-comment tail");
+  if (t("SELECT 1; /* c */", "mysql") !== "SELECT 1") throw new Error("block-comment tail");
+  if (t("SELECT 1; -- done\n", "postgres") !== "SELECT 1") throw new Error("pg tail");
+  if (t("SELECT 1;", "mysql") !== "SELECT 1") throw new Error("bare semi");
+  if (t("SELECT 1", "mysql") !== "SELECT 1") throw new Error("plain");
+});
+check("guard: 注释尾巴后藏第二语句/可执行注释尾巴仍拒绝", () => {
+  let msg = "";
+  try { guardReadOnly("SELECT 1; /* c */ DROP TABLE t", "mysql"); } catch (e) { msg = e.message || ""; }
+  if (!/single|;/i.test(msg)) throw new Error("block-comment smuggling: " + msg);
+  try { guardReadOnly("SELECT 1; /*! DROP TABLE t */", "mysql"); } catch (e) { msg = e.message || ""; }
+  if (!/single|;|Blocked/i.test(msg)) throw new Error("executable-comment tail: " + msg);
+  try { guardReadOnly("SELECT 1; DROP TABLE t", "mysql"); } catch (e) { msg = e.message || ""; }
+  if (!/single|;/i.test(msg)) throw new Error("classic multi: " + msg);
+});
+check("enforceLimit: 注释尾巴语句可包裹（尾巴不进派生表）", () => {
+  const w = enforceLimit("SELECT 1; -- done", 10, "mysql");
+  if (!/_za_mcp_limit LIMIT 11/.test(w)) throw new Error(w);
+  if (/;/.test(w)) throw new Error("tail leaked into wrapper: " + w);
+});
+check("findcol: mysql 字面子串形状（INSTR/LOWER，%_ 不当通配符）", () => {
+  const { sql } = SERVER.findColumnsSql("mysql", { schema: null, column: "a%b_c", limit: 10 });
+  if (!/INSTR\(LOWER\(COLUMN_NAME\), LOWER\(\?\)\)/.test(sql) || /LIKE/.test(sql)) throw new Error(sql);
 });
 check("distinct: top/total shape + assembled SQL passes read guard", () => {
   const built = SERVER.distinctSql("mysql", "`t`", "status", { where: "id > 10", limit: 20 });
@@ -1380,18 +1578,20 @@ check("import: dialect placeholders — pg uses $n (bug fix), mysql/sqlite use ?
 });
 
 /* -------- v1.6.20: import 批大小按方言占位符预算 × 列数动态定（原硬编码 100） -------- */
-check("import: batch size dialect budget — 窄表三方言均取封顶 1000", () => {
+check("import: batch size dialect budget — 窄表封顶（v1.6.46 5000；sqlite cols=5 预算界 4000）", () => {
   for (const db of ["mysql", "postgres", "sqlite"]) {
-    if (SQLITE.importBatchSize(db, 5) !== 1000) throw new Error(db + " 窄表应封顶 1000, got " + SQLITE.importBatchSize(db, 5));
+    if (SQLITE.importBatchSize(db, 4) !== 5000) throw new Error(db + " 窄表(4列)应封顶 5000, got " + SQLITE.importBatchSize(db, 4));
   }
+  if (SQLITE.importBatchSize("sqlite", 5) !== 4000) throw new Error("sqlite cols=5 应预算界 4000, got " + SQLITE.importBatchSize("sqlite", 5));
+  if (SQLITE.importBatchSize("mysql", 5) !== 5000) throw new Error("mysql cols=5 应仍封顶 5000, got " + SQLITE.importBatchSize("mysql", 5));
 });
 check("import: batch size 宽表按预算降批 + 非法列数兜底 1 且永不为 0", () => {
   // sqlite 预算 20000: 60 列 → floor(20000/60)=333; mysql/pg 预算 50000: 60 列 → 833
   if (SQLITE.importBatchSize("sqlite", 60) !== 333) throw new Error("sqlite 60列: " + SQLITE.importBatchSize("sqlite", 60));
   if (SQLITE.importBatchSize("mysql", 60) !== 833) throw new Error("mysql 60列: " + SQLITE.importBatchSize("mysql", 60));
   if (SQLITE.importBatchSize("postgres", 60) !== 833) throw new Error("pg 60列: " + SQLITE.importBatchSize("postgres", 60));
-  if (SQLITE.importBatchSize("sqlite", 0) !== 1000) throw new Error("cols=0 应按 1 兜底");
-  if (SQLITE.importBatchSize("mysql", NaN) !== 1000) throw new Error("NaN 应按 1 兜底");
+  if (SQLITE.importBatchSize("sqlite", 0) !== 5000) throw new Error("cols=0 应按 1 兜底且封顶 5000（v1.6.46）");
+  if (SQLITE.importBatchSize("mysql", NaN) !== 5000) throw new Error("NaN 应按 1 兜底且封顶 5000（v1.6.46）");
 });
 
 /* -------- v1.6.21: import_data 的 PG 批路径 COPY FROM STDIN（文本格式） -------- */
@@ -1627,6 +1827,105 @@ check("zipRows: 无重复列原样返回、多重复递增后缀", () => {
   const r3 = POOL.zipRows(["x", "x", "x"], [[1, 2, 3]]);
   if (r3.rows[0].x !== 1 || r3.rows[0].x__2 !== 2 || r3.rows[0].x__3 !== 3) throw new Error(JSON.stringify(r3));
 });
+
+/* -------- v1.6.37 行转换钉：zipRows 常量键工厂差分 / __proto__ 慢路径语义 / 对抗列名+缓存隔离
+            （sqlite 产品路径钉在下方 pool 段） -------- */
+check("zipRows: 常量键工厂 vs 冻结旧实现差分钉（v1.6.37 防行转换语义漂移）", () => {
+  // 冻结的 pre-1.6.37 逐格循环实现（真源对照；__proto__ 语义缺陷不在差分范围，见专项手写钉）
+  const zipOld = (fields, arrayRows) => {
+    const seen = new Map();
+    const names = fields.map((f) => {
+      const n = String(f);
+      const c = seen.get(n) || 0;
+      seen.set(n, c + 1);
+      return c === 0 ? n : `${n}__${c + 1}`;
+    });
+    const renamed = {};
+    names.forEach((n, i) => { if (n !== String(fields[i])) renamed[n] = String(fields[i]); });
+    const rows = arrayRows.map((arr) => {
+      const o = {};
+      for (let i = 0; i < names.length; i++) o[names[i]] = arr[i];
+      return o;
+    });
+    return { rows, renamed, fields: names };
+  };
+  // 序列化带类型标记：bigint/NaN/±Infinity/undefined 不被 JSON 静默折叠成同形
+  const S = (x) => JSON.stringify(x, (k, v) => {
+    if (typeof v === "bigint") return { $b: String(v) };
+    if (typeof v === "number" && !Number.isFinite(v)) return { $n: String(v) };
+    if (v === undefined) return { $u: 1 };
+    return v;
+  });
+  const cases = [
+    ["常规列", ["id", "name", "amount"], [[1, "a", 1.5], [2, null, 0]]],
+    ["重复列名消歧", ["id", "id", "name"], [[1, 2, "x"], [3, 4, "y"]]],
+    ["三重复+空名+数字形名", ["", "", "1", "0x"], [[1, 2, 3, 4]]],
+    ["对抗名（引号/反斜杠/换行/U+2028/孤立代理项/原型方法名）",
+      ['q"uote', "back\\slash", "ne\nw", " ", "\uD800", "constructor", "toString"],
+      [["v1", "v2", "v3", "v4", "v5", "v6", "v7"]]],
+    ["多类型值（BigInt/NaN/±Inf/undefined/null）", ["a", "b", "c", "d", "e", "f"],
+      [[9007199254740993n, NaN, Infinity, -Infinity, undefined, null]]],
+    ["空结果", ["x", "y"], []],
+  ];
+  for (const [label, fields, arr] of cases) {
+    const cur = POOL.zipRows(fields, arr);
+    const old = zipOld(fields, arr);
+    if (S(cur.rows) !== S(old.rows) || S(cur.renamed) !== S(old.renamed) || S(cur.fields) !== S(old.fields)) {
+      throw new Error(`差分失败 ${label}: ${S(cur)} vs ${S(old)}`);
+    }
+    cur.rows.forEach((row, i) => {
+      const k1 = Object.keys(row).join(" ");
+      const k2 = Object.keys(old.rows[i]).join(" ");
+      if (k1 !== k2) throw new Error(`键序漂移 ${label}#${i}: ${JSON.stringify(k1)} vs ${JSON.stringify(k2)}`);
+    });
+  }
+  // >512 列逃生阀走逐格慢路径，与旧实现字节恒等
+  const wide = Array.from({ length: 600 }, (_, i) => "c" + i);
+  const wideRows = [Array.from({ length: 600 }, (_, i) => i * 2)];
+  const wc = POOL.zipRows(wide, wideRows);
+  const wo = zipOld(wide, wideRows);
+  if (S(wc.rows) !== S(wo.rows) || wc.fields.join() !== wo.fields.join()) throw new Error("600 列逃生阀差分失败");
+  if (Object.keys(wc.rows[0]).length !== 600) throw new Error("600 列行键数不对: " + Object.keys(wc.rows[0]).length);
+});
+check("zipRows: __proto__ 列名手写期望钉（v1.6.37 defineProperty 慢路径；旧实现在此静默丢值/换原型）", () => {
+  const r = POOL.zipRows(["__proto__", "id"], [["p1", 5]]);
+  const row = r.rows[0];
+  if (!Object.prototype.hasOwnProperty.call(row, "__proto__")) throw new Error("__proto__ 自有属性丢失");
+  const d = Object.getOwnPropertyDescriptor(row, "__proto__");
+  if (!d || d.value !== "p1") throw new Error("__proto__ 值丢失/被改: " + JSON.stringify(d));
+  if (row.id !== 5) throw new Error("普通列受波及");
+  if (Object.getPrototypeOf(row) !== Object.prototype) throw new Error("行原型被 __proto__ 列值篡改");
+  if (JSON.stringify(row) !== '{"__proto__":"p1","id":5}') throw new Error("JSON视图丢 __proto__: " + JSON.stringify(row));
+  // 对象值不得换原型（旧实现在此把 [[Prototype]] 换成该对象，再取 a 得 1 的假象）
+  const r2 = POOL.zipRows(["__proto__"], [[{ a: 1 }]]);
+  const row2 = r2.rows[0];
+  if (Object.getPrototypeOf(row2) !== Object.prototype) throw new Error("对象值型 __proto__ 篡改了原型");
+  const d2 = Object.getOwnPropertyDescriptor(row2, "__proto__");
+  if (!d2 || typeof d2.value !== "object" || d2.value.a !== 1) throw new Error("__proto__ 对象值丢失");
+  // 重复列名消歧与 __proto__ 并存
+  const r3 = POOL.zipRows(["a", "__proto__", "a"], [[1, "p", 2]]);
+  const row3 = r3.rows[0];
+  if (row3.a !== 1 || row3.a__2 !== 2) throw new Error("重复名消歧受波及: " + JSON.stringify(r3.rows));
+  const d3 = Object.getOwnPropertyDescriptor(row3, "__proto__");
+  if (!d3 || d3.value !== "p") throw new Error("__proto__ 与消歧并存失败: " + JSON.stringify(d3));
+  if (Object.getPrototypeOf(row3) !== Object.prototype) throw new Error("并存场景原型被篡改");
+});
+check("zipRows: 对抗列名 + 工厂缓存隔离钉（v1.6.37 常量键工厂）", () => {
+  const names = ['q"uote', "back\\slash", "ne\nw", " ", "\uD800", "constructor", "toString", "", "1", "0x"];
+  const r = POOL.zipRows(names, [names.map((_, i) => "v" + i)]);
+  const row = r.rows[0];
+  names.forEach((n, i) => {
+    if (!Object.prototype.hasOwnProperty.call(row, n)) throw new Error(`键丢失: ${JSON.stringify(n)}`);
+    if (row[n] !== "v" + i) throw new Error(`值漂移 ${JSON.stringify(n)}: ${JSON.stringify(row[n])}`);
+  });
+  if (Object.keys(row).length !== names.length) throw new Error("键数漂移: " + Object.keys(row).length);
+  // 工厂缓存按列名集隔离：交替列名集不串味（缓存键 = JSON.stringify(names)）
+  const a1 = POOL.zipRows(["x", "y"], [[1, 2]]);
+  const b1 = POOL.zipRows(["x", "z"], [[3, 4]]);
+  const a2 = POOL.zipRows(["x", "y"], [[5, 6]]);
+  if (a1.rows[0].y !== 2 || b1.rows[0].z !== 4 || b1.rows[0].y !== undefined) throw new Error("缓存串味（B 混入 A 的键）");
+  if (a2.rows[0].y !== 6 || a2.rows[0].z !== undefined || Object.keys(a2.rows[0]).join() !== "x,y") throw new Error("缓存串味（A 二次调用漂移）");
+});
 check("install: DBMCP_MASTER_KEY 提示与 crypt2 读取口径一致（防改名漂移）", () => {
   const install = fs.readFileSync(path.join(here, "..", "install.mjs"), "utf8");
   const crypt2 = fs.readFileSync(path.join(here, "crypt2.mjs"), "utf8");
@@ -1776,6 +2075,112 @@ await checkAsync("pool: 并发首触 getPool 返回同一连接（创建去重�
     const [p1, p2] = await Promise.all([mgr.getPool("s"), mgr.getPool("s")]);
     if (p1 !== p2) throw new Error("并发首触拿到了两个连接对象（创建未去重）");
     if (mgr._pools.get("s") !== p1) throw new Error("Map 中驻留的不是共享连接");
+  } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ } }
+});
+
+/* -------- v1.6.35 优化回归钉：sanitizeSql 嵌套缓存键 + sqlite 预编译句柄缓存 -------- */
+check("guard: sanitizeSql 嵌套缓存键（v1.6.35）命中同对象 / k-m 槽不串 / 方言槽不串 / 等长不变量", () => {
+  GUARD.setSanitizeCache(true);
+  const sql = "SELECT id, `db`.`t`.`name` FROM `db`.`t` WHERE name = 'x' -- c";
+  const r1 = GUARD.sanitizeSql(sql, "mysql");
+  const r2 = GUARD.sanitizeSql(sql, "mysql");
+  if (r1 !== r2) throw new Error("同参未命中同一缓存对象");
+  const k1 = GUARD.sanitizeSql(sql, "mysql", { keepLiterals: true });
+  const k2 = GUARD.sanitizeSql(sql, "mysql", { keepLiterals: true });
+  if (k1 !== k2) throw new Error("keepLiterals 槽未命中同一对象");
+  if (k1 === r1) throw new Error("k/m 两槽串位（同 SQL 不同模式共用槽）");
+  if (r1.text.includes("'x'") || r1.text.includes("`db`")) throw new Error("掩码模式应抹掉字符串与引号标识符: " + r1.text.slice(0, 80));
+  if (!k1.text.includes("'x'") || !k1.text.includes("`db`.`t`.`name`")) throw new Error("keepLiterals 应保留字符串与引号标识符原文: " + k1.text.slice(0, 80));
+  if (r1.text.includes("--") || k1.text.includes("--")) throw new Error("两种模式都应抹掉注释");
+  if (r1.text.length !== sql.length || k1.text.length !== sql.length) throw new Error("等长不变量破坏: " + r1.text.length + "/" + k1.text.length + " vs " + sql.length);
+  const p1 = GUARD.sanitizeSql(sql, "postgres");
+  if (p1 === r1 || p1 === k1) throw new Error("方言槽串位");
+});
+check("guard: setSanitizeCache(false) 绕过 + 溢出整清后重算恒等（v1.6.35）", () => {
+  const sql = "SELECT 1 + 1 AS n";
+  GUARD.setSanitizeCache(true);
+  const a1 = GUARD.sanitizeSql(sql, "mysql");
+  GUARD.setSanitizeCache(false);
+  const b1 = GUARD.sanitizeSql(sql, "mysql");
+  const b2 = GUARD.sanitizeSql(sql, "mysql");
+  if (b1 === a1 || b1 === b2) throw new Error("关闭态必须每次新算（不缓存不命中）");
+  if (b1.text !== a1.text) throw new Error("关闭态计算结果漂移");
+  GUARD.setSanitizeCache(true);
+  const c1 = GUARD.sanitizeSql(sql, "mysql");
+  const c2 = GUARD.sanitizeSql(sql, "mysql");
+  if (c1 !== c2 || c1 === b1) throw new Error("恢复后应重建缓存并命中");
+  // 溢出：同槽位灌 40 条不同 SQL（上限 32 整清），被清条目重算结果必须恒等
+  for (let i = 0; i < 40; i++) GUARD.sanitizeSql("SELECT " + i + " AS v /* r" + i + " */", "mysql");
+  const d1 = GUARD.sanitizeSql(sql, "mysql");
+  if (d1.text !== c1.text) throw new Error("溢出整清后重算结果漂移");
+  if (d1 === c1) throw new Error("被清条目应重算（新对象）");
+});
+await checkAsync("pool: sqlite 预编译句柄缓存（v1.6.35）同 SQL 参数化重绑定 / BigInt 保真 / 重名前置拒绝在缓存路径", async () => {
+  const { createPoolManager, setSqliteStmtCache } = POOL;
+  if (typeof setSqliteStmtCache !== "function") throw new Error("setSqliteStmtCache missing");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dbmcp-stmt-"));
+  try {
+    const dbf = path.join(tmp, "c.db").replace(/\\/g, "/");
+    const sources = { s: { type: "sqlite", url: "sqlite://" + dbf } };
+    const mgr = createPoolManager({ cfg: { timeoutMs: 5000 }, getSource: (id) => sources[id], clampInt: (v, a, b, d) => d, sqliteFilePath: () => dbf });
+    setSqliteStmtCache(true);
+    await mgr.runQuery("s", "CREATE TABLE k (id INTEGER PRIMARY KEY, name TEXT, big INTEGER)");
+    await mgr.runQuery("s", "INSERT INTO k VALUES (1, 'a', 9007199254740993)");
+    await mgr.runQuery("s", "INSERT INTO k VALUES (2, 'b', 7)");
+    // 重绑定：同一 SQL 反复按参数取不同行——缓存句柄换绑不串值（首查 miss 装入，后续 hit）
+    const q = "SELECT name FROM k WHERE id = ?";
+    const n1 = (await mgr.runQuery("s", q, [1])).rows[0].name;
+    const n2 = (await mgr.runQuery("s", q, [2])).rows[0].name;
+    const n3 = (await mgr.runQuery("s", q, [1])).rows[0].name;
+    if (n1 !== "a" || n2 !== "b" || n3 !== "a") throw new Error("参数化重绑定串值: " + [n1, n2, n3].join(","));
+    // BigInt 保真：setReadBigInts(true) 在缓存装入时设，复用后超安全整数仍为 BigInt（不被静默转数丢精度）
+    const g1 = (await mgr.runQuery("s", "SELECT big FROM k WHERE id = ?", [1])).rows[0].big;
+    const g2 = (await mgr.runQuery("s", "SELECT big FROM k WHERE id = ?", [1])).rows[0].big;
+    if (typeof g1 !== "bigint" || g1 !== 9007199254740993n) throw new Error("BigInt 保真破坏（首查）: " + typeof g1 + " " + g1);
+    if (typeof g2 !== "bigint" || g2 !== 9007199254740993n) throw new Error("BigInt 保真破坏（缓存复用）: " + typeof g2 + " " + g2);
+    // 重名前置拒绝必须在缓存路径同样生效（二次调用命中缓存也不放行静默折叠）
+    let e1 = "", e2 = "";
+    try { await mgr.runQuery("s", "SELECT id, id FROM k"); } catch (e) { e1 = e.message; }
+    try { await mgr.runQuery("s", "SELECT id, id FROM k"); } catch (e) { e2 = e.message; }
+    if (!/重复|别名/.test(e1) || !/重复|别名/.test(e2)) throw new Error("重名前置拒绝缓存路径失效: " + JSON.stringify([e1, e2]));
+  } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ } }
+});
+await checkAsync("pool: sqlite 句柄缓存（v1.6.35）早停后全量再流式 / 64 上限轮转正确 / setSqliteStmtCache 逃生阀语义等价", async () => {
+  const { createPoolManager, setSqliteStmtCache } = POOL;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dbmcp-stmt2-"));
+  try {
+    const dbf = path.join(tmp, "c2.db").replace(/\\/g, "/");
+    const sources = { s: { type: "sqlite", url: "sqlite://" + dbf } };
+    const mgr = createPoolManager({ cfg: { timeoutMs: 5000 }, getSource: (id) => sources[id], clampInt: (v, a, b, d) => d, sqliteFilePath: () => dbf });
+    setSqliteStmtCache(true);
+    await mgr.runQuery("s", "CREATE TABLE k (id INTEGER PRIMARY KEY, name TEXT)");
+    await mgr.runQuery("s", "INSERT INTO k VALUES (1, 'a')");
+    await mgr.runQuery("s", "INSERT INTO k VALUES (2, 'b')");
+    await mgr.runQuery("s", "INSERT INTO k VALUES (3, 'c')");
+    const sq = "SELECT id, name FROM k ORDER BY id";
+    // 早停流（第 1 行即停）后，同 SQL 全量再流必须完整——缓存句柄不留半步 iterate 状态
+    const first = [];
+    await mgr.runQueryStream("s", sq, { onFields: () => {}, onRow: (row) => { first.push(row); return false; } });
+    const full = [];
+    await mgr.runQueryStream("s", sq, { onFields: () => {}, onRow: (row) => { full.push(row); } });
+    if (first.length !== 1) throw new Error("早停流应只收 1 行: " + first.length);
+    if (full.length !== 3 || full[0].name !== "a" || full[2].name !== "c") throw new Error("早停后再全量流式丢行/串值: " + JSON.stringify(full));
+    // 64 条上限轮转（超限整清策略）：70 条独特 SQL 各查两遍，值必须全对；被清条目复查也正确
+    //（setReadBigInts 口径下整数列为 BigInt，比较走 Number——与 withTransaction 钉同款）
+    let rotOk = true;
+    for (let i = 0; i < 70; i++) {
+      const r = await mgr.runQuery("s", "SELECT " + i + " AS v, name FROM k WHERE id = 1");
+      if (Number(r.rows[0].v) !== i || r.rows[0].name !== "a") rotOk = false;
+    }
+    const back = (await mgr.runQuery("s", "SELECT name FROM k WHERE id = ?", [2])).rows[0].name;
+    if (!rotOk || back !== "b") throw new Error("64 上限轮转后结果漂移: back=" + back);
+    // 逃生阀：关闭后逐次 prepare 语义等价（结果一致），恢复后缓存继续工作
+    setSqliteStmtCache(false);
+    const o1 = (await mgr.runQuery("s", "SELECT name FROM k WHERE id = ?", [1])).rows[0].name;
+    const o2 = (await mgr.runQuery("s", "SELECT name FROM k WHERE id = ?", [3])).rows[0].name;
+    setSqliteStmtCache(true);
+    const o3 = (await mgr.runQuery("s", "SELECT name FROM k WHERE id = ?", [1])).rows[0].name;
+    if (o1 !== "a" || o2 !== "c" || o3 !== "a") throw new Error("逃生阀路径语义漂移: " + [o1, o2, o3].join(","));
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ } }
 });
 
@@ -2078,9 +2483,9 @@ check("mcp: unknown protocolVersion falls back to server-supported version", () 
   }
 });
 const tl = await handleRpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-check("mcp: tools/list exposes exactly the 16 documented tools", () => {
+check("mcp: tools/list exposes exactly the 18 documented tools", () => {
   const names = tl.result.tools.map((t) => t.name).sort();
-  const expected = ["list_sources", "list_tables", "describe_table", "find_tables_by_column", "fk_relationships", "query", "query_plan", "sample_data", "distinct_values", "column_stats", "count_rows", "execute", "create_table", "find_database", "export_data", "import_data"].sort();
+  const expected = ["list_sources", "list_tables", "describe_table", "find_tables_by_column", "fk_relationships", "query", "query_plan", "sample_data", "distinct_values", "column_stats", "count_rows", "execute", "create_table", "find_database", "export_data", "import_data", "server_stats", "reload_config"].sort();
   if (JSON.stringify(names) !== JSON.stringify(expected)) {
     throw new Error("tool set drift — got: " + names.join(","));
   }
@@ -2122,6 +2527,19 @@ check("mcp: list_sources works (init-required or sources)", () => {
   if (initMode) { if (!/"init_required"/.test(text) || !/import-dbeaver\.mjs/.test(text)) throw new Error("missing init hint: " + text.slice(0, 200)); }
   else if (!/"sources"/.test(text) || !/"type"/.test(text)) throw new Error(text.slice(0, 200));
 });
+{
+  const ss = await handleRpc({ jsonrpc: "2.0", id: 88, method: "tools/call", params: { name: "server_stats", arguments: {} } });
+  check("obs: server_stats 部署态钉（v1.6.54）未初始化显式 init_required 提示 / 已初始化 version+形状", () => {
+    const t = ss.result?.content?.[0]?.text || "";
+    if (initMode) {
+      const d = JSON.parse(t);
+      if (d.init_required !== true || !d.note) throw new Error("未初始化未给显式提示: " + t.slice(0, 120));
+    } else {
+      const d = JSON.parse(t);
+      if (!d.version || !Array.isArray(d.per_source) || !Array.isArray(d.recent_slow) || typeof d.slow_ms_threshold !== "number") throw new Error("init 形状: " + t.slice(0, 160));
+    }
+  });
+}
 /* v1.6.5 错误语义标准化：稳定错误码（分类纯钉 + 回环格式钉）。错误原文必须逐字保留在标签后。 */
 check("errcode: 安全红线 → E_SAFETY:no-retry", () => {
   const m = classifyError(new Error("安全红线：拒绝执行无 WHERE 条件的 UPDATE/DELETE（会导致全表数据被覆盖/清空）。"));
@@ -2389,6 +2807,184 @@ if (!initMode) {
     for (const p of pwds) if (raw.includes(p)) throw new Error("plaintext password in config file!");
     if (!/"enc"/.test(raw)) throw new Error("config not using enc field!");
   });
+  // v1.6.38: 双份序列化契约钉——resultContent 的 text 是「嵌进信封的 JSON 字符串」，wire 上
+  // 双重编码：JSON.parse(JSON.parse(wire).result.content[0].text) 才还原数据，text 必含 \"
+  //（内层结构引号已转义）。剖析定盘 pass2 信封转义为 MCP text 协议必需；单遍预转义 emitter
+  // 候选已实测负优化 2× 回退（bench_r1638_mech）。本钉防未来「单遍序列化」重构漂移。
+  const sqMeta = (JSON.parse(ls.result.content[0].text).sources || []).find((s) => s.type === "sqlite");
+  const envResp = sqMeta
+    ? await handleRpc({ jsonrpc: "2.0", id: 71, method: "tools/call", params: { name: "query", arguments: { source: sqMeta.id, sql: "SELECT 'x' AS tag", max_rows: 1 } } })
+    : null;
+  check("mcp: resultContent 双份序列化契约钉（v1.6.38 wire 双重编码还原数据 + wire 层含转义内引号）", () => {
+    if (!sqMeta) { console.log("SKIP 双份序列化契约钉 (该配置无 sqlite 源)"); return; }
+    if (envResp.result?.isError) throw new Error("sqlite query failed: " + String(envResp.result?.content?.[0]?.text).slice(0, 120));
+    const wire = JSON.stringify(envResp); // 模拟 stdio writeLine 的信封序列化（pass2）
+    if (!wire.includes('\\"row_count\\"')) throw new Error("wire missing double-encoded inner quotes (single-serialization drift?)");
+    const text = JSON.parse(wire).result.content[0].text;
+    if (typeof text !== "string" || !text.startsWith("{")) throw new Error("text is not a JSON document string");
+    const data = JSON.parse(text);
+    if (data.row_count !== 1 || data.rows[0].tag !== "x") throw new Error("double-parse roundtrip mismatch: " + text.slice(0, 120));
+  });
+  // v1.6.39: pg 命名预编译缓存正确性钉（字面量作用域）——同一字面量 SQL 两次查询结果逐字节
+  // 恒等（第二次走缓存命中路径）；坏 SQL 两次报同一原生错误且无 "prepared statement ... does
+  // not exist"（Parse 毒化自愈：pg 在 Parse 发送时记 submittedNamedStatements，失败不回滚，
+  // 产品错误路径清客户端跟踪）；参数化语句保持 unnamed extended 原路径（find_tables_by_column
+  // 带值走通）。部署无 pg 源时 SKIP。
+  const pgMeta = (JSON.parse(ls.result.content[0].text).sources || []).find((s) => s.type === "postgres");
+  const pgQ1 = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 81, method: "tools/call", params: { name: "query", arguments: { source: pgMeta.id, sql: "SELECT 39 AS v", max_rows: 1 } } }) : null;
+  const pgQ2 = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 82, method: "tools/call", params: { name: "query", arguments: { source: pgMeta.id, sql: "SELECT 39 AS v", max_rows: 1 } } }) : null;
+  const pgBad1 = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 83, method: "tools/call", params: { name: "query", arguments: { source: pgMeta.id, sql: "SELECT * FROM dbmcp_no_such_table_39", max_rows: 1 } } }) : null;
+  const pgBad2 = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 84, method: "tools/call", params: { name: "query", arguments: { source: pgMeta.id, sql: "SELECT * FROM dbmcp_no_such_table_39", max_rows: 1 } } }) : null;
+  const pgFind = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 85, method: "tools/call", params: { name: "find_tables_by_column", arguments: { column: "id", source: pgMeta.id, limit: 1 } } }) : null;
+  const pgFind2 = pgMeta ? await handleRpc({ jsonrpc: "2.0", id: 86, method: "tools/call", params: { name: "find_tables_by_column", arguments: { column: "name", source: pgMeta.id, limit: 1 } } }) : null;
+  check("pool: pg 命名预编译缓存正确性钉（v1.6.41 字面量缓存命中恒等 + Parse 毒化自愈 + 参数化 named 跨值复用可用）", () => {
+    if (!pgMeta) { console.log("SKIP pg 预编译钉 (该配置无 postgres 源)"); return; }
+    const t1 = pgQ1.result?.content?.[0]?.text, t2 = pgQ2.result?.content?.[0]?.text;
+    if (pgQ1.result?.isError || pgQ2.result?.isError) throw new Error("literal query failed: " + String(t1 || t2).slice(0, 120));
+    // duration_ms 每次必变，只比数据面：columns + rows
+    const d1 = JSON.parse(t1), d2 = JSON.parse(t2);
+    if (JSON.stringify([d1.columns, d1.rows]) !== JSON.stringify([d2.columns, d2.rows])) {
+      throw new Error("cache-hit second query diverged: " + String(t2).slice(0, 120) + " vs " + String(t1).slice(0, 120));
+    }
+    const b1 = String(pgBad1.result?.content?.[0]?.text || ""), b2 = String(pgBad2.result?.content?.[0]?.text || "");
+    if (!pgBad1.result?.isError || !pgBad2.result?.isError) throw new Error("bad SQL must error twice");
+    if (/prepared statement .* does not exist/i.test(b2)) throw new Error("Parse poison not self-healed: " + b2.slice(0, 120));
+    if (b1 !== b2) throw new Error("bad SQL errors diverged: " + b2.slice(0, 120) + " vs " + b1.slice(0, 120));
+    // v1.6.41: 参数化 named 跨值复用——两次不同参数值的 find_tables_by_column（各带不同 SQL 文本
+    // 与绑定值）都必须走通（named 路径对参数化已启用，values 非空不再回落 unnamed）。
+    if (pgFind.result?.isError) throw new Error("parameterized named path (find id) failed: " + String(pgFind.result?.content?.[0]?.text).slice(0, 120));
+    if (pgFind2.result?.isError) throw new Error("parameterized named path (find name) failed: " + String(pgFind2.result?.content?.[0]?.text).slice(0, 120));
+  });
+  // v1.6.53: e2e offset 分页钉——产品配置 sqlite 源直连建 25 行临时表，走产品 handleRpc：
+  // query 三页（0/10/20×10 行）无重叠无遗漏 + offset 回显；sample_data offset 页（11..20）；
+  // 不包裹语句（括号复合）走 slice 层偏移（offset 20×5 行 = 21..25）。结束直连删表。
+  await checkAsync("v1.6.53: e2e offset 分页钉（query 三页无重叠无遗漏 + sample_data offset 页 + 不包裹语句 slice 偏移）", async () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(here, "dbmcp.config.json"), "utf8"));
+    const sqEntry = Object.entries(cfg.sources || {}).find(([, s]) => String(s.type || "").toLowerCase() === "sqlite" || /^sqlite:/i.test(s.url || ""));
+    if (!sqEntry) { console.log("SKIP offset 分页钉 (该配置无 sqlite 源)"); return; }
+    const [sqId, sqSrc] = sqEntry;
+    const file = SQLITE.sqliteFilePath(sqSrc);
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(file);
+    db.exec("DROP TABLE IF EXISTS page_probe_v1653");
+    db.exec("CREATE TABLE page_probe_v1653 (id INTEGER PRIMARY KEY, v TEXT)");
+    db.exec("BEGIN");
+    const ins = db.prepare("INSERT INTO page_probe_v1653 (id, v) VALUES (?, ?)");
+    for (let i = 1; i <= 25; i++) ins.run(i, "v" + i);
+    db.exec("COMMIT");
+    try {
+      const pages = [];
+      for (const off of [0, 10, 20]) {
+        const r = await handleRpc({ jsonrpc: "2.0", id: 90 + off, method: "tools/call", params: { name: "query", arguments: { source: sqId, sql: "SELECT id, v FROM page_probe_v1653 ORDER BY id", max_rows: 10, offset: off } } });
+        if (r.result?.isError) throw new Error("page " + off + " failed: " + String(r.result.content?.[0]?.text).slice(0, 120));
+        const d = JSON.parse(r.result.content[0].text);
+        pages.push(d.rows.map((x) => Number(x.id)));
+        if (off && d.offset !== off) throw new Error("offset echo missing: " + off);
+      }
+      const all = pages.flat();
+      const set = new Set(all);
+      if (all.length !== 25 || set.size !== 25) throw new Error("pages overlap/miss: " + JSON.stringify(pages));
+      for (let i = 1; i <= 25; i++) if (!set.has(i)) throw new Error("missing id " + i);
+      const r2 = await handleRpc({ jsonrpc: "2.0", id: 95, method: "tools/call", params: { name: "sample_data", arguments: { source: sqId, table: "page_probe_v1653", limit: 10, offset: 10, order_by: "id" } } });
+      if (r2.result?.isError) throw new Error("sample_data offset failed: " + String(r2.result.content?.[0]?.text).slice(0, 120));
+      const d2 = JSON.parse(r2.result.content[0].text);
+      const ids2 = d2.rows.map((x) => Number(x.id));
+      const want2 = Array.from({ length: 10 }, (_, i) => i + 11);
+      if (JSON.stringify(ids2) !== JSON.stringify(want2)) throw new Error("sample_data offset page wrong: " + JSON.stringify(ids2));
+      if (d2.offset !== 10) throw new Error("sample_data offset echo missing");
+      const r3 = await handleRpc({ jsonrpc: "2.0", id: 96, method: "tools/call", params: { name: "query", arguments: { source: sqId, sql: "SELECT * FROM (SELECT id, v FROM page_probe_v1653 ORDER BY id)", max_rows: 5, offset: 20 } } });
+      if (r3.result?.isError) throw new Error("wrapped-offset re-check failed: " + String(r3.result.content?.[0]?.text).slice(0, 120));
+      const d3 = JSON.parse(r3.result.content[0].text);
+      const ids3 = d3.rows.map((x) => Number(x.id));
+      if (JSON.stringify(ids3) !== JSON.stringify([21, 22, 23, 24, 25])) throw new Error("wrapped offset page wrong: " + JSON.stringify(ids3));
+      // 不包裹语句 slice 层偏移：sqlite prepare 拒裸括号 select（实测 near "(" 语法错误），
+      // 不包裹分支用 mysql 复合语句（(SELECT…) UNION (…)——enforceLimit 括号分支不包裹）走 slice 偏移
+      const myEntry = Object.entries(cfg.sources || {}).find(([, s]) => String(s.type || "").toLowerCase() === "mysql" && (s.url || s.enc));
+      if (myEntry) {
+        const { decryptAny } = await import(pathToFileURL(path.join(here, "crypt2.mjs")).href);
+        const mysql = (await import("mysql2/promise")).default;
+        const url = myEntry[1].url || decryptAny(myEntry[1].enc);
+        const u = new URL(url);
+        const conn = await mysql.createConnection({ host: u.hostname, port: Number(u.port || 3306), user: decodeURIComponent(u.username), password: decodeURIComponent(u.password), database: u.pathname.replace(/^\//, "") });
+        try {
+          await conn.query("DROP TABLE IF EXISTS page_probe_v1653");
+          await conn.query("CREATE TABLE page_probe_v1653 (id INT PRIMARY KEY, v VARCHAR(16))");
+          const batch = [];
+          for (let i = 1; i <= 25; i++) batch.push(`(${i}, 'v${i}')`);
+          await conn.query(`INSERT INTO page_probe_v1653 VALUES ${batch.join(",")}`);
+          const r4 = await handleRpc({ jsonrpc: "2.0", id: 97, method: "tools/call", params: { name: "query", arguments: { source: myEntry[0], sql: "(SELECT id, v FROM page_probe_v1653 ORDER BY id) UNION (SELECT id, v FROM page_probe_v1653 WHERE 0 = 1)", max_rows: 5, offset: 20 } } });
+          if (r4.result?.isError) throw new Error("unwrapped offset failed: " + String(r4.result.content?.[0]?.text).slice(0, 120));
+          const d4 = JSON.parse(r4.result.content[0].text);
+          const ids4 = d4.rows.map((x) => Number(x.id));
+          if (JSON.stringify(ids4) !== JSON.stringify([21, 22, 23, 24, 25])) throw new Error("unwrapped offset slice wrong: " + JSON.stringify(ids4));
+        } finally {
+          await conn.query("DROP TABLE IF EXISTS page_probe_v1653");
+          await conn.end();
+        }
+      } else {
+        console.log("SKIP 不包裹 slice 偏移断言 (该配置无 mysql 源)");
+      }
+    } finally {
+      db.exec("DROP TABLE IF EXISTS page_probe_v1653");
+      db.close();
+    }
+  });
+  // v1.6.54: server_stats e2e 钉——计数接线（先查一次真源）/ version 恒等 / 慢阈值默认 2000 / 形状
+  await checkAsync("obs: server_stats e2e 钉（v1.6.54）计数接线 + version + 慢阈值默认", async () => {
+    const cfg2 = JSON.parse(fs.readFileSync(path.join(here, "dbmcp.config.json"), "utf8"));
+    const sq2 = Object.entries(cfg2.sources || {}).find(([, s]) => String(s.type || "").toLowerCase() === "sqlite" || /^sqlite:/i.test(s.url || ""));
+    if (!sq2) { console.log("SKIP server_stats e2e 钉 (该配置无 sqlite 源)"); return; }
+    await handleRpc({ jsonrpc: "2.0", id: 98, method: "tools/call", params: { name: "query", arguments: { source: sq2[0], sql: "SELECT 1 AS ok", max_rows: 1 } } });
+    const r = await handleRpc({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "server_stats", arguments: {} } });
+    if (r.result?.isError) throw new Error("server_stats failed: " + String(r.result.content?.[0]?.text).slice(0, 140));
+    const d = JSON.parse(r.result.content[0].text);
+    if (d.version !== VERSION) throw new Error("version drift: " + d.version);
+    if (d.slow_ms_threshold !== 2000) throw new Error("slow threshold 非默认 2000: " + d.slow_ms_threshold);
+    const sq = d.per_source.find((x) => x.source === sq2[0]);
+    if (!sq || sq.count < 1) throw new Error("sqlite 计数未接线: " + JSON.stringify(d.per_source));
+    if (!Array.isArray(d.recent_slow) || typeof d.uptime_s !== "number") throw new Error("形状: " + JSON.stringify(Object.keys(d)));
+    if (!d.report || !Array.isArray(d.report.error_codes) || !Array.isArray(d.report.slow_by_type)) throw new Error("report 形状缺失（v1.6.56）: " + JSON.stringify(Object.keys(d)));
+  });
+  // v1.6.55: reload_config e2e 钉——临时配置副本三态：同内容零差异 / 增源生效+list_sources 反映 /
+  // 坏 JSON → E_CONFIG 且内存态保持上次成功重载（复位：真配置 reload 清 dummy）。
+  await checkAsync("cfg: reload_config e2e 钉（v1.6.55）同内容零差异 + 增源生效 + 坏 JSON 回滚内存态", async () => {
+    const realPath = path.join(here, "dbmcp.config.json");
+    const tmpPath = path.join(here, "dbmcp.reload_test.config.json");
+    const envBak = process.env.DBMCP_CONFIG;
+    let d1;
+    try {
+      fs.copyFileSync(realPath, tmpPath);
+      process.env.DBMCP_CONFIG = tmpPath;
+      const r1 = await handleRpc({ jsonrpc: "2.0", id: 71, method: "tools/call", params: { name: "reload_config", arguments: {} } });
+      if (r1.result?.isError) throw new Error("同内容重载失败: " + String(r1.result.content?.[0]?.text).slice(0, 140));
+      d1 = JSON.parse(r1.result.content[0].text);
+      if (!Array.isArray(d1.changed) || d1.changed.length !== 0) throw new Error("同内容应零差异: " + JSON.stringify(d1.changed));
+      const rawObj = JSON.parse(fs.readFileSync(realPath, "utf8"));
+      rawObj.sources.__reload_dummy = { type: "sqlite", file: path.join(here, "dbmcp.reload_dummy.db") };
+      fs.writeFileSync(tmpPath, JSON.stringify(rawObj, null, 2));
+      const r2 = await handleRpc({ jsonrpc: "2.0", id: 72, method: "tools/call", params: { name: "reload_config", arguments: {} } });
+      if (r2.result?.isError) throw new Error("增源重载失败: " + String(r2.result.content?.[0]?.text).slice(0, 140));
+      const d2 = JSON.parse(r2.result.content[0].text);
+      if (!d2.changed.includes("__reload_dummy") || d2.sources !== d1.sources + 1) throw new Error("增源面: " + JSON.stringify(d2));
+      const ls2 = await handleRpc({ jsonrpc: "2.0", id: 73, method: "tools/call", params: { name: "list_sources", arguments: {} } });
+      const ls2d = JSON.parse(ls2.result.content[0].text);
+      if (!(ls2d.sources || []).some((s) => s.id === "__reload_dummy")) throw new Error("list_sources 未见新源");
+      fs.writeFileSync(tmpPath, "{ 这不是 json !!!");
+      const r3 = await handleRpc({ jsonrpc: "2.0", id: 74, method: "tools/call", params: { name: "reload_config", arguments: {} } });
+      if (!r3.result?.isError || !/E_CONFIG/.test(String(r3.result.content?.[0]?.text || ""))) throw new Error("坏 JSON 未拒: " + String(r3.result.content?.[0]?.text).slice(0, 120));
+      const ls3 = await handleRpc({ jsonrpc: "2.0", id: 75, method: "tools/call", params: { name: "list_sources", arguments: {} } });
+      const ls3d = JSON.parse(ls3.result.content[0].text);
+      if (!(ls3d.sources || []).some((s) => s.id === "__reload_dummy")) throw new Error("坏 JSON 后内存态不应丢（回滚=保持上次成功态）");
+    } finally {
+      process.env.DBMCP_CONFIG = realPath;
+      await handleRpc({ jsonrpc: "2.0", id: 76, method: "tools/call", params: { name: "reload_config", arguments: {} } }); // 复位：真配置 reload 清 dummy
+      process.env.DBMCP_CONFIG = envBak;
+      fs.rmSync(tmpPath, { force: true });
+      const lsF = await handleRpc({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "list_sources", arguments: {} } });
+      const lsFd = JSON.parse(lsF.result.content[0].text);
+      if ((lsFd.sources || []).some((s) => s.id === "__reload_dummy")) throw new Error("复位后 dummy 仍在");
+    }
+  });
   const fd = await handleRpc({ jsonrpc: "2.0", id: 51, method: "tools/call", params: { name: "find_database", arguments: { name: "za_data_notice" } } });
   check("find_database: locates za_data_notice by name", () => {
     const d = JSON.parse(fd.result?.content?.[0]?.text || "{}");
@@ -2551,6 +3147,20 @@ check("csv: Uint8Array 单元格 → 确定性 hex（旧版 String(v) 成 '0,1,2
 check("json: truncated cell counting", () => {
   const n = countTruncatedCells([{ a: "x".repeat(3000) }, { a: "short" }]);
   if (n !== 1) throw new Error("got " + n);
+  // v1.6.36 内扩（零计数漂移）：语义边界钉——只看行顶层字符串值，阈值严格大于才计。
+  const long = "L".repeat(2005);
+  process.env.DBMCP_MAX_CELL_CHARS = "2000";
+  try {
+    if (countTruncatedCells([{ a: "x".repeat(2000) }]) !== 0) throw new Error("恰好阈值（=max）不得计");
+    if (countTruncatedCells([{ a: "x".repeat(2001) }]) !== 1) throw new Error("超阈值 1 字符必须计");
+    if (countTruncatedCells([{ a: long, b: long }]) !== 1) throw new Error("同行多长串应计 1 行");
+    if (countTruncatedCells([{ a: [long] }, { a: { b: long } }]) !== 0) throw new Error("数组元素/嵌套对象长串不得计");
+    if (countTruncatedCells([{ [long]: "s" }]) !== 0) throw new Error("超长键名不计（只看值）");
+    if (countTruncatedCells([null, 42, "str", true, undefined]) !== 0) throw new Error("非对象行必须跳过");
+    const inh = Object.create({ k: long }); inh.s = "ok";
+    if (countTruncatedCells([inh]) !== 0) throw new Error("继承可枚举键不得计");
+    if (countTruncatedCells([{ a: long }, { b: long }, { c: "ok" }]) !== 2) throw new Error("逐行长串应逐行计数");
+  } finally { delete process.env.DBMCP_MAX_CELL_CHARS; }
 });
 
 /* --- v1.6.3: export 模式数据保真（响应面截断不动，落盘导出必须无损） --- */
@@ -2562,8 +3172,159 @@ check("json export: 长文本不截断 + Buffer 全量 hex（响应面行为不�
     throw new Error("export 模式 Buffer 必须全量 hex 无省略: " + o.bin);
   }
   const r = stringify({ note: long, bin: Buffer.alloc(20, 0xab) });   // 响应面：截断 + 8 字节预览
-  if (!r.includes("<truncated") || !/\u2026/.test(r)) throw new Error("响应面截断/预览行为被改动: " + r.slice(0, 120));
+  if (!r.includes("<truncated") || !/…/.test(r)) throw new Error("响应面截断/预览行为被改动: " + r.slice(0, 120));
 });
+
+/* --- v1.6.36: 序列化改走「规范化一遍 + 原生 JSON.stringify」（逐值 replacer 回调为 CPU 头号
+   自耗时）。旧实现冻结为 stringifyReplacer 真源，两者必须对任意载荷逐字节恒等；本组钉覆盖
+   规范化 walk 的三个易碎语义：toJSON 只作用一次（链式返回值不再套用/副本不携带可调用 toJSON 键）、
+   装箱原始值原样交还（原生派发按内部槽展开）、__proto__ 自有键与伪造 constructor 的复制语义。 --- */
+check("json: stringify 规范化 walk vs 冻结 stringifyReplacer 差分钉（v1.6.36）四模式逐字节恒等 + 根级边界 + 抛出同责", () => {
+  const longStr = "x".repeat(3000) + "tail";
+  const mkAdv = () => ({
+    source: "adv", row_count: 4, duration_ms: NaN,
+    rows: [
+      { a: 9007199254740993n, b: Infinity, c: -Infinity, d: longStr },
+      { a: new Date("2026-10-06T12:34:56.789Z"), b: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), c: new Uint8Array([255, 254]), d: new DataView(new Uint8Array([1, 2, 3]).buffer) },
+      { a: { type: "Buffer", data: [10, 20, 30, 40, 50, 60, 70, 80, 90] }, b: { nested: { deep: 123n, u: undefined, f: function () { } } }, c: [1, , 3, BigInt(4)], d: -0 },
+      { a: { toJSON: () => longStr }, b: { toJSON: () => BigInt(55) }, c: { toJSON: () => ({ inner: 123n, big: new Uint8Array([9, 9]) }) }, d: { toJSON: () => undefined } },
+    ],
+  });
+  const mkEdges = () => ({
+    chained: { toJSON: () => ({ toJSON: () => "chained-final", k: 1n }) },          // toJSON 只作用一次
+    keyEcho: { toJSON(k) { return { was: k }; } },                                   // toJSON 按 spec 收 key
+    boxed: { n: new Number(5), s: new String("hi"), b: new Boolean(false), nan: new Number(NaN) },
+    tojsonKey: { toJSON: "keep", a: 1 },                                             // 非函数 toJSON 键保留
+    ctorSpoof: { constructor: Number, n: 7, s: "z" },                                // 伪造 constructor 落回普通复制
+    arrTojson: Object.assign([1, 2], { toJSON: () => ({ arr: true, v: 9n }) }),      // 数组自身 toJSON
+    repeats: (() => { const o = { v: 3n }; return { x: o, y: o }; })(),               // 同对象双引用独立复制
+    protoKey: JSON.parse('{"__proto__": {"p": 1}, "own": 2}'),                       // __proto__ 自有键必须保留
+    getters: (() => { const o = { a: 1 }; Object.defineProperty(o, "g", { enumerable: true, get() { return 42n; } }); return o; })(),
+  });
+  const inh = Object.create({ hidden: "inh" }); inh.visible = "own"; // 继承可枚举键不串入
+  const modes = [["response", {}], ["export", { export: true }], ["pretty", {}], ["export+pretty", { export: true }]];
+  const roots = [["root-undef", () => undefined], ["root-null", () => null], ["root-5n", () => 5n], ["root-boxed5n", () => Object(5n)],
+    ["root-boxedNaN", () => new Number(NaN)], ["root-arr", () => [1n, "s", NaN]], ["root-tojson", () => ({ toJSON: () => ({ r: 1n }) })]];
+  const runBoth = (mk, opts, label) => {
+    let a, b, ta = "", tb = "";
+    try { a = stringify(mk(), opts); } catch (e) { ta = e.name + ":" + e.message; }
+    try { b = stringifyReplacer(mk(), opts); } catch (e) { tb = e.name + ":" + e.message; }
+    if (ta !== tb) throw new Error("抛出同责破坏 @" + label + ": " + JSON.stringify([ta, tb]));
+    if (!ta && a !== b) throw new Error("字节发散 @" + label + ": " + JSON.stringify([String(a).slice(0, 160), String(b).slice(0, 160)]));
+  };
+  try {
+    for (const [mname, opts] of modes) {
+      if (mname.includes("pretty")) process.env.DBMCP_PRETTY = "1"; else delete process.env.DBMCP_PRETTY;
+      runBoth(mkAdv, opts, "adv " + mname);
+      runBoth(mkEdges, opts, "edges " + mname);
+      runBoth(() => ({ inh, arr: [undefined, , () => { }, Symbol("s")], neg0: -0, nested: [[{ deep: [{ q: 7n }] }]] }), opts, "mixed " + mname);
+      for (const [rlabel, mk] of roots) runBoth(mk, opts, rlabel + " " + mname);
+    }
+  } finally { delete process.env.DBMCP_PRETTY; }
+});
+check("json: stringify 规范化 walk 手写期望钉（v1.6.36）bigint 串化/截断后缀逐字/二进制预览/导出 hex/装箱 NaN/链式 toJSON 一次", () => {
+  const eq = (got, want, label) => { if (got !== want) throw new Error(label + "\n  got:  " + got + "\n  want: " + want); };
+  process.env.DBMCP_MAX_CELL_CHARS = "2000";
+  try {
+    eq(stringify({ a: 9007199254740993n }), '{"a":"9007199254740993"}', "bigint 串化（超安全整数不丢精度）");
+    eq(stringify({ a: "x".repeat(2005) }), '{"a":"' + "x".repeat(2000) + '… <truncated 5 chars>"}', "截断后缀逐字");
+    eq(stringify({ a: Buffer.from([1, 2, 3]) }), '{"a":"<binary 3 bytes: 010203>"}', "3B 预览无省略号");
+    eq(stringify({ a: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9]) }), '{"a":"<binary 9 bytes: 0102030405060708…>"}', "9B 预览 8 字节 hex + …");
+    eq(stringify({ a: Buffer.from([1, 2, 3]) }, { export: true }), '{"a":"010203"}', "导出模式全量 hex");
+    eq(stringify({ a: new Number(NaN) }), '{"a":null}', "装箱 NaN 原样交还（原生派发 → null，非 'NaN' 字符串）");
+    eq(stringify({ x: { toJSON: () => ({ toJSON: () => "chained-final", k: 1n }) } }), '{"x":{"k":"1"}}', "链式 toJSON 只作用一次");
+    eq(stringify({ toJSON: "keep", a: 1 }), '{"toJSON":"keep","a":1}', "toJSON 键非函数必须保留");
+  } finally { delete process.env.DBMCP_MAX_CELL_CHARS; }
+});
+check("scrub: scrubWith 预筛等价钉（v1.6.36）零命中/命中/重叠键双序/元字符不误伤/空键/空表/非串 与旧循环逐字恒等", () => {
+  // v1.6.35 及以前的旧实现（真源）：逐 key includes + split/join
+  const ref = (text, list) => { let t = String(text); for (const k of list) if (t.includes(k)) t = t.split(k).join("***"); return t; };
+  const cases = [
+    ["零命中", "hello world, nothing here", ["pw1", "pw2"]],
+    ["单命中", "a pw1 b", ["pw1"]],
+    ["同键多命中", "pw1 x pw1", ["pw1"]],
+    ["多键命中", "pw1 and pw2 and pw1", ["pw1", "pw2"]],
+    ["重叠键 短前", "xx abcdef yy", ["abc", "abcdef"]],
+    ["重叠键 长前", "xx abcdef yy", ["abcdef", "abc"]],
+    ["元字符命中", "a.b axb", ["a.b"]],
+    ["元字符不误伤", "axb", ["a.b"]],
+    ["元字符组", "x+y (z*) [q] ^r$ end", ["x+y", "(z*)", "[q]", "^r$"]],
+    ["空键", "abc", [""]],
+    ["空表", "abc", []],
+    ["非串输入", 12345, ["34"]],
+    ["长文本零命中", "y".repeat(10000), ["no-such-secret", "another"]],
+    ["长文本命中", "y".repeat(5000) + "pw1" + "z".repeat(5000), ["pw1"]],
+    ["替换产物含后续键", "pw1pw1", ["pw1", "***"]],
+  ];
+  for (const [label, text, keys] of cases) {
+    const want = ref(text, keys);
+    const got = scrubWith(text, keys);
+    if (got !== want) throw new Error("发散 @" + label + ": " + JSON.stringify([got, want]));
+  }
+  // 同一 list 对象二次调用命中 WeakMap 缓存后语义不变（缓存只存预筛正则，不改结果）
+  const ks = ["pw1", "pw2"];
+  const t = "pw1 tail pw2 tail pw1";
+  const w = ref(t, ks);
+  if (scrubWith(t, ks) !== w || scrubWith(t, ks) !== w) throw new Error("缓存命中后语义漂移");
+  // 不同 list 对象不串缓存
+  const a = scrubWith(t, ["pw1"]); const b = scrubWith(t, ["pw2"]);
+  if (a !== ref(t, ["pw1"]) || b !== ref(t, ["pw2"])) throw new Error("不同表缓存串位: " + JSON.stringify([a, b]));
+});
+
+check("scrub: 数字口令上下文清洗钉（v1.6.42）数字 token 保留/字符串字面量掩/pretty 回扫/长数字防误伤", () => {
+  const eq = (got, want, label) => { if (got !== want) throw new Error(label + "\n  got:  " + got + "\n  want: " + want); };
+  const K = "424242";
+  eq(scrubWith('{"amt":424242,"id":1}', [K]), '{"amt":424242,"id":1}', "compact 数字 token 保留（洗烂面修复）");
+  eq(scrubWith('{"amt": 424242}', [K]), '{"amt": 424242}', "pretty 空格回扫数字 token 保留");
+  eq(scrubWith('{"note":"token-424242-x"}', [K]), '{"note":"token-***-x"}', "字符串字面量内仍掩");
+  eq(scrubWith('{"whole":"424242"}', [K]), '{"whole":"***"}', "整个字符串值等于口令也掩");
+  eq(scrubWith('{"n":1424242}', [K]), '{"n":1424242}', "长数字串片段防误伤（前缀数字）");
+  eq(scrubWith('{"n":4242420}', [K]), '{"n":4242420}', "长数字串片段防误伤（后缀数字）");
+  eq(scrubWith('id: 424242 in text', [K]), 'id: 424242 in text', "已知取舍：冒号+空格+纯数字=数字token形态保真");
+  eq(scrubWith('free 424242 tail', [K]), 'free *** tail', "自由文本非冒号前缀照掩");
+  eq(scrubWith('{"a":"x","pw":999999}', ["999999"]), '{"a":"x","pw":999999}', "非口令数字零误伤");
+  eq(scrubWith("a pw1 b", ["pw1"]), "a *** b", "非数字键照旧裸串清洗（行为不漂移）");
+});
+
+check("csv: 数字口令单元格级处置钉（v1.6.43）全数字单元保真/文本内部掩/JSON-CSV 不对称显式钉/三链 digitKeys 恒等", () => {
+  const eq = (got, want, label) => { if (got !== want) throw new Error(label + "\n  got:  " + JSON.stringify(got) + "\n  want: " + JSON.stringify(want)); };
+  const dk = "424242";
+  const dks = [dk];
+  // 手写期望：csvCellDigitMask 单元格级规则
+  eq(csvCellDigitMask(dk, dks), dk, "全数字单元保真（裸值=数据）");
+  eq(csvCellDigitMask("4242420", dks), "4242420", "长数字片段保真（后缀数字）");
+  eq(csvCellDigitMask("0424242", dks), "0424242", "长数字片段保真（前缀数字）");
+  eq(csvCellDigitMask(`token-${dk}-x`, dks), "token-***-x", "文本内部含口令掩（泄漏面）");
+  eq(csvCellDigitMask(`"a,b=${dk}"`, dks), `"a,b=***"`, "引号包裹单元内掩（逗号格）");
+  eq(csvCellDigitMask("999999", dks), "999999", "非口令数字零误伤");
+  eq(csvCellDigitMask("plain", dks), "plain", "无口令文本不变");
+  eq(csvCellDigitMask(dk, []), dk, "空列表快路径");
+  // JSON/CSV 不对称显式钉：JSON 有引号结构可分（字符串值掩/数字 token 保真，V1.6.42 口径）；
+  // CSV 无引号结构可分（文本与数字同形）→ 按数据保真整体保真——两口径不得漂移成同侧。
+  eq(scrubWith(`{"whole":"${dk}"}`, [dk]), '{"whole":"***"}', "JSON 字符串值仍掩（V1.6.42 口径不漂移）");
+  eq(scrubWith(`{"amt":${dk}}`, [dk]), `{"amt":${dk}}`, "JSON 数字 token 仍保真（V1.6.42 口径不漂移）");
+  eq(csvCellDigitMask(dk, dks), dk, "CSV 全数字单元保真（与 JSON 字符串值不对称，格式无引号结构可分）");
+  // 三链 digitKeys 恒等：exportToCsv / exportToCsvBuffer / streamCsvLines 同输入同 digitKeys 逐字节恒等 + 手写期望整文件
+  const fields = ["id", "amt", "note"];
+  const rows = [
+    { id: 1, amt: dk, note: `token-${dk}-x` },
+    { id: 2, amt: "999999", note: "plain" },
+  ];
+  const BIG = 20 * 1024 * 1024;
+  const a = SERVER.exportToCsv(fields, rows, true, BIG, dks).content;
+  const b = SERVER.exportToCsvBuffer(fields, rows, true, BIG, dks).content.toString("utf8");
+  const parts = [];
+  SERVER.streamCsvLines((buf) => parts.push(Buffer.from(buf)), fields, rows, [], true, BIG, { digitKeys: dks });
+  const c = Buffer.concat(parts).toString("utf8");
+  eq(b, a, "exportToCsvBuffer ≡ exportToCsv（digitKeys）");
+  eq(c, a, "streamCsvLines ≡ exportToCsv（digitKeys）");
+  eq(a, "id,amt,note\r\n1," + dk + ",token-***-x\r\n2,999999,plain\r\n", "三链产物手写期望（裸数字保留+文本掩）");
+  // 无 digitKeys 时输出原始 csvCell 形态（exportToCsv 本身不 scrub——清洗在下游 scrubToBuffer/管线；
+  // 默认参数 digitKeys=[] = 零行为变化，数字键清洗仍由字节域承担）
+  const a0 = SERVER.exportToCsv(fields, rows, true, BIG).content;
+  eq(a0, "id,amt,note\r\n1," + dk + ",token-" + dk + "-x\r\n2,999999,plain\r\n", "无 digitKeys 维持原始 csvCell 形态（零行为变化）");
+});
+
 check("rpc: peekRpcId 从坏行/超长行恢复请求 id（防客户端永久挂起）", () => {
   if (peekRpcId('{"jsonrpc":"2.0","id":900,"method":"tools/call"') !== 900) throw new Error("numeric id");
   if (peekRpcId('{"jsonrpc":"2.0","id":"abc-1","method":') !== "abc-1") throw new Error("string id");
@@ -2746,6 +3507,59 @@ await checkAsync("pool: sqlite 重名结果列前置拒绝（runQuery 裸查询�
     if (!/重复/.test(msg) || !/别名/.test(msg)) throw new Error("重名列必须显式拒绝并要求别名: " + msg);
     const ok = await mgr.runQuery("s", "SELECT id AS x, id+1 AS y FROM t");
     if (ok.rows.length !== 1 || ok.fields.join(",") !== "x,y") throw new Error("合法查询被误伤: " + JSON.stringify(ok));
+  } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ } }
+});
+await checkAsync("pool: sqlite 数组行 zip 产品口径钉（v1.6.37 setReturnArrays + columns 单次）", async () => {
+  const { createPoolManager, setSqliteStmtCache } = POOL;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dbmcp-zipcol-"));
+  try {
+    const dbf = path.join(tmp, "z.db").replace(/\\/g, "/");
+    const sources = { s: { type: "sqlite", url: "sqlite://" + dbf } };
+    const mgr = createPoolManager({ cfg: { timeoutMs: 5000 }, getSource: (id) => sources[id], clampInt: (v, a, b, d) => d, sqliteFilePath: () => dbf });
+    await mgr.runQuery("s", "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, amt REAL, big INTEGER, blob B)");
+    await mgr.runQuery("s", "INSERT INTO t VALUES (1, 'α😀', 1.5, 9007199254740993, X'0001FF')");
+    const r = await mgr.runQuery("s", "SELECT id, name, amt, big, blob FROM t");
+    // 行对象键序 = 列序；INTEGER 走 setReadBigInts → BigInt（与 mysql bigNumberStrings/pg int8 同口径防精度篡改）
+    if (r.fields.join(",") !== "id,name,amt,big,blob") throw new Error("fields 漂移: " + r.fields.join(","));
+    const row = r.rows[0];
+    if (Object.keys(row).join(",") !== "id,name,amt,big,blob") throw new Error("行键序漂移: " + Object.keys(row).join(","));
+    const J = (x) => JSON.stringify(x, (k, v) => typeof v === "bigint" ? String(v) : v);
+    if (row.id !== 1n || row.name !== "α😀" || row.amt !== 1.5 || row.big !== 9007199254740993n) throw new Error("值口径漂移: " + J(row));
+    if (!(row.blob instanceof Uint8Array) || row.blob.length !== 3 || row.blob[0] !== 0x00 || row.blob[1] !== 0x01 || row.blob[2] !== 0xff) throw new Error("BLOB 口径漂移");
+    // __proto__ 列经产品路径存活（数组行 zip 走 defineProperty 慢路径）
+    const p = await mgr.runQuery("s", 'SELECT 1 AS "__proto__", 2 AS id');
+    const prow = p.rows[0];
+    const pd = Object.getOwnPropertyDescriptor(prow, "__proto__");
+    if (!pd || pd.value !== 1n || prow.id !== 2n) throw new Error("__proto__ 列经产品路径丢值: " + J(p));
+    if (Object.getPrototypeOf(prow) !== Object.prototype) throw new Error("__proto__ 列篡改了行原型");
+    // 空结果仍带列名
+    const e = await mgr.runQuery("s", "SELECT id, name FROM t WHERE 0");
+    if (!Array.isArray(e.rows) || e.rows.length !== 0 || e.fields.join(",") !== "id,name") throw new Error("空结果口径漂移: " + J(e));
+    // 流式路径行形状钉（setReturnArrays 是语句级状态：iterate() 数组行必须 zip 回对象行，键可直接取）
+    const stRows = [];
+    await mgr.runQueryStream("s", "SELECT id, name FROM t", { onFields: () => {}, onRow: (row) => { stRows.push(row); } });
+    if (stRows.length !== 1 || stRows[0].id !== 1n || stRows[0].name !== "α😀") throw new Error("流式行形状漂移: " + J(stRows));
+    const spRows = [];
+    await mgr.runQueryStream("s", 'SELECT 1 AS "__proto__", 2 AS id', { onFields: () => {}, onRow: (row) => { spRows.push(row); } });
+    const spd = Object.getOwnPropertyDescriptor(spRows[0], "__proto__");
+    if (!spd || spd.value !== 1n || spRows[0].id !== 2n) throw new Error("流式 __proto__ 列丢值: " + J(spRows));
+    if (Object.getPrototypeOf(spRows[0]) !== Object.prototype) throw new Error("流式 __proto__ 列篡改了行原型");
+    // 流式早停后同 SQL 再全量流式完整（句柄不留半步状态——setReturnArrays 回归曾打穿此形态）
+    const stFirst = [];
+    await mgr.runQueryStream("s", "SELECT id, name FROM t", { onFields: () => {}, onRow: (row) => { stFirst.push(row); return false; } });
+    const stFull = [];
+    await mgr.runQueryStream("s", "SELECT id, name FROM t", { onFields: () => {}, onRow: (row) => { stFull.push(row); } });
+    if (stFirst.length !== 1 || stFull.length !== 1 || stFull[0].name !== "α😀") throw new Error("流式早停后复跑漂移: " + J(stFull));
+    // 语句缓存开/关两分支同口径（cachedPrepare 两分支都设 setReturnArrays）
+    setSqliteStmtCache(false);
+    try {
+      const r2 = await mgr.runQuery("s", "SELECT id, name, amt, big, blob FROM t");
+      if (J(r2.rows) !== J(r.rows) || r2.fields.join(",") !== r.fields.join(",")) throw new Error("缓存开关两分支输出漂移: " + J(r2));
+    } finally { setSqliteStmtCache(true); }
+    // 重名列仍前置拒绝（新数组行路径不得放宽）
+    let msg = "";
+    try { await mgr.runQuery("s", "SELECT id AS x, id+1 AS x FROM t"); } catch (err) { msg = err.message; }
+    if (!/重复/.test(msg)) throw new Error("重名列前置拒绝失效: " + msg);
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* windows lock */ } }
 });
 check("write-target: DELETE keeps literals in WHERE", () => {

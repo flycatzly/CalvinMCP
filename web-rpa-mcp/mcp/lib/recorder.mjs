@@ -484,6 +484,7 @@ export async function stopRecording({ name, save = true, inferAssertions = true,
       await p.evaluate(() => { try { if (window.__rpa && window.__rpa.flush) window.__rpa.flush(); } catch (e) { /* ignore */ } }).catch(() => {});
     }
   } catch { /* ignore */ }
+  L.info('停止路径观测: flush后 steps=' + JSON.stringify((session.steps || []).map((s) => s.op)));
   ACTIVE = null;
 
   try {
@@ -519,6 +520,7 @@ export async function stopRecording({ name, save = true, inferAssertions = true,
   // 末尾冗余的 goto 只在「紧跟一次已带 waitForNav 的点击」时才去掉（那次点击已经负责等导航）；
   // 地址栏输入、页面自带跳转这类真正的 goto 是唯一记录，必须保留
   let steps = session.steps.slice();
+  L.info('停止路径观测: 切片 steps=' + JSON.stringify(steps.map((s) => s.op)));
   while (steps.length > 1) {
     const last = steps[steps.length - 1];
     const prev = steps[steps.length - 2];
@@ -627,6 +629,7 @@ async function finalizeSplice(session, segSteps, { save = true, inferAssertions 
 
   // 片段从"当前页"开始，若开头被动录到了同一个地址的 goto，去掉它
   let seg = segSteps.slice();
+  L.info('停止路径观测: finalizeSplice 入口 seg=' + JSON.stringify(seg.map((s) => s.op)) + ' spliceStartUrl=' + session.spliceStartUrl);
   while (seg.length && seg[0].op === 'goto' && session.spliceStartUrl && seg[0].url === session.spliceStartUrl) seg.shift();
 
   if (!seg.length) {
@@ -699,6 +702,12 @@ async function finalizeSplice(session, segSteps, { save = true, inferAssertions 
     saved: save,
     flowId: sp.flowId,
     flow: next,
+    // record_stop handler 统一按全新录制的形状读 stepCount/assertions/lint/notes——
+    // splice 返回曾缺这三个字段，导致「拼接成功但 handler 抛 undefined.length、工具报 fail」
+    //（成功被误报为失败；文件已保存、用户却看到错误）。补齐后 handler 两分支形状一致。
+    stepCount: steps.length,
+    assertions,
+    notes: session.notes,
     splice: {
       from: sp.from, to: sp.to,
       replacedSteps: sp.to - sp.from + 1,

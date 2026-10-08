@@ -21,6 +21,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { runToFiles, resolveCliRunner, stripKnownNoise } from './runner.js';
+// 通道配置决策的唯一源在 skill 树（setup-cli-config.mjs / install.mjs 共用）：
+// 自愈必须与安装期做同一套决策，两处各写一份必然漂移。
+import { decideCliConfig, pickChannel, buildCliConfig } from '../../skill/playwright-verify/scripts/cli-config.mjs';
 
 /** 产出目录约定：证据落盘到约定目录，不散在临时路径。 */
 export const ARTIFACT_DIRS = {
@@ -312,17 +315,26 @@ export async function runCli(o) {
   const parsedJson = tryParseJson(res.stdout);
   const extraFiles = collectNewArtifacts(res.stdout, cwd);
 
-  // 判定只用退出码 + 超时，**不看 stderr 有没有内容**。
-  // 原因：playwright-cli 会把「daemonPid: 47172」这类正常信息写到 stderr，
+  // 判定 = 退出码 + 超时 + **证据面**，仍然不看 stderr 有没有内容。
+  // stderr 豁免的原因：playwright-cli 会把「daemonPid: 47172」这类正常信息写到 stderr，
   // 把它当失败会让健康检查误报 —— 一次冤枉就够把门禁的可信度废掉。
-  const ok = res.code === 0 && !res.timedOut;
+  // 证据面（H26）的原因：退出码 0 只说明进程活着回来，不说明活干了。
+  // 裸 `process.exit(0)` 的假 CLI 此前能骗出「快照已落盘」的整套假绿 ——
+  // 摘要声称落盘、文件根本不存在（r36 咬合实录 + r37 复现台双证）。
+  // 判据全用结构事实（文件在场/非空/魔数/快照 ref 标记/自报 isError 信封），
+  // 不用措辞匹配 —— 措辞一改就误红，结构事实不会。
+  const evidence = judgeRunEvidence({ subcommand, artifacts, parsedJson });
+  const ok = res.code === 0 && !res.timedOut && evidence.ok;
   const summary = ok
     ? summarizeCliOutput(subcommand, parsedJson, res.stdout, res.stderr, artifacts)
-    : `执行失败（退出码 ${res.code}${res.timedOut ? '，已超时' : ''}）：${extractRootCause(res.stderr, res.stdout)}`;
+    : (res.code === 0 && !res.timedOut
+      ? `执行失败（退出码 0，但证据不成立）：${evidence.detail}`
+      : `执行失败（退出码 ${res.code}${res.timedOut ? '，已超时' : ''}）：${extractRootCause(res.stderr, res.stdout)}`);
 
   return {
     ok,
-    reason: res.timedOut ? 'TIMEOUT' : (res.code === 0 ? 'OK' : 'CLI_ERROR'),
+    reason: res.timedOut ? 'TIMEOUT'
+      : (res.code !== 0 ? 'CLI_ERROR' : (evidence.ok ? 'OK' : evidence.reason)),
     session: sess,
     subcommand,
     exitCode: res.code,
@@ -336,6 +348,52 @@ export async function runCli(o) {
     stdoutTail: lastLines(res.stdout, 12),
     stderrTail: lastLines(res.stderr, 12),
   };
+}
+
+/**
+ * 成功判定的证据面（H26）：退出码 0 不等于活干了。
+ *
+ * 三条判据全是**结构事实**，刻意不用措辞匹配（措辞一改就误红）：
+ *   1) CLI 自报失败信封（isError:true）优先于产物检查 —— 产品层的失败宣告不能被吞；
+ *   2) 强制落盘的子命令（snapshot/screenshot/pdf）必须产物在场且非空；
+ *   3) 产物形状对得上：png/pdf 魔数、快照含 `ref=eN` 标记（快照的产出物就是 ref，
+ *      没有 ref 的快照等于这一步没干活 —— cli_session 的 fill/click 只收 ref）。
+ * 不在强制落盘清单里的子命令（open/close/click/…）保持退出码契约：它们没有
+ * 「产物」这种客观证据可查，硬造证据只会带来误红。
+ */
+export function judgeRunEvidence({ subcommand, artifacts, parsedJson }) {
+  if (parsedJson && parsedJson.isError === true) {
+    return {
+      ok: false,
+      reason: 'CLI_REPORTED_ERROR',
+      detail: `CLI 自报失败：${String(parsedJson.error || '(信封无 error 字段)')}`,
+    };
+  }
+  const redirect = MUST_REDIRECT[subcommand];
+  if (!redirect) return { ok: true };
+  const claimed = redirect.dir === 'snapshots' ? artifacts?.snapshot : artifacts?.file;
+  if (!claimed) {
+    return { ok: false, reason: 'ARTIFACT_MISSING', detail: `${subcommand} 未声明产物路径（必须落盘到约定证据目录）` };
+  }
+  let buf;
+  try {
+    buf = fs.readFileSync(claimed);
+  } catch {
+    return { ok: false, reason: 'ARTIFACT_MISSING', detail: `声称已落盘但文件不存在：${claimed}` };
+  }
+  if (buf.length === 0) {
+    return { ok: false, reason: 'ARTIFACT_MISSING', detail: `产物文件为空：${claimed}` };
+  }
+  if (subcommand === 'screenshot' && !buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) {
+    return { ok: false, reason: 'ARTIFACT_SHAPE', detail: `截图产物缺 PNG 魔数（不是真截图）：${claimed}` };
+  }
+  if (subcommand === 'pdf' && buf.subarray(0, 4).toString('latin1') !== '%PDF') {
+    return { ok: false, reason: 'ARTIFACT_SHAPE', detail: `PDF 产物缺 %PDF 魔数（不是真 PDF）：${claimed}` };
+  }
+  if (subcommand === 'snapshot' && !/ref=e\d+/.test(buf.toString('utf8'))) {
+    return { ok: false, reason: 'ARTIFACT_SHAPE', detail: `快照产物未见 ref=eN 标记（不是真快照）：${claimed}` };
+  }
+  return { ok: true };
 }
 
 function tryParseJson(text) {
@@ -437,6 +495,52 @@ function summarizeCliOutput(subcommand, json, stdout, stderr, artifacts) {
 }
 
 /**
+ * 浏览器缺失类失败签名（三种都是真机实测过的形态）：
+ *   1) Chromium distribution 'X' is not found —— 通道/发行版未安装（配置缺失回落默认时最常见）
+ *   2) Browser "X" is not installed; expected executable at ... —— 缓存被清后的真实报错
+ *      （伴随 daemon 退出码 1，旧正则只认 1) 3) 时这条会被漏掉）
+ *   3) Executable doesn't exist at ... —— launchOptions.executablePath 指向已删路径
+ * 归入同一处置通道：这是「环境缺浏览器」不是「命令/用例坏了」，修法是装浏览器或换通道。
+ */
+const BROWSER_MISSING_RE = new RegExp(
+  "Chromium distribution '([^']+)' is not found"
+  + '|Browser "([^"]+)" is not installed'
+  + "|Executable doesn't exist at",
+  'i',
+);
+
+/** 命中浏览器缺失类失败返回 { kind, dist, excerpt }，未命中返回 null（纯函数，可钉）。 */
+export function matchBrowserMissing(text) {
+  const m = BROWSER_MISSING_RE.exec(String(text || ''));
+  if (!m) return null;
+  const head = m[0].toLowerCase();
+  const kind = head.startsWith('chromium distribution')
+    ? 'distribution-not-found'
+    : head.startsWith('browser ') ? 'browser-not-installed' : 'executable-missing';
+  return { kind, dist: m[1] || m[2] || null, excerpt: m[0].trim().split('\n')[0] };
+}
+
+function browserMissingHint(missing, configFile) {
+  const dist = missing.dist || '(默认 chromium)';
+  return `\n\n诊断：本机缺少 CLI 需要的浏览器 —— ${missing.excerpt}\n`
+    + '两条修法（任选）：\n'
+    + `  1) 装它：npx playwright install ${dist === '(默认 chromium)' ? 'chromium' : dist}\n`
+    + '  2) 或改用本机已有的浏览器通道：编辑 .playwright/cli.config.json，'
+    + '把 browser.browserName 设为 "chromium" 且 launchOptions.channel 设为 "msedge"，'
+    + '或者直接删掉该文件让它回落到默认 chromium。\n'
+    + `（配置文件：${configFile}）`;
+}
+
+/** 读现有通道配置；缺失/坏 JSON 一律归 null（= 决策矩阵的 missing-or-broken）。 */
+function readCliConfig(cwd) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(cwd, '.playwright', 'cli.config.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 验收「最小闭环」：能开页面、能拿快照、能截图。
  * 建议当成团队的第一条验收 —— 这三步过了，CLI 就能进测试仓库当执行器。
  *
@@ -445,54 +549,115 @@ function summarizeCliOutput(subcommand, json, stdout, stderr, artifacts) {
  *   - 浏览器没装 / 配置指定的 channel 在本机不存在（例如 config 里写了 chrome 而本机只有 msedge）
  * 后者的报错原文是 `Chromium distribution 'chrome' is not found at ...`，
  * 直接把它翻成人话并给出两条修法，比让人去读堆栈快得多。
+ *
+ * 浏览器缺失类失败还会走**通道配置自愈闭环**（方向 1）：按决策矩阵（cli-config.mjs
+ * 唯一源）判 regenerate 才重写配置（机器生成的陈旧 executablePath 钉/缺失/跨平台），
+ * 再重试一轮最小闭环；手工配置（含显式 executablePath 意图）只给指引绝不自动重写。
+ * 全程如实标注 autoHeal 字段 —— 自愈是透明的，不是把失败藏起来。
  */
 export async function cliHealthCheck({ cwd, session = 'healthcheck' }) {
-  const steps = [];
   const url = 'data:text/html,<html lang="zh"><body><h1>健康检查</h1><button>按钮</button></body></html>';
+  const configFile = path.join(cwd, '.playwright', 'cli.config.json');
 
-  const open = await runCli({ cwd, session, subcommand: 'open', args: [url] });
-  steps.push({ step: 'open', ok: open.ok, summary: open.summary, artifacts: open.artifacts });
-  if (!open.ok) {
-    // 失败≠没开：open 失败时 daemon/浏览器多半已经拉起来了。不收就漏在这里。
-    // 尽力而为地关掉，但**不进 steps** —— 返回形状（步骤数与内容）是已测契约。
-    try { await runCli({ cwd, session, subcommand: 'close', args: [], timeoutMs: 15_000 }); } catch { /* 尽力而为 */ }
-    const raw = `${open.stderrTail || ''}\n${open.summary || ''}`;
-    const distMatch = /(?:Chromium distribution '([^']+)' is not found|Executable doesn't exist at)\s*:?\s*([^\n]*)/i.exec(raw);
-    let hint = '';
-    if (distMatch) {
-      const dist = distMatch[1] || '(默认 chromium)';
-      hint = `\n\n诊断：本机缺少 CLI 需要的浏览器 —— ${distMatch[0].trim().split('\n')[0]}\n`
-        + '两条修法（任选）：\n'
-        + `  1) 装它：npx playwright install ${dist === '(默认 chromium)' ? 'chromium' : dist}\n`
-        + '  2) 或改用本机已有的浏览器通道：编辑 .playwright/cli.config.json，'
-        + '把 browser.browserName 设为 "chromium" 且 launchOptions.channel 设为 "msedge"，'
-        + '或者直接删掉该文件让它回落到默认 chromium。\n'
-        + `（配置文件：${path.join(cwd, '.playwright', 'cli.config.json')}）`;
+  const attempt = async () => {
+    const steps = [];
+    const open = await runCli({ cwd, session, subcommand: 'open', args: [url] });
+    steps.push({ step: 'open', ok: open.ok, summary: open.summary, artifacts: open.artifacts });
+    if (!open.ok) {
+      // 失败≠没开：open 失败时 daemon/浏览器多半已经拉起来了。不收就漏在这里。
+      // 尽力而为地关掉，但**不进 steps** —— 返回形状（步骤数与内容）是已测契约。
+      try { await runCli({ cwd, session, subcommand: 'close', args: [], timeoutMs: 15_000 }); } catch { /* 尽力而为 */ }
+      return { steps, open };
     }
+    const snap = await runCli({ cwd, session, subcommand: 'snapshot', args: [] });
+    steps.push({ step: 'snapshot', ok: snap.ok, summary: snap.summary, artifacts: snap.artifacts });
+    const shot = await runCli({ cwd, session, subcommand: 'screenshot', args: [] });
+    steps.push({ step: 'screenshot', ok: shot.ok, summary: shot.summary, artifacts: shot.artifacts });
+    const close = await runCli({ cwd, session, subcommand: 'close', args: [] });
+    steps.push({ step: 'close', ok: close.ok, summary: close.summary });
+    return { steps, open };
+  };
+
+  const first = await attempt();
+  if (first.open.ok) {
+    const ok = first.steps.every((s) => s.ok);
     return {
-      ok: false,
-      steps,
-      reason: open.reason,
-      message: `${open.summary || 'CLI 最小闭环第一步就失败了'}${hint}`,
-      remediation: distMatch ? distMatch[0].trim() : undefined,
+      ok,
+      steps: first.steps,
+      verdict: ok ? 'CLI 最小闭环通过：能开页面、能拿快照、能截图' : 'CLI 最小闭环未通过，请先修复失败的那一步',
     };
   }
 
-  const snap = await runCli({ cwd, session, subcommand: 'snapshot', args: [] });
-  steps.push({ step: 'snapshot', ok: snap.ok, summary: snap.summary, artifacts: snap.artifacts });
+  const firstMsg = first.open.summary || 'CLI 最小闭环第一步就失败了';
+  const raw = `${first.open.stderrTail || ''}\n${first.open.summary || ''}`;
+  const missing = matchBrowserMissing(raw);
+  if (!missing) {
+    return { ok: false, steps: first.steps, reason: first.open.reason, message: firstMsg };
+  }
 
-  const shot = await runCli({ cwd, session, subcommand: 'screenshot', args: [] });
-  steps.push({ step: 'screenshot', ok: shot.ok, summary: shot.summary, artifacts: shot.artifacts });
+  // 浏览器缺失类：通道配置自愈闭环（决策矩阵唯一源 → 可重写才重写 → 重试一轮）
+  const decision = decideCliConfig({ cfg: readCliConfig(cwd), platform: process.platform });
+  const autoHeal = {
+    triggered: true,
+    signature: missing.kind,
+    dist: missing.dist,
+    decision: decision.action,
+    reason: decision.reason,
+    rewritten: false,
+    retried: false,
+    recovered: false,
+  };
+  if (decision.action !== 'regenerate') {
+    // 手工配置（显式意图）不自动重写 —— 重生成会把用户调过的 launchOptions 抹掉。
+    return {
+      ok: false,
+      steps: first.steps,
+      reason: first.open.reason,
+      message: `${firstMsg}\n（现有通道配置是手工配置，按约定不自动重写）${browserMissingHint(missing, configFile)}`,
+      remediation: missing.excerpt,
+      autoHeal,
+    };
+  }
 
-  const close = await runCli({ cwd, session, subcommand: 'close', args: [] });
-  steps.push({ step: 'close', ok: close.ok, summary: close.summary });
+  try {
+    const { channel, source } = pickChannel({ platform: process.platform });
+    const config = buildCliConfig({ platform: process.platform, arch: process.arch, channel, source });
+    fs.mkdirSync(path.dirname(configFile), { recursive: true });
+    fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    autoHeal.rewritten = true;
+  } catch (e) {
+    return {
+      ok: false,
+      steps: first.steps,
+      reason: first.open.reason,
+      message: `${firstMsg}\n（自愈重写通道配置失败：${e.message}）${browserMissingHint(missing, configFile)}`,
+      remediation: missing.excerpt,
+      autoHeal,
+    };
+  }
 
-  const ok = steps.every((s) => s.ok);
+  autoHeal.retried = true;
+  const second = await attempt();
+  autoHeal.recovered = second.open.ok && second.steps.every((s) => s.ok);
+  if (autoHeal.recovered) {
+    return {
+      ok: true,
+      steps: second.steps,
+      verdict: 'CLI 最小闭环通过：能开页面、能拿快照、能截图'
+        + `（首次失败后已自动重写通道配置并重试通过：${decision.reason}）`,
+      autoHeal,
+    };
+  }
+  const secondMsg = second.open.summary || '重试仍未通过';
   return {
-    ok,
-    steps,
-    verdict: ok ? 'CLI 最小闭环通过：能开页面、能拿快照、能截图' : 'CLI 最小闭环未通过，请先修复失败的那一步',
+    ok: false,
+    steps: second.steps,
+    reason: second.open.reason,
+    message: `首次失败：${firstMsg}\n已自动重写通道配置（${decision.reason}）并重试，仍失败：${secondMsg}`
+      + browserMissingHint(missing, configFile),
+    remediation: missing.excerpt,
+    autoHeal,
   };
 }
 
-export default { runCli, cliHealthCheck, ensureArtifactDirs, ARTIFACT_DIRS, CLI_ALLOWLIST, safeSession };
+export default { runCli, cliHealthCheck, matchBrowserMissing, judgeRunEvidence, ensureArtifactDirs, ARTIFACT_DIRS, CLI_ALLOWLIST, safeSession };

@@ -217,8 +217,8 @@ async function main() {
   await T('flow_preflight', { flowId: 't-tool-main' }, { isError: false, check: CHECK((res, d) => d && Array.isArray(d.steps)) });
   await T('flow_run', { flowId: 't-tool-main', trigger: 'tools-test' }, {
     isError: false,
-    // 预算可观测字段要透出到工具响应（修前只有 report.json 里有，MCP 客户端看不到）；无预算时 budgetSource=null
-    check: CHECK((res, d) => d && d.status === 'pass' && typeof d.budgetOverrunMs === 'number' && (d.budgetSource === null || typeof d.budgetSource === 'string'), '回放未通过或预算可观测字段缺失'),
+    // 预算/启动可观测字段要透出到工具响应（修前只有 report.json 里有，MCP 客户端看不到）；无预算时 budgetSource=null
+    check: CHECK((res, d) => d && d.status === 'pass' && typeof d.budgetOverrunMs === 'number' && (d.budgetSource === null || typeof d.budgetSource === 'string') && typeof d.launchMs === 'number', '回放未通过或预算/启动可观测字段缺失'),
   });
   await T('run_history', { flowId: 't-tool-main', limit: 5 }, { isError: false, check: CHECK((res, d) => d && d.runs.length > 0) });
   await T('run_report', { flowId: 't-tool-main' }, { isError: false, check: CHECK((res, d) => d && d.status === 'pass' && Array.isArray(d.steps)) });

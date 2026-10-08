@@ -530,19 +530,22 @@ verify-all 判据与 CI 三 job 定义全部机械对账（加固 H16/H22）。�
 
 | 套件 | 验证什么 | 断言数 |
 |---|---|---|
-| 扫描器（三份样例集） | clean 不冤枉 / messy 全中 / tricky 不误报、结构边界、对抗语料与属性化语料（真 lint 跑） | 53 |
+| 扫描器（三份样例集） | clean 不冤枉 / messy 全中 / tricky 不误报、结构边界、对抗语料（含 r47 修饰断言形态 expect.soft/expect.poll 正反面）与属性化语料（真 lint 跑） | 58 |
 | 归因（缺陷 4 回归） | ANSI 清洗幂等、断言不误归超时、6 条压 4 签名、输入校验不静默全零、多报告趋势与有界渲染 | 42 |
 | 生成器 | 生成门禁、PO 分层、方法名、占位符、脆弱选择器 | 27 |
 | MCP 协议与工具面 | 握手与版本协商、16 工具、annotations 副作用声明、观测日志脱敏聚合、错误码语义、stdin EOF 排空、日志轮转、计划缓存观测 | 116 |
+| 浏览器插件本地桥（通道/守门/脱敏） | /rpc 打穿 handleMessage（错误码/通知/批量）、守门（Host/Origin/口令/413）、串行队列、脱敏哨兵、manifest 与面板契约、结构化结果视图模型（kv/表格/深度帽/XSS 面）、面板双模行为面（键统一+迁移/clientInfo manifest 版本/独立模式零 fetch） | 49 |
+| 猫耳悬浮球（录制/回放/中转） | 定位器优先级/敏感双防线/归一/回放查询、Shadow DOM 注入/拖拽/录制/保存/回放守门、SW 中转口令只经请求头、manifest 契约、keydown 录 press、同值无损归一、verdict 徽标、录制管理（多条列表/选中/删除/容量帽/旧槽迁移）、富渲染（pvFactsLine 关键事实一行化）、行内重命名、导出录制 JSON（文件名清洗/载荷 write:false/下载链行为）、插拔式双模（独立/依赖 MCP 切换、本地能力保留、守卫零发出）、面板高度帽防底部按钮出视口 | 106 |
+| 悬浮球端到端（真浏览器/本地靶场） | 真扩展+真桥+本地靶场三形态（light DOM/开/闭影子树）、录制/恢复/回放/深搜/诚实停止/工具快捷/导出 JSON/双模切换（断桥不断本地）/URL 守门、稳定性复跑、录制管理真浏览器验证、行内重命名 | 30 |
 | 规则表一致性 | 规则 id 唯一、文档与规则表不漂移、属性化语料覆盖门 | 37 |
-| 加固（静默失效/反转/覆盖/篡改） | 静默失效对抗语料（含 . 前缀存在性钉 3） | 97 |
-| CLI 真实交互与落盘 | Ref 交互、fill/click 生效、产物落盘、PNG 魔数、白名单 | 21 |
+| 加固（静默失效/反转/覆盖/篡改） | 静默失效对抗语料（含 . 前缀存在性钉 3）、浏览器缺失三签名分类与通道自愈契约、零依赖口径只认副本本地（机器级全局不污染判定）、成功判定要证据不只退出码（假 CLI 不得出「已落盘」假绿）、判据基数 serial 解耦（求和与 planWaves 同源）、崩溃/异常退出现场落盘（crashbundle 决策/写盘/自修剪 + verify-all 双分支接线 + bundle 不进收尾清理） | 149 |
+| CLI 真实交互与落盘 | Ref 交互、fill/click 生效、产物落盘、PNG 魔数、白名单、通道自愈闭环（活体） | 25 |
 | Excel 编排端到端 | 读表 → 映射 → 生成门禁 → 落盘 → 真跑通过 | 20 |
 | 参数规范化与产物命名 | 布尔不静默反转、非法值报错、整数参数不静默取整、并发产物不互相覆盖、浏览器通道优先级 | 46 |
 | 智能体线（LLM 回环/守门/计划契约/自愈采集纯函数） | stub LLM 真 HTTP 回环、危险目标拒绝、白名单不静默丢弃、自愈语义与预算闸、断点续采、探活预算、计划缓存、表单指纹、步骤参数映射、执行语义收敛、通道环境适配 | 145 |
 | 智能体线端到端（真浏览器） | LLM 规划→真执行真断言、降级骨架、Fail 语义、巡检、表单指纹两期对比真跑 | 21 |
 | 全流程验证（工具链串联+自然语言真跑） | 门禁→执行→归因→生成→智能体线整链真跑 | 44 |
-| 部署副本验证（须最后跑） | 装完的副本能发现工具、真能调用、与源码逐文件一致（serial 末波） | 26 |
+| 部署副本验证（须最后跑） | 装完的副本能发现工具、真能调用、与源码逐文件一致（serial 末波） | 30 |
 | 真实浏览器回归矩阵 | 2 通过 / 6 失败 / 1 偶发 → 聚成 4 个根因签名（形态验收，`--with-browser` 真跑） | 矩阵 4 签名 |
 
 ---
@@ -553,9 +556,16 @@ verify-all 判据与 CI 三 job 定义全部机械对账（加固 H16/H22）。�
 playwright-verify/
 ├── mcp/                        MCP server（零运行时依赖）
 │   ├── server.mjs              协议循环 + 16 个工具
+│   ├── bridge.mjs              浏览器插件本地桥（HTTP ⇄ JSON-RPC，只回环）
 │   ├── lib/                    核心逻辑（唯一判定真相源）
 │   ├── py/read_cases.py        Excel 读取（openpyxl 可选）
-│   └── test/                   13 套回归 + 一键入口 verify-all
+│   └── test/                   16 套回归 + 一键入口 verify-all
+├── extension/                  浏览器插件控制台（MV3，加载已解压的扩展程序）
+│   ├── manifest.json           插件清单（网络面只圈 127.0.0.1/localhost）
+│   ├── background.js           点图标开控制台整页 + 悬浮器桥中转（口令只经请求头）
+│   ├── recorder.js             录制纯函数核（定位器/敏感跳过/归一/回放查询）
+│   ├── floating.js             猫耳悬浮球（Shadow DOM，录制/保存/回放/工具快捷）
+│   └── panel.html/.css/.js     工具面板（schema 驱动表单，走 /rpc）
 ├── skill/playwright-verify/    Skill
 │   ├── SKILL.md                入口
 │   ├── references/             12 篇知识层
@@ -581,6 +591,42 @@ playwright-verify/
 - **LLM 只做规划，不做判定。** 「通过/不通过」永远由确定性断言链给出。
 - **不把页面内容送出机。** LLM 默认本地 Ollama；截图与页面快照永不进 LLM 请求。
 - **不适用于**单元测试、纯接口契约测试、需要真机的移动端原生测试。
+
+---
+
+## 已结案技术挂账
+
+工程账本：低概率异常在证据不足时**不猜测性修复**，而是带着编号挂账、逐轮取证；证据链闭合后在此结案（历史证据档与记忆条目全部保留——结案 ≠ 删除）。后续触发「重开条件」即按新证据重新开案。
+
+### 0xC0000409 崩溃家族（r36 挂账 → r46 结案，2026-10-08）
+
+**现象**：verify-all 波内某套件进程原生 fail-fast（Windows 退出码 3221226505 = 0xC0000409 / STATUS_STACK_BUFFER_OVERRUN），stderr 空、无 FAIL 行——「崩了不是红了」的并行侧变体。历史命中 4 次：r36 ×1（旧 13 进程全并行时代）、r37 ×1（protocol-check，拓扑未记录）、r42 ×1（mode 3 --parallel run-03，nl-agent-check，crashLabel 首次具名）、r43 campaign 受控复现 ×1（W4 三件套靶向，成员退出码 3221226505 落档，崩于 A 段 4 PASS——崩溃点与 r42 的 D12 位置漂移）。
+
+**定量证据（r43 campaign：52 次受控执行 + 1Hz 场景采样）**：重拓扑（浏览器重兄弟同波）1/12；轻拓扑（单跑 0/20、mode 1 并行 0/12）0/32；合成进程风暴（3×headless msedge ≈79 进程 + node 抖动峰值并发）0/8——进程数量本身非充分条件；内存排除（40.5–44GB 富余无相关）；WER 对该 fail-fast 完全不报（HKCU LocalDumps(node.exe) 事前武装仍零 dump / 零事件 / 零 bucket）——故障模块经 WER 不可得；环境嫌疑 frida-helper ×7 常驻 + 历史注入实证（事件日志），44+ 场景采样 0 命中 node 模块面，未链罪。
+
+**定性**：低比率、重拓扑限定（~8% 量级）、原生层 fail-fast；与套件本征逻辑无关（0/20 单跑）；崩溃点在套件内位置漂移。不影响门禁公信力：崩溃具名（crashLabel，加固 H20/H27 钉住）、判据如实拦截、失败保留现场。
+
+**门禁兜底（结案时在位）**：① crashLabel 崩溃码具名；② 崩溃/异常退出/挂死现场自动落盘 `crash-bundles/`（r44 crashbundle.js，加固 H30 十六钉；不进收尾清理清单，全绿不抹证据）；③ runCli 证据面（H26）产物在场/非空/形状三判据。
+
+**重开条件**（任一触发即重新开案）：① `crash-bundles/` 出现新 bundle（现已自动落盘，含全量输出 + 退出码三形态 + 时点）；② 安装 Sysinternals procdump 后父侧包装捕获到故障模块；③ 重拓扑 campaign 复现率显著上升（如 20 跑 ≥3 崩）；④ 操作系统侧出现新留痕（事件日志 Application Error / WER bucket）。
+
+**证据档案**：`Temp/crash-r43-evidence/`（89 文件 1.2M：五相 campaign 日志、场景采样 JSONL、w4-trio-03 抢救快照）、`Temp/flaky-r42-evidence/`（130 文件 779K：run-03 原始日志）、复现台 `Temp/crash-r43.mjs` + `Temp/storm-r43.mjs`（可复跑）。
+
+### F5 历史 paging flake（r39 挂账 → r46 结案，2026-10-08）
+
+**现象**：flow-check 翻页用例偶发 harness 态空结果/stale（r39 实录一次，发生于并行会话中改窗口——nl-agent-e2e 声明预抬连锁 + harness 态污染；r42 查明该次实录标签是 F5 不是 F7）。
+
+**取证（r42 + r45）**：F7 深查 38 真跑 + 90 窗口观测零复现；press→eval 时序主嫌被竞态探针定量排除（中导航读结构性不可达：press→eval 子进程往返 p50 ~1.2s ≫ localhost 导航毫秒级）；探针 2/60 findRefByNeedle「快照未产出」瞬断线索由 r45 探针 v2（runCliImpl 全观测 + 失败即时抢救 + 迟 stat + 重试）150 次复跑零复现，叠加 flow-check 真跑累计观测面 ~0/280——若 3.3% 是真率则 P(0/150)≈0.6%，统计不相容；定性为 r42 当日专属暂态（0xC0000409 战役后机器状态），机制因当时日志被留存帽清空不可考。
+
+**定性**：与并行编辑窗口的 harness 态污染相关的偶发，无可复现缺陷；findRefByNeedle/翻页链路在全部受控观测中无自身缺陷（读码五点核对 + r42 失败同序号位置 ok=true 实证）。
+
+**门禁兜底**：r44 起崩溃/异常退出自动落盘 bundle；探针 v2（`Temp/needle-r45.mjs`）为该族常备取证仪器（失败自动抢救日志 + 迟 stat 区分「没写/写了又消失」+ 重试区分瞬断/持续）。
+
+**重开条件**：① flow-check 在无并行编辑的干净窗口再现 F5 形态失败（bundle / 探针 v2 自动留证）；② needle-r45 探针出现 >0 失败且抢救日志指向具体机制。
+
+**证据档案**：`Temp/flaky-r42-evidence/`（summary-phaseA/B/C、探针 JSON）、`Temp/needle-r45-evidence/`（126 文件 370K：150 条全观测 JSONL + 三份 summary）。
+
+（账本建立：2026-10-08，v1.18.0，r46 结案轮写入；全部数字为机器口径实测值，证据档可复核。）
 
 ---
 
@@ -618,6 +664,199 @@ playwright-verify/
 ---
 
 ## 版本记录
+
+### v1.21.0（2026-10-08）
+
+- **浏览器插件插拔式双模（独立/依赖 MCP，按钮切换）**：面板与悬浮球各加「⚡ 依赖 MCP / 🔋 独立模式」切换按钮，模式持久化 `pv_mode`（两侧同键）。独立模式=不依赖桥仍可用的本地能力面：悬浮球录制/回放/导出 JSON/console 开控制台照常；桥依赖按钮（巡检/采集/生成/NL）停用 + 分支守卫诚实提示 + bridgeCall 第二层兜底（零 pv-bridge 发出）；面板工具面停用、本地说明显形、runTool 守卫。依赖模式=原全 16 工具面（默认，旧行为零漂移）。**全链路排查修掉 2 个真 bug**：① 配置键分裂——面板存 `base`/`token`、背景/悬浮球读 `pv_base`/`pv_token`，面板改了桥地址悬浮球永远看不见；统一 pv_base/pv_token + 首载旧键迁移（老配置不丢）。② 面板 initialize clientInfo 版本硬编码 '1.9.0' → 改读 `chrome.runtime.getManifest().version`（版本单一源）。钉：bridge-check 42 → 49（面板 vm 行为面 7：默认 mcp 形态/键统一/clientInfo manifest 版本/切 local 零 fetch/runTool 守卫/模式往返/旧键迁移+local 恢复）、floating-check 100 → 105（双模五钉：默认零漂移/切独立形态/守卫零发出逐分支/切回往返/持久化恢复）、floating-e2e 27 → 30（真浏览器：切独立橙点+生成停用+导出保留、断桥不断本地导出、切回探活往返）。开发期修钉三处（stub 类名后缀找点、logLine 覆盖语义、applyMode silent 判定）。CORE mode 1/2/3 = 728/783/914；全量 945 = 914 + 1 + 30。
+
+### v1.20.0（2026-10-08）
+
+- **悬浮球导出录制为 generate_scripts 输入 JSON（一键带走）**：面板新增「📤 导出录制 JSON」按钮——当前选中录制经 `stepsToGenerateInput`（write:false / overwrite 恒 false 语义）转成 generate_scripts 输入载荷，`JSON.stringify` 后以 Blob 下载到浏览器下载目录，纯本地不走桥不写盘，用户直接带进自己项目的生成流；文件名走新纯函数 `exportFileName`（Windows 保留字符/路径分隔符换 _、空白压 -、60 字符帽、空名与全符号糊回落 recording、stamp 注入防同名覆盖）；整链 try/catch（导出是增强面，异常只进日志绝不掀翻面板），revokeObjectURL 定时回收。钉：floating-check 92 → 100（纯函数 3 + vm 行为 5，stub 补 Blob/URL/timer/remove 观测面——按真实 DOM 面给桩，缺方法会把产品行为误判成「崩了」）、floating-e2e 26 → 27（真浏览器下载触发 + 日志回执口径）。开发期钉逮到产品判断一处：`???` 类全符号名洗成 `___` 不该当文件名（不携带命名信息）——回落 recording。CORE mode 1/2/3 = 716/771/899；全量 930 = 899 + 1 + 30。
+
+### v1.19.0（2026-10-08）
+
+- **PW006 修饰断言形态扫尾（expect.soft / expect.poll 覆盖）**：PW006（断言缺 await=假通过）正则从只匹配裸 `expect(` 扩为 `expect(?:\.\s*(?:soft|poll))?`——`expect.soft(page...).toBeVisible()` / `expect.poll(() => page...).toHaveText()` 不再整体漏报（soft/poll 不 await 同样假通过），与 PW007 断言存在性（早已含 soft|poll|configure）的认知面恢复对称；requireAsyncSource 闸门的 expect 头剥离抽成单一源 `EXPECT_HEAD_RE`（旧式只剥裸 expect(，对 `.soft(` 剥不掉会让 inner 取段错位、闸门判据不可信），行级/语句级两处同份；闸门语义不变（仅异步来源参数才判，同步值 soft/poll 不冤枉，fix 文案同步声明）。对抗语料 +5 钉（soft/poll 缺 await 命中 ×2 + await soft/poll 不冤枉 ×2 + soft 同步值闸门不冤枉 ×1）；lint-check 53 → 58。r6 时代遗留候选至此清账。CORE mode 1/2/3 = 708/763/890；全量 921 = 890 + 1 + 30。
+
+### v1.18.0（2026-10-08）
+
+- **崩溃/异常退出现场落盘（crash bundle）**：verify-all 在套件崩溃/异常退出（无 FAIL 行）与挂死分支，立即把全量 stdout/stderr + 退出码（有符号/无符号/hex 双形态）+ 时点写入 `crash-bundles/<时间戳>_<套件>/`（stdout.log / stderr.log / meta.json）；全绿零产出零噪音，写失败只告警不掀翻判定；bundle 自修剪保留最近 20 个，且**不进** verify-all 收尾清理清单——下一次全绿运行不抹掉上一次的崩溃证据（r42 留存帽教训）。新库 `mcp/lib/crashbundle.js`（shouldBundle 决策 / writeCrashBundle 写盘 / pruneBundles 自修剪，纯函数可钉），`crash-bundles` 进 `mcp/lib/exclude.js` ARTIFACT_DIRS 单一源（分发/整树比对/安装复制/净树五面自动排除）。加固 H30 十六钉；hardened 133 → 149。动机：r43 取证 campaign 实证「现场不落盘 = 不可分析」——0xC0000409 靠复现台即时落盘才定住成员退出码与崩溃点；mode1 sanity 首跑瞬断因输出被吞永久不可分类。CORE mode 1/2/3 = 703/758/885；全量 916 = 885 + 1 + 30。
+
+### v1.17.0（2026-10-07）
+
+- **录制行内重命名（管理闭环最后一块）**：列表行 ✎ 按钮 → 行内输入框（Enter 提交 /
+  Esc 取消 / 空名由纯函数拒绝并日志如实「名称不能为空（未改动）」/ 重命名中点行退出），
+  提交走 r41 就位的 renameRecording 纯函数 + persistRecordings 落盘（steps/url 原样保真）。
+  钉：floating-check 86 → 92（五态行为钉 + 数据保真回归）、floating-e2e 25 → 26（真浏览器
+  行内改名 → storage 名字更新），咬合 1 组恰中（绕过纯函数直接赋值 → 空名钉红）。
+  **行为钉逮到真产品 bug**：行渲染补丁遗留 `appendChild(name)`（name 仅在非重命名分支声明）
+  ——点 ✎ 即 TypeError（真浏览器同样会崩），删冗余行修复；钉侧同步修两类自身错位（行全量
+  重建后必须重取引用、录制名是自动命名不是步骤目标文案）。全量 16 套件 900 断言（+ 矩阵 4 签名）。
+
+### v1.16.0（2026-10-07）
+
+- **悬浮球富渲染（verdict + 关键事实一行化）**：`pvFactsLine` 纯函数（键序前 4 席：
+  顶层标量/一层嵌套标量/数组计数含 0 如实，verdict 不重复、非对象不硬凑、键值原样保真）
+  接进 resultTextOf —— 日志一段看全「【verdict】facts | 正文（截 300 保紧凑）」；无结构化时
+  零前缀原样。钉：floating-check 80 → 86（纯函数 3 + 真行为 3），咬合 1 组恰中（拔事实行 →
+  行为钉红）。vm 测立即 init 页面脚本的全忍让 DOM 存根再添一例（createElement 需带
+  setAttribute/attachShadow，早夭会把纯函数钉误伤成红——异常须兜成 null 让钉干净红）。
+  全量 16 套件 900 断言（+ 矩阵 4 签名）。
+
+### v1.15.0（2026-10-07）
+
+- **判据基数 serial 解耦（r41）**：verify-all 判据行原先从 SUITES 里 find 第一个 serial 套件取
+  assertions 当 serial 段基数 —— 现拓扑只有 deployed-check（30）时数值碰巧对；planWaves 早已支持
+  多 serial 各独占一波全都会跑，一旦再加 serial 套件，实跑 total 计入全部跑了的 serial，期望值
+  却只算第一个 → 判据行自己假红。改为 `serialAssertions()`（suites.mjs 新导出，与 planWaves 的
+  serials 同源求和），计入面同步解耦：跑了的 serial 按声明（serial: true）匹配、不硬编码
+  deployed-check 文件名。H29 五钉：解耦接线（find 单取回归即红）、硬编码回归、单 serial 拓扑
+  等价（恰 30）、多 serial 夹具求和（7+11=18，find 单取只剩 7）、与 planWaves serial 波序列
+  同源一致。hardened 128 → 133；CORE mode 1/2/3 = 675/730/856。
+
+### v1.14.0（2026-10-07）
+
+- **排除口径单一源（r40）**：五面各写排除清单的手工差集会静默假红（r38 净树多排 demo 与
+  package-lock.json → 4 套假红蒸发 290 断言；r40 诊断又抓出 deployed-check 漏 generated-booltest、
+  install 漏 generated 系、缺失面零豁免三处差集）。新增 `mcp/lib/exclude.js` 唯一源：三集合成
+  EXCLUDE_DIRS（依赖/产物/试验场）、EXCLUDE_FILE_RES 文件模式、IGNORE_TOP、EXPECTED_DEPLOY_EXTRA
+  与 diffManifests 纯函数（运行时产物双向豁免：源侧产物缺失不报丢、副本侧产物不多余、真源文件
+  漂移照抓）。distribute / install / deployed-check 三面 import 派生不再写字面量，差集理由显式
+  声明在 exclude.js 头注（EXCLUDE_FILE_RES 仅 distribute、IGNORE_TOP 仅 deployed-check、. 前缀
+  策略三面不同、verify-all ARTIFACT_DIRS 路径清单形态不同独立维护）。
+- **净树脚本化**：新增 `skill/playwright-verify/scripts/nettree.mjs`（纯 Node 复制忠实镜像减排除，
+  . 前缀保留除 .git —— 与 distribute 发布口径刻意不同），r38 robocopy 手工口径退场。
+- **H28 fixture 哨兵七钉**：排除面不变量×2（三集合并集无重复/不含源文件类）、diffManifests 双向
+  豁免三组夹具、install 沙箱哨兵×2（H23 同构 USERPROFILE 重定向真跑）与 nettree 净树哨兵×2 ——
+  源文件哨兵（demo 样例/lock/xlsx/extension）必须存活、产物哨兵（node_modules/generated-booltest/
+  test-results/Temp/.git）必须排除，两个方向都钉死。H14/H21 排除钉同步改「单一源条目 + 接线」
+  口径。hardened 121 → 128；CORE mode 1/2/3 = 670/725/851。
+
+### v1.13.0（2026-10-07）
+
+- **悬浮球录制管理（单槽升级为多条列表）**：`pv_recordings_list` 多条录制（前插新序、
+  容量帽 10 诚实淘汰最旧并在日志如实计数）、面板内联列表（选中高亮/点选切换/✕ 删除，
+  选中态删除后自动跟随）、自动命名（时钟）、旧单槽 `pv_recordings` 读取迁移（老数据不丢）
+  + 兼容写入（最新一条，旧读取方不受损）。纯函数核：makeRecording/addRecording/renameRecording/
+  deleteRecording/migrateLegacyRecordings/findRecording（不可变更新、空名拒绝、未命中 id 诚实
+  不动）。钉：floating-check 71 → 80（纯函数 4 + 胶水 5——列表 UI/选中回放/删除同步/容量帽/
+  旧槽迁移）、floating-e2e 22 → 25（真浏览器：清态起测连录两条/删较早一条/剩余回放）；
+  咬合 1 组 2 钉恰中（拔容量帽）。开发期又逮两个「桩与真实」错位：textContent= 真 DOM 会
+  清子节点（桩不清理→行累积）、e2e 管理钉必须清 storage+重 goto 起测（三轮循环已在 storage
+  累积）。全量 16 套件 893 断言（+ 矩阵 4 签名）。
+
+### v1.12.0（2026-10-07）
+
+- **结构化结果可视化（面板 kv/表格渲染 + 悬浮球 verdict 徽标）**：面板结构化区从「整块
+  JSON 倾倒」升级为**视图模型渲染** —— `pvStructuredModel` 纯函数产 {kv/table/line} 节点
+  （对象数组→列并集表格、行帽 20 + total 诚实计数、深度帽 3 防无限递归、空数组诚实空态），
+  渲染只走 DOM API 的 textContent 赋值 —— 工具数据不经 innerHTML，XSS 面为零；文本通道
+  （原样呈现含 isError）一字未动，可视化是呈现层不是数据改写。悬浮球日志加 verdict 徽标
+  （【Pass】前置一眼可见，无 verdict 不伪造）。钉：bridge-check 34 → 42（vm 加载面板脚本
+  + 视图模型行为钉 + renderResult 行为钉 + XSS 面钉）、floating-check 69 → 71（徽标有/无两态），
+  1 咬合恰中（拔徽标逻辑→钉红）。全量 16 套件 875 断言（+ 矩阵 4 签名）。
+
+### v1.11.0（2026-10-07）
+
+- **悬浮球端到端转正为常驻浏览器套件（本地靶场，零外网依赖）**：`mcp/test/floating-e2e.mjs`
+  22 断言 —— 真 msedge 加载扩展 + 自起桥（tools/list=16 新鲜度验证）+ 本地靶场页覆盖三类
+  真实页面形态（light DOM / 开放影子树 / 关闭影子树），把真机战役的 54/54 验证固化成回归门：
+  录制 4 原始步含口令跳过 → 归一 3 步 → 刷新恢复 → 回放 3 ✓（含开放影子树深搜）→ 工具快捷
+  三件套走真桥 → URL 守门 → 关闭影子树录宿主不假装穿透 → 目标消失诚实停止 → R2 稳定性复跑
+  → 扩展侧零 error。顺带修出两个真 bug：keydown 的 key 在**事件**上不在元素上（读 el.key 恒空
+  → press 步骤真实页面永远录不进，stub 事件不带 key 的盲区）；Playwright press(Enter) 会补发
+  change 事件 → 同定位器同值 fill 跨 press 无损归一（值不同绝不吞）。floating-check 66 → 69。
+  全量 16 套件 863 断言（+ 矩阵 4 签名）。
+
+### v1.10.1（2026-10-07）
+
+- **成功判定要证据，不只退出码（H26）**：runCli 旧判定只看退出码 + 超时，而「快照已落盘：
+  <路径>」摘要只引用**声明路径**、从不验文件在场 —— 裸 `process.exit(0)` 的假 CLI 能骗出
+  「CLI 最小闭环通过」的整套假绿（r37 复现台实锤：ok:true 而产物文件根本不存在）。修法加
+  证据面 `judgeRunEvidence`：强制落盘子命令（snapshot/screenshot/pdf）必须产物在场且非空、
+  png/pdf 魔数对得上、快照含 `ref=eN` 标记（快照的产出物就是 ref —— cli_session 的 fill/click
+  只收 ref，没有 ref 的快照等于这步没干活）；CLI 自报 isError 信封（exit 0）判
+  CLI_REPORTED_ERROR 不被吞；open/close 等无产物子命令保持退出码契约（没有客观证据可查，
+  硬造证据只会误红）。判据全用结构事实、刻意不用措辞匹配（措辞一改就误红）。
+  新增 H26 八钉（裸 exit(0) 无产物 / 空文件 / 假快照无 ref / 真快照过 / 假截图缺魔数 /
+  真截图过 / 自报信封 / 最小闭环标题面），hardened-check 107 → 115。负向咬合 1 组：
+  判定回退成只看退出码 → 恰 6 钉红（六条负向全中、两条正向不冤枉），sha256 往返一致。
+  全量 16 套件 853 断言（+ 矩阵 4 签名）。
+- **r38 全链路审计轮（2026-10-07）**：8 连跑复现 campaign（0 崩溃复现）+ 调度事实核对（默认严格串行，
+  「并行波」旧口径纠正）；录制质量防护 —— looksLikeCode 窄口径（花括号/!important/声明语句）拦下
+  CSS/代码文本当文本定位器（真机实测过的垃圾定位器类），代码文本降级 selector、普通说明文不误伤，
+  +3 钉 1 咬合；planWaves 并发帽（MAX_WAVE）与 0xC0000409 崩溃签名命名（crashLabel）由并行会话同期落地。
+
+### v1.10.0（2026-10-07）
+
+- **猫耳悬浮球：所有网页常驻一颗可拖拽的猫耳球，点开快捷面板 —— 🎬 一键录制当前页 /
+  ⏹ 结束保存 / ▶ 快速回放 / 打开完整控制台**，录制中球体脉冲 + 步数角标（形态参考
+  沉浸式翻译的悬浮球）。`extension/floating.js` 内容脚本 Shadow DOM 隔离（页面 CSS 污染
+  不了它，它的样式也绝不漏进页面）；`extension/recorder.js` 纯函数核：定位器六级优先级
+  与 generate.js 的 canonicalLocator 同一口径（testid > label > role > placeholder > text >
+  selector，绝不产 XPath/nth-child）、敏感字段双防线（type=password/cc-* + 名称模式含
+  nameAttr —— 凭据录制期即跳过，钉出过真 bug：纯核只读可访问名、胶水喂的是表单字段名）、
+  归一（同字段连续 fill 合并/连点去重/上限 200）、回放查询 locatorToQuery（非法 kind 抛错，
+  绝不猜元素接着点）。回放是内容脚本内轻量执行：URL 不符诚实拒绝、元素未找到立即停、
+  逐条打 ✓/✗ 日志。架构：content script → MV3 Service Worker 中转（background.js，绕开
+  页面 CORS）→ 桥 /rpc → MCP；口令只存扩展 storage、只经 x-bridge-token 请求头出站。
+  面板工具快捷：录制生成脚本（generate_scripts，键集恰在 schema 白名单、write 默认 false、
+  overwrite 恒 false）/页面巡检/表格采集/NL 测试（当前页 URL 自动带上）。
+- **接入发版链**：manifest content_scripts 只圈 http/https 网页（host_permissions 仍恰好
+  2 条本机、permissions 仍只有 storage —— 网络面不扩权）；deployed-check 28 → 30；
+  新套件「猫耳悬浮球（录制/回放/中转）」66 断言（vm 加载真文件 + stub DOM 真跑交互链 +
+  真 background.js 中转 + manifest 契约）。负向咬合 3 组：定位器优先级反转 → 5 钉红 +
+  1 连带（弱定位仍「找到」元素，恰反证优先级的精度价值）；敏感跳过失效 → 7 钉红；
+  中转丢口令头 → 1 钉红；写钉过程中绿态咬合先抓出 nameAttr 口径错位真 bug；真机实测前再补 3 钉并修两处（长文本定位不截断、回放 text 候选集扩标题并整段兜底）；真机全链实测（真 Edge + 真桥 + Gitee 仓库页 ×3 轮）又抓出并修复 3 处：拖拽只动了空壳 host 而非视口固定的球体、捕获取 e.target 被影子树重定向录出垃圾文本（改取 composedPath 首元素）、刷新恢复态不解禁回放/生成按钮；真机三轮迭代再补：回放查询升级为穿透开放影子树的深搜（Gitee 仓库头部组件场景，深度上限 4）+1 钉。
+  全量 15 套件 811 断言（+ 矩阵 4 签名）。
+
+### v1.9.1（2026-10-07）
+
+- **零依赖口径只认副本本地（判定面与执行面分家）**：`PVMCP_LOCAL_ONLY_DEPS=1` 时
+  resolveCliRunner 只认 cwd/node_modules，机器级全局（npm i -g / PATH shim）一律不认；
+  verify-all 三模式全程置位 —— mode 2 预检、套件 SKIP、cli_health「诚实报缺」全部按副本口径。
+  执行契约原样：真实用户不设开关，@playwright/cli 仍由本机提供（npm i -g 装法不变）。
+  修掉的是全局 shim 机器级假设缺口（实测三面：发版门禁嵌套 mode 2 在装了全局 shim 的机器上
+  永不可绿、净树 cli_health 被坏全局顶替成「超时无响应」、逐套件对账在混合态下静默跳过）。
+  新增加固 H25 三条（开关生效 / 诚实报缺不被顶替 / 默认兜底向后兼容），hardened-check 104 → 107。
+  负向咬合 1 组恰中预测钉、sha256 往返一致。全量 14 套件 746 断言（+ 矩阵 4 签名）。
+
+### v1.9.0（2026-10-07）
+
+- **浏览器插件控制台（MV3）+ 本地桥：从浏览器里调全部 16 个 MCP 工具**：`extension/`
+  （manifest / background / panel）以「加载已解压的扩展程序」装上，点图标开整页控制台 ——
+  工具表单由 `tools/list` 的 inputSchema 现场生成（enum→下拉、布尔→勾选、数字→数字框、
+  数组/对象→JSON 文本域），提交走 `tools/call`，历史可回填重跑；无第二份工具清单、无构建链，
+  manifest 只圈 `127.0.0.1/localhost` 且 version 与 package.json 同步钉住。`mcp/bridge.mjs`
+  做 HTTP ⇄ JSON-RPC 本地桥：POST /rpc **复用同一个 handleMessage**（与 stdio 零协议分叉，
+  不存在两份实现悄悄漂移），串行队列保共享产物目录不互踩，GET /health 探活免口令。
+- **守门与脱敏**：只绑 127.0.0.1；Host 头非本机名 403（挡 DNS rebinding）；带 Origin 时
+  只放行扩展来源、网页来源 403；可选口令 `PVMCP_BRIDGE_TOKEN`（x-bridge-token，常量时间
+  比较，401 三态）；请求体 4MB 上限 413（排空收尾，不炸连接）。观测日志只记
+  method/route/状态/耗时/工具名 —— 参数值与结果文本一律不进日志（哨兵钉住）。
+- **接入发版链**：install/distribute 复制集纳入 extension/，deployed-check 26 → 28
+  （含浏览器插件桥与控制台）；新套件「浏览器插件本地桥（通道/守门/脱敏）」34 断言
+  （/rpc 打穿错误码/通知 204/批量 id 对应/405/404、守门十态、413、串行并发不失位、
+  CLI 真启动脱敏哨兵、manifest 与面板契约）。负向咬合 2 组恰中预测钉、零误伤、
+  sha256 往返一致。全量 14 套件 743 断言（+ 矩阵 4 签名）。
+
+### v1.8.18（2026-10-06）
+
+- **cli_health 浏览器缺失自愈闭环**：缓存被清后 open 报「Browser "X" is not installed」这类环境缺失，
+  以前只能拿着提示手工修。现在 `cli_health` 自动闭环：三签名分类（distribution-not-found /
+  browser-not-installed / executable-missing，daemon 噪声行不干扰）→ 决策矩阵新增 2b 规则
+  （机器生成配置残留 executablePath 钉即按平台重生成 —— 顶层钉是死字段假钉、launchOptions 钉顶掉 channel，
+  正是「channel:msedge 没被加载」的实测根因）→ 重写为 channel 式配置 → 重试一次，
+  全程 `autoHeal` 字段如实标注（手工配置是显式意图，不自动重写）。H13 +4、H24 +3、cli-e2e +4
+  （活体自愈：陈旧钉+空缓存 → 重写后重试 4 步全绿）；hardened-check 97 → 104、cli-e2e 21 → 25；
+  全量 13 套件 707 断言（+ 矩阵 4 签名）。
+- **自愈执行线三处回归修复（mode 3 实测抓出，断言数不变）**：① 收尾关 session 的时机 ——
+  上轮僵尸修复把 close 放进 cliBatch 尾部，而 executePlan 的自愈门在 batch 返回后才检视失败步，
+  会话提前关掉让自愈永远拿到「browser not open」（NO_SNAPSHOT）；close 移到 executePlan 之后的
+  finally（运行结束含自愈才关，僵尸修复意图不变）。② 自愈后的陈旧批量结果 —— cliBatch 全步先跑
+  后检视，自愈真点上按钮后，后续步骤的批量结果是对「没点上」的旧页面算的（断言证据比自愈快照还旧）；
+  自愈成功后剩余步骤作废、逐步真跑（与模式二同源 exec），断言照常按快照判定、不放宽。
+  ③ 批量步缺执行耗时 —— 批量执行器结果补记 durationMs（报告「每步有执行耗时」口径来源）。
+  负向咬合 5/3/1 红恰中预测钉、零误伤，sha256 往返一致。
 
 ### v1.8.17（2026-10-06）
 

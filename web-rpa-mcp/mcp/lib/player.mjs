@@ -367,6 +367,28 @@ export async function emptyResultGuard(page) {
   return { suspicious: false, reason: null, rows };
 }
 
+/** 失败归因提示（纯函数，只提示不改判定）：
+ *  最终 URL 相对流程起始地址出现「深页→站点根」「跨源」「验证码类路径」三种偏离之一，
+ *  且流程含点击类步骤时，返回疑似外部真实站风控重定向的提示语；其余情况返回 null。
+ *  背景（2026-10-08 gitee 实测）：外部真实站可能把 Playwright 可信点击的导航链接重定向到首页/验证码页
+ *  （URL 直接访问不受影响），失败现场若只看「定位失败」会误判为页面改版——
+ *  合法的站内跳转（如点击后停在子页面 /issues）不属此列，不会误报。 */
+export function redirectAttribution({ finalUrl, startUrl, steps } = {}) {
+  if (!finalUrl || !startUrl) return null;
+  let a, b;
+  try { a = new URL(finalUrl); b = new URL(startUrl); } catch { return null; }
+  if (a.origin === b.origin && a.pathname === b.pathname && a.search === b.search) return null;
+  const hasClick = (steps || []).some((s) => s && (s.op === 'click' || s.op === 'clickAndDownload' || s.op === 'hover'));
+  if (!hasClick) return null;
+  const captchaLike = /captcha|verify|challenge|security/i.test(a.pathname);
+  const deepToRoot = a.origin === b.origin && a.pathname === '/' && b.pathname !== '/';
+  const originChanged = a.origin !== b.origin;
+  if (!deepToRoot && !originChanged && !captchaLike) return null;
+  return '最终 URL（' + finalUrl + '）偏离流程起始地址（' + startUrl + '），且流程含点击类步骤——' +
+    '疑似外部真实站风控重定向（gitee 类站点可能把可信点击导航重定向到首页/验证码页，URL 直接访问通常不受影响）。' +
+    '建议改用 URL 导航型流程（goto 链）+ url 断言兜底，详见 SKILL.md 五之四。';
+}
+
 /* ---------------- 步骤执行 ---------------- */
 
 /**
@@ -804,6 +826,7 @@ export async function runFlow(flow, opts = {}) {
     // 直接走超时收尾，不白启浏览器。100ms 下限远低于任何真实浏览器的启动耗时，不会误杀可完成的运行；
     // 也钉死 Date.now() 粒度擦边：剩余读数 0/1ms 时两种粒度结局都 <100ms，预检判定确定性成立。
     if (deadline && deadline - Date.now() < 100) throw runTimeoutError(ctx);
+    const launchT0 = Date.now();
     handle = await launchContext({
       headed: !!opts.headed || !cfg.browser.headless,
       downloadsDir: dlDir,
@@ -820,6 +843,9 @@ export async function runFlow(flow, opts = {}) {
         },
       } : {}),
     });
+    // 启动耗时（launchMs）：launchContext 全程 = profile 锁等待（被剩余预算夹取）+ 浏览器启动（不可中断段，R9 越线残余来源）。
+    // 归因数据面：launchMs 占 durationMs 大头=启动慢，否则=步骤慢；启动失败/未启动（预检拦停）无此字段，摘要投影=null
+    report.launchMs = Date.now() - launchT0;
     ctx.context = handle.context;
     // 浏览器弹窗：默认"取消"，但记录下来。confirm 被静默取消 = 操作没生效却看起来成功
     const onDialog = async (d) => {
@@ -844,6 +870,12 @@ export async function runFlow(flow, opts = {}) {
     for (let i = 0; i < resolvedSteps.length; i++) {
       const step = resolvedSteps[i];
       ctx.currentStep = i + 1;
+      // live 进度步骤级（纯增量字段，v1.8.0）：每步开始刷新运行标记，
+      // /console「运行中」卡片可显示「第 N/M 步 · 操作」。marker 其它消费方
+      //（store 判活只读 pid/startedAt/trigger；ops 透传全部字段）不读 step，旧流程零影响；
+      // 写频率=每步一次小 JSON（<1KB），与 markWaitingHuman 同款容错（失败不阻断执行）。
+      ctx.markerInfo.step = { index: i + 1, total: resolvedSteps.length, op: step.op };
+      try { writeRunningMarker(ctx.flowId, ctx.stamp, ctx.markerInfo); } catch { /* 可观测性增强不阻断执行 */ }
       // 看门狗：总时限已到就不再开新步骤，走统一的失败收尾（截图+报告+告警+释放锁）
       if (deadline && Date.now() >= deadline) {
         report.failedStep = i + 1;
@@ -1022,6 +1054,15 @@ export async function runFlow(flow, opts = {}) {
   report.notes = (report.notes || []).concat(ctx.notes);
   report.finishedAt = nowIso();
   report.durationMs = Date.now() - t0;
+
+  // 失败归因提示（纯提示，不改判定）：失败且最终 URL 偏离起始地址、流程含点击类步骤时，
+  // 疑似外部真实站风控重定向（gitee 实测：可信点击导航被重定向到首页/验证码页）
+  if (report.status === 'fail') {
+    const attr = redirectAttribution({ finalUrl: report.finalUrl, startUrl: flow.startUrl, steps: flow.steps });
+    if (attr) report.attribution = attr;
+    // 观测日志：归因判定的输入与结果（排查「同输入不同判定」类问题的现场数据）
+    L.info('失败归因判定', { flowId: flow.id, finalUrl: report.finalUrl, startUrl: flow.startUrl, steps: (flow.steps || []).map((s) => s.op).join(','), attr: !!attr });
+  }
 
   if (opts.learn !== false) {
     const patched = report.steps.some((s) => s.promoted);

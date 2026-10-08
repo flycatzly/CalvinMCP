@@ -39,6 +39,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, finish } from './verify-lib.mjs';
+// 排除口径单一源（r40）：目录名/文件模式全部来自 mcp/lib/exclude.js，这里不再写字面量。
+import { EXCLUDE_DIRS as EXCLUDE_DIR_NAMES, EXCLUDE_FILE_RES } from '../../../mcp/lib/exclude.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));       // <root>/skill/playwright-verify/scripts
 const PROJECT_ROOT = path.resolve(HERE, '..', '..', '..');        // <root>
@@ -47,25 +49,8 @@ const PARENT = path.dirname(PROJECT_ROOT);
 const { flags } = parseArgs();
 const OUT = path.resolve(String(flags.out || path.join(PARENT, `${path.basename(PROJECT_ROOT)}-clean`)));
 
-/** 排除的目录名（任意层级） */
-const EXCLUDE_DIRS = new Set([
-  'node_modules', '.git',
-  '.playwright-artifacts', '.playwright-cli',
-  'test-results', 'dist',
-  'generated', 'generated-e2e', 'generated-orchestrated', 'generated-booltest', 'generated-argscheck',
-  'scratch',
-  '__pycache__',   // Python 字节码：运行时再生成，且内嵌编译时路径
-]);
-/** 排除的文件名模式 */
-const EXCLUDE_FILE_RES = [
-  /\.log$/i,
-  /\.tmp$/i,
-  /^\.probe/i,
-  /^probe\d*\.mjs$/i,
-  /^dbg/i,
-  /\.bak-/i,
-  /\.pyc$/i,
-];
+/** 排除的目录名（任意层级）—— 单一源派生，差集理由见 exclude.js 头注 */
+const EXCLUDE_DIRS = new Set(EXCLUDE_DIR_NAMES);
 
 function shouldSkip(name, isDir) {
   // 发布规范：纯净包不含**任何** . 前缀内容。git/github/ignore/attributes、

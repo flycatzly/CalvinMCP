@@ -30,7 +30,7 @@ import {
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.5.19';
+const VERSION = '1.8.2';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';
@@ -46,7 +46,7 @@ function tool(name, description, inputSchema, handler) {
 }
 
 const S_FLOW = { type: 'string', description: '流程 id（1–128 字符，不得含路径分隔符等特殊符号）', pattern: SAFE_ID_PATTERN };
-const S_IDX = { type: 'integer', description: '步骤序号（从 1 开始）' };
+const S_IDX = { type: 'integer', minimum: 1, description: '步骤序号（从 1 开始）' };
 
 /** 改动/删除流程前先快照磁盘上的当前定义：flow_restore 才能在改坏后一键回滚（每个流程最多留 10 份） */
 function snapshot(id) {
@@ -62,7 +62,7 @@ tool('record_start',
     properties: {
       url: { type: 'string', description: '起始网址（录制从打开这个页面开始）' },
       name: { type: 'string', description: '技能名称（后续可用 record_stop 覆盖）' },
-      viewport: { type: 'object', properties: { width: { type: 'integer' }, height: { type: 'integer' } } },
+      viewport: { type: 'object', properties: { width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 } } },
     },
   },
   async (a) => {
@@ -116,8 +116,8 @@ tool('record_splice_start',
     type: 'object',
     properties: {
       flowId: S_FLOW,
-      from: { type: 'integer', description: '要重录的第一段步骤序号（从 1 开始）' },
-      to: { type: 'integer', description: '要重录的最后一段步骤序号；不传=到最后一步' },
+      from: { type: 'integer', minimum: 1, description: '要重录的第一段步骤序号（从 1 开始）' },
+      to: { type: 'integer', minimum: 1, description: '要重录的最后一段步骤序号；不传=到最后一步' },
       keepSuffix: { type: 'boolean', description: '是否保留第 to 步之后的原步骤，默认 true' },
       params: { type: 'object', description: '重放前缀所需的变量取值' },
       headed: { type: 'boolean', description: '是否显示浏览器窗口，默认 true（人要在里面操作）' },
@@ -253,10 +253,11 @@ tool('flow_assertion_add',
       message: { type: 'string', description: '失败时要显示的说明' },
       text: { type: 'string', description: 'textPresent/textAbsent 用' },
       selector: { type: 'string', description: 'tableNotEmpty/listNotEmpty 用，如 "table tbody tr"' },
-      min: { type: 'integer', description: '最少行数/数量' },
+      min: { type: 'integer', minimum: 1, description: '最少行数/数量（≥1；0/负数会让「结果非空」断言空过）' },
       contains: { type: 'string' }, equals: { type: 'string' }, regex: { type: 'string' },
       as: { type: 'string', description: 'extracted 用，引用 extract 步骤的 as' },
-      minBytes: { type: 'integer', description: 'download 用' },
+      minBytes: { type: 'integer', minimum: 1, description: 'download 用，字节下限（≥1；缺省 1）' },
+      minLines: { type: 'integer', minimum: 0, description: 'download 用，数据行数下限（缺省 0=不检查行数）' },
       locators: { type: 'array', description: 'elementVisible/elementAbsent 用' },
     },
     required: ['flowId', 'kind'],
@@ -358,7 +359,7 @@ tool('flow_run',
       allowLintErrors: { type: 'boolean', description: '忽略静态检查的阻断项强制运行' },
       learn: { type: 'boolean', description: '是否把自愈成功的定位符回写进流程文件，默认 true' },
       evidenceOn: { type: 'string', enum: ['always', 'failure', 'never'] },
-      maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）。计时自运行开始，含 profile 锁等待（被剩余预算夹取）与浏览器启动（不可中断，越线≤启动时长）；报告与响应带 budgetOverrunMs/budgetSource 可观测字段' },
+      maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）。计时自运行开始，含 profile 锁等待（被剩余预算夹取）与浏览器启动（不可中断，越线≤启动时长）；报告与响应带 budgetOverrunMs/budgetSource/launchMs 可观测字段（launchMs=启动耗时）' },
       saveVideo: { type: 'boolean', description: '本次是否全程录像留证；不传用配置 run.saveVideo（流程含敏感输入时自动跳过，防录像泄露密码画面）' },
       videoOn: { type: 'string', enum: ['failure', 'always'], description: '成功时是否保留录像（failure=删成功录像省空间）' },
       trigger: { type: 'string' },
@@ -391,6 +392,12 @@ tool('flow_run',
       maxDurationMs: report.maxDurationMs,
       budgetOverrunMs: report.budgetOverrunMs,
       budgetSource: report.budgetSource || null,
+      launchMs: report.launchMs ?? null,
+      // 观察期实锤的接线缺口：attribution/finalUrl/finalTitle 已在 report.json 里，
+      // 但响应投影漏透出——UI（renderRunResult 归因行）与调用方在 flow_run 响应里看不到
+      attribution: report.attribution || null,
+      finalUrl: report.finalUrl || null,
+      finalTitle: report.finalTitle || null,
       reportPath: report.reportPath,
       notifications: report.notifications,
     }, head);
@@ -407,7 +414,7 @@ tool('flow_preflight',
   });
 
 tool('run_history', '查看某个流程的历史执行记录（状态、耗时、触发方式、自愈次数、失败步骤）。',
-  { type: 'object', properties: { flowId: S_FLOW, limit: { type: 'integer' } }, required: ['flowId'] },
+  { type: 'object', properties: { flowId: S_FLOW, limit: { type: 'integer', minimum: 1, description: '最近 N 次，缺省 20' } }, required: ['flowId'] },
   async (a) => {
     const runs = listRuns(a.flowId, a.limit || 20);
     return ok({ flowId: a.flowId, count: runs.length, runs }, runs.length ? '最近 ' + runs.length + ' 次执行记录' : '还没有执行记录');
@@ -531,7 +538,8 @@ tool('schedule_add',
       frequency: { type: 'string', description: 'daily(默认) / weekly / hourly / minute / once / logon' },
       at: { type: 'string', description: '时刻 HH:mm，默认 09:00' },
       days: { type: 'array', items: { type: 'string' }, description: 'weekly 用，如 ["MON","WED"]' },
-      everyMinutes: { type: 'integer' }, everyHours: { type: 'integer' },
+      everyMinutes: { type: 'integer', minimum: 1, description: 'minute 频率：每 N 分钟（≥1；0 不再被静默当 30）' },
+      everyHours: { type: 'integer', minimum: 1, description: 'hourly 频率：每 N 小时（≥1；0 不再被静默当 1）' },
       date: { type: 'string', description: 'once 用，如 2026/10/01' },
       params: { type: 'object', description: '定时运行时使用的变量取值' },
       headed: { type: 'boolean', description: '定时是否显示浏览器窗口' },
@@ -633,7 +641,7 @@ tool('profile_login',
       url: { type: 'string', description: '打开的地址（通常是登录页，或"登录后会停在的首页"）' },
       successText: { type: 'string', description: '页面上出现这段文字即视为登录成功，例如「工作台」' },
       successUrlContains: { type: 'string', description: '地址包含这段字符串即视为登录成功，例如 "/dashboard"' },
-      timeoutMs: { type: 'integer', description: '最多等多久，默认 300000（5 分钟）' },
+      timeoutMs: { type: 'integer', minimum: 1, description: '最多等多久（毫秒），缺省 300000（5 分钟）' },
     },
     required: ['url'],
   },

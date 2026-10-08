@@ -156,6 +156,9 @@ export async function executePlan({ steps, cwd, session, headed = false, healLlm
   // 一次运行一个自愈预算实例：没有总闸的话每步都能烧一次 LLM
   const healBudget = createHealLlmBudget(healLlmBudget ?? DEFAULT_HEAL_LLM_BUDGET);
 
+  // 步骤执行器：模式一「自愈后重跑剩余步」与模式二逐步执行共用同一实现（语义不分叉）
+  const exec = runStep || defaultRunStep;
+
   // 模式一：cli_batch 批量执行（所有步骤一次投出，结果逐条检视）
   if (cliBatch) {
     const allResults = await cliBatch({ steps, cwd, session, headed });
@@ -176,7 +179,18 @@ export async function executePlan({ steps, cwd, session, headed = false, healLlm
             act: step.act, target: step.target, value: step.value, durationMs: Date.now() - healedStart,
             detail: healed.detail, evidence: healed.evidence,
           });
-          continue;
+          // 自愈重试真的动了页面（点击这下是自愈后才点上的）—— 后续步骤的批量结果
+          // 是对着「没点上」的旧页面算的（断言证据比自愈快照还旧），必须作废。
+          // 剩余步骤改为逐步真跑（与模式二同源 exec）：断言照常按快照内容判定、不放宽。
+          for (let j = i + 1; j < steps.length; j++) {
+            const s = steps[j];
+            const rr = await exec({ step: s, cwd, session, headed, healBudget });
+            results.push(rr);
+            if (!rr.ok) {
+              return { steps: results, stopped: true, reason: rr.detail || `${s.act} 失败`, healLlm: { budget: healBudget.limit, used: healBudget.used } };
+            }
+          }
+          return { steps: results, stopped: false, healLlm: { budget: healBudget.limit, used: healBudget.used } };
         }
         // 自愈失败：保留原结果并 fail fast
         results.push({ ok: false, act: step.act, target: step.target, value: step.value,
@@ -201,7 +215,6 @@ export async function executePlan({ steps, cwd, session, headed = false, healLlm
   }
 
   // 模式二：逐步执行（默认）
-  const exec = runStep || defaultRunStep;
   const results = [];
   for (const step of steps) {
     const r = await exec({ step, cwd, session, headed, healBudget });

@@ -55,6 +55,19 @@ export class ToolError extends Error {
  */
 export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
   const keep = opts.keepLiterals === true;
+  // v1.6.35: 嵌套键 dialect -> mode -> sql——命中路径零拼接。旧扁平键每次命中都要
+  // 拼一条全长键再哈希（120KB 语句 ~8µs/次），嵌套直查 ~2.7µs（bench_optim2 A 组
+  // 同脚本旁证：small 省 87% / medium 省 97% / large 省 66%）。
+  const cacheable = sanCacheOn && sql.length <= SAN_CACHE_LEN_CAP;
+  let inner = null;
+  if (cacheable) {
+    let byMode = SAN_CACHE.get(dialect);
+    if (byMode === undefined) { byMode = new Map(); SAN_CACHE.set(dialect, byMode); }
+    inner = byMode.get(keep ? "k" : "m");
+    if (inner === undefined) { inner = new Map(); byMode.set(keep ? "k" : "m", inner); }
+    const hit = inner.get(sql);
+    if (hit !== undefined) return hit;
+  }
   const pgDialect = dialect === "postgres";
   const out = [];
   let i = 0;
@@ -66,6 +79,9 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
   // 掩码把引号标识符整体抹掉后黑名单函数名对守卫不可见，需按名字二次校验（见 guardReadOnly 尾部）。
   const quotedIdents = [];
   let identStart = -1;
+  // v1.6.34: 顶层分号下标（仅当其后为注释/空白尾巴时记录）——供 stripStatementTail
+  // 切掉 "SELECT 1; -- done" 的尾巴取干净语句体（等长不变量不受影响）。
+  let semiAt = -1;
   // PG 转义串前缀：紧邻引号前的裸 e 或 U&（前一个字符不能再是标识符字符，防 name'…' 误判）
   const isPgEscapePrefix = (quoteAt) => {
     const p1 = sql[quoteAt - 1] || "";
@@ -130,7 +146,10 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
       }
       if (c === ";") {
         const rest = sql.slice(i + 1);
-        if (rest.trim().length > 0) return { error: "multi-statement" };
+        // v1.6.34: 分号后仅剩注释/空白不算多语句（"SELECT 1; -- done" 是常见合法写法，
+        // 旧版按多语句拒绝属误报）；可执行注释 /*! */ 是代码不算注释，仍按多语句拒绝。
+        if (rest.trim().length > 0 && !isCommentOnlyTail(rest, pgDialect)) return { error: "multi-statement" };
+        if (semiAt < 0) semiAt = i;
       }
       out.push(c);
       i += 1;
@@ -178,7 +197,99 @@ export function sanitizeSql(sql, dialect = "mysql", opts = {}) {
   for (const qi of quotedIdents) {
     if (/^\s*\)?\s*\(/.test(masked.slice(qi.end + 1))) quotedCalls.push(qi.name);
   }
-  return { text: masked, quotedCalls };
+  const sanResult = { text: masked, quotedCalls, semiAt };
+  if (inner !== null) {
+    if (inner.size >= SAN_CACHE_MAX) inner.clear();
+    inner.set(sql, sanResult);
+  }
+  return sanResult;
+}
+
+// v1.6.34: sanitizeSql 结果缓存——纯函数按（语句, 方言, keep）键控可安全复用。热点路径上
+// guardReadOnly / stripStatementTail / enforceLimit 对同一语句各扫一遍（逐字符状态机），
+// 小缓存消掉重复扫描。v1.6.35 起嵌套结构 dialect -> mode -> sql（命中零拼接），
+// 每（方言, 模式）槽各 32 条上限、超限整清 + 超长语句不缓存；setSanitizeCache(false) 供基准对照。
+const SAN_CACHE = new Map(); // dialect -> Map(mode -> Map(sql -> entry))
+const SAN_CACHE_MAX = 32;
+const SAN_CACHE_LEN_CAP = 262144;
+let sanCacheOn = true;
+export function setSanitizeCache(on) {
+  sanCacheOn = on === true;
+  if (!on) {
+    for (const byMode of SAN_CACHE.values()) for (const m of byMode.values()) m.clear();
+    SAN_CACHE.clear();
+  }
+}
+
+/**
+ * v1.6.34: 尾巴是否只含注释与空白（"SELECT 1; -- done" / "SELECT 1; /* c *\/" 放行）。
+ * 可执行注释（感叹号/M 惊叹号形态）是代码 → false；未闭合块注释也按 false（保守）。
+ * 注释词法规则与 sanitizeSql 主扫描一致（MySQL 的 -- 后必须跟空白/控制字符）。
+ */
+function isCommentOnlyTail(text, pgDialect) {
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i], d = text[i + 1];
+    if (/\s/.test(c)) { i += 1; continue; }
+    if (c === "-" && d === "-") {
+      const after = text[i + 2];
+      if (pgDialect || after === undefined || /[\x00-\x20\x7f]/.test(after)) {
+        i += 2;
+        while (i < n && text[i] !== "\n" && text[i] !== "\r") i += 1;
+        continue;
+      }
+      return false; // "1--1" 形态的 -- 不是注释——尾巴有实内容
+    }
+    if (c === "/" && d === "*") {
+      const c2 = text[i + 2], c3 = text[i + 3];
+      if (!pgDialect && (c2 === "!" || (c2 === "M" && c3 === "!"))) return false; // 可执行注释是代码
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1) return false;
+      i = end + 2;
+      continue;
+    }
+    if (c === "#" && !pgDialect) {
+      i += 1;
+      while (i < n && text[i] !== "\n" && text[i] !== "\r") i += 1;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * v1.6.34: 切掉语句尾巴——顶层分号及其后的注释尾巴（"SELECT 1; -- done" → "SELECT 1"）。
+ * 无顶层分号时仅 trim + 去一个结尾分号（兼容旧口径）。供 enforceLimit 包裹前、
+ * doQuery 重试裸语句时取干净语句体。
+ */
+export function stripStatementTail(sql, dialect = "mysql") {
+  const raw = String(sql).trim();
+  const s = sanitizeSql(raw, dialect);
+  if (!s.error && s.semiAt >= 0) return raw.slice(0, s.semiAt).trim();
+  return raw.replace(/;\s*$/, "");
+}
+
+// v1.6.34: WHERE 片段顶层子句关键字（脱敏文本上匹配；字符串/引号标识符/注释已掩成空格）。
+const CLAUSE_KEYWORD_RE = /\b(order|group|having|limit|offset|fetch|union|intersect|except|window|procedure)\b/iy;
+
+/** v1.6.34: 找脱敏文本里顶层（括号深度 0）的子句关键字；命中返回小写关键字，否则 null。 */
+function topLevelClauseKeyword(masked) {
+  const n = masked.length;
+  let depth = 0;
+  for (let i = 0; i < n; i++) {
+    const c = masked[i];
+    if (c === "(") { depth += 1; continue; }
+    if (c === ")") { depth = Math.max(0, depth - 1); continue; }
+    if (depth !== 0) continue;
+    if (!/[a-z]/i.test(c)) continue;
+    if (i > 0 && /[\w$]/.test(masked[i - 1])) continue; // x_limit / limitx 之类的标识符不命中
+    CLAUSE_KEYWORD_RE.lastIndex = i;
+    const m = CLAUSE_KEYWORD_RE.exec(masked);
+    if (m && m.index === i) return m[1].toLowerCase();
+  }
+  return null;
 }
 
 /**
@@ -460,8 +571,10 @@ export function guardWrite(sql, dialect = "mysql") {
  * v1.0.1: WITH 也改为外层包裹（旧版直接追加 LIMIT，遇到 `... LIMIT 5` 会生成
  * `LIMIT 5 LIMIT 201` 语法错误；包裹写法对 LIMIT/OFFSET/FETCH 一律安全）。
  */
-export function enforceLimit(sql, maxRows, dialect) {
-  const s = sql.trim().replace(/;\s*$/, "");
+export function enforceLimit(sql, maxRows, dialect, offset = 0) {
+  // v1.6.34: 用 stripStatementTail 取语句体——旧版只去一个结尾分号，"SELECT 1; -- done"
+  // （分号后注释尾巴）会被裹进派生表生成语法错误。
+  const s = stripStatementTail(sql, dialect);
   const st = sanitizeSql(s, dialect);
   // v1.0.3: 异常语句给出明确错误，而不是 "Cannot read properties of undefined (reading 'trim')"。
   // 服务器路径上 guardReadOnly 会先拒绝，这里是兜底（enforceLimit 是导出 API）。
@@ -478,7 +591,10 @@ export function enforceLimit(sql, maxRows, dialect) {
   if (first === "select" || first === "with") {
     // v1.0.2: 收尾括号必须独占一行——旧版单行拼接时，若 SQL 以行注释（-- / #）结尾，
     //         注释会把右括号一起吃掉，生成语法错误的语句。换行可终止行注释。
-    return `SELECT * FROM (\n${s}\n) AS _za_mcp_limit LIMIT ${maxRows + 1}`;
+    // v1.6.53: offset 分页——offset>0 时外层追加 OFFSET（intArg 产物纯数字，调用方已校验 0..1e6，
+    // 零注入面）；offset=0 不追加（旧 SQL 形状字节不变，既有钉零漂移）。不包裹语句（括号复合/SHOW）
+    // 的 offset 由 doQuery 执行后 slice 层同语义应用。
+    return `SELECT * FROM (\n${s}\n) AS _za_mcp_limit LIMIT ${maxRows + 1}${offset > 0 ? ` OFFSET ${offset}` : ""}`;
   }
   return s; // SHOW / DESCRIBE / EXPLAIN return small result sets
 }
@@ -504,6 +620,16 @@ export function checkWhereFragment(where, dbType) {
     if (WRITE_WORDS_RE.test(name)) {
       throw new ToolError("E_SAFETY", `Blocked in WHERE: found '${name.toUpperCase()}' (quoted function name) outside string literals.`);
     }
+  }
+  // v1.6.34: 顶层子句关键字拦截——WHERE 片段会被嵌进聚合/子查询形态（count_rows 的 COUNT(*)、
+  // distinct_values 的 GROUP BY 聚合、column_stats 的统计），顶层夹带 GROUP BY/ORDER BY/LIMIT/
+  // UNION 会静默改变聚合语义，让验证工具返回错误数字（实测 where "id > 0 GROUP BY id"
+  // 把 2 行的表数成 1）。括号内子查询用这些关键字合法放行；字符串/引号标识符已掩蔽不误伤。
+  const clause = topLevelClauseKeyword(s.text);
+  if (clause) {
+    throw new ToolError("E_PARAM",
+      `WHERE must be a plain condition expression: found top-level clause keyword '${clause.toUpperCase()}' outside parentheses. ` +
+      "Clause keywords (ORDER BY / GROUP BY / HAVING / LIMIT / OFFSET / UNION ...) belong to the statement, not the filter; subqueries inside parentheses may use them.");
   }
 }
 

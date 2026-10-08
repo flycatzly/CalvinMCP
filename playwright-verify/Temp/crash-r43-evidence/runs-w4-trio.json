@@ -1,0 +1,494 @@
+[
+  {
+    "id": "w4-trio-01",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 1,
+    "ms": 82561,
+    "exitCode": 0,
+    "crashed": false,
+    "unsignedExit": 0,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-01-before",
+      "ts": "2026-10-07T18:13:32.137Z",
+      "freememGB": 43.13,
+      "nodeN": 24,
+      "edgeN": 25,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-01-after",
+      "ts": "2026-10-07T18:14:55.215Z",
+      "freememGB": 42.49,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 0,
+        "ms": 1943,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-01-nl.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 23534,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-01-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 82561,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-01-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": null,
+    "rescue": null
+  },
+  {
+    "id": "w4-trio-02",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 2,
+    "ms": 84134,
+    "exitCode": 0,
+    "crashed": false,
+    "unsignedExit": 0,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-02-before",
+      "ts": "2026-10-07T18:14:55.737Z",
+      "freememGB": 42.53,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-02-after",
+      "ts": "2026-10-07T18:16:32.820Z",
+      "freememGB": 43.12,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 0,
+        "ms": 1957,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-02-nl.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 24338,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-02-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 84134,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-02-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": [
+      {
+        "exitCode": 0,
+        "ms": 12432
+      },
+      {
+        "exitCode": 0,
+        "ms": 1760
+      },
+      {
+        "exitCode": 0,
+        "ms": 6315
+      }
+    ],
+    "rescue": null
+  },
+  {
+    "id": "w4-trio-03",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 3,
+    "ms": 83694,
+    "exitCode": 1,
+    "crashed": true,
+    "unsignedExit": 1,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-03-before",
+      "ts": "2026-10-07T18:16:33.330Z",
+      "freememGB": 43.13,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-03-after",
+      "ts": "2026-10-07T18:17:57.596Z",
+      "freememGB": 42.65,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 3221226505,
+        "ms": 256,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-03-nl.log",
+        "crash": {
+          "crashed": true,
+          "exitCode": 3221226505,
+          "unsignedExit": 3221226505,
+          "codeHit": true,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 24021,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-03-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 83694,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-03-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": null,
+    "rescue": {
+      "modulesLog": "w4-trio-03-rescue-node-modules.log",
+      "eventLog": "w4-trio-03-rescue-eventlog.txt"
+    }
+  },
+  {
+    "id": "w4-trio-04",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 4,
+    "ms": 84446,
+    "exitCode": 0,
+    "crashed": false,
+    "unsignedExit": 0,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-04-before",
+      "ts": "2026-10-07T18:17:58.506Z",
+      "freememGB": 42.72,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-04-after",
+      "ts": "2026-10-07T18:19:36.253Z",
+      "freememGB": 42.39,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 0,
+        "ms": 1985,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-04-nl.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 24598,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-04-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 84446,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-04-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": [
+      {
+        "exitCode": 0,
+        "ms": 12754
+      },
+      {
+        "exitCode": 0,
+        "ms": 1805
+      },
+      {
+        "exitCode": 0,
+        "ms": 6575
+      }
+    ],
+    "rescue": null
+  },
+  {
+    "id": "w4-trio-05",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 5,
+    "ms": 84251,
+    "exitCode": 0,
+    "crashed": false,
+    "unsignedExit": 0,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-05-before",
+      "ts": "2026-10-07T18:19:36.770Z",
+      "freememGB": 42.41,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-05-after",
+      "ts": "2026-10-07T18:21:01.523Z",
+      "freememGB": 43.09,
+      "nodeN": 26,
+      "edgeN": 42,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 0,
+        "ms": 1965,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-05-nl.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 24342,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-05-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 84251,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-05-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": null,
+    "rescue": null
+  },
+  {
+    "id": "w4-trio-06",
+    "phase": "D",
+    "base": "w4-trio",
+    "i": 6,
+    "ms": 84962,
+    "exitCode": 0,
+    "crashed": false,
+    "unsignedExit": 0,
+    "evidenceLines": [],
+    "before": {
+      "tag": "w4-trio-06-before",
+      "ts": "2026-10-07T18:21:02.045Z",
+      "freememGB": 43.1,
+      "nodeN": 26,
+      "edgeN": 42,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "after": {
+      "tag": "w4-trio-06-after",
+      "ts": "2026-10-07T18:22:39.945Z",
+      "freememGB": 43.27,
+      "nodeN": 26,
+      "edgeN": 43,
+      "fridaN": 7,
+      "verifyAllConcurrent": 0,
+      "suspiciousModuleHits": 0
+    },
+    "logFile": null,
+    "trio": [
+      {
+        "idx": 0,
+        "exitCode": 0,
+        "ms": 1953,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-06-nl.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 1,
+        "exitCode": 0,
+        "ms": 24338,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-06-nle.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      },
+      {
+        "idx": 2,
+        "exitCode": 0,
+        "ms": 84962,
+        "logFile": "D:\\work\\MCP\\playwright-verify\\Temp\\crash-r43-evidence\\w4-trio-06-flow.log",
+        "crash": {
+          "crashed": false,
+          "exitCode": 0,
+          "unsignedExit": 0,
+          "codeHit": false,
+          "evidenceLines": []
+        }
+      }
+    ],
+    "warm": [
+      {
+        "exitCode": 0,
+        "ms": 12426
+      },
+      {
+        "exitCode": 0,
+        "ms": 1879
+      },
+      {
+        "exitCode": 0,
+        "ms": 6468
+      }
+    ],
+    "rescue": null
+  }
+]

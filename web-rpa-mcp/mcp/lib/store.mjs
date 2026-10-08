@@ -161,7 +161,7 @@ export function saveRun(report) {
    索引只是 report.json 的投影缓存，证据源永远是报告本身；外部直写/删除运行目录后，
    读侧按「目录有报告却不在索引 / 索引条目无目录」两个集合差自愈重建——宁可多读一遍，
    不可长期说谎。 */
-const RUN_INDEX_VERSION = 2;
+const RUN_INDEX_VERSION = 3; // 摘要 shape 变更必须 bump 强制全量重建：v2=预算可观测投影，v3=+launchMs 启动耗时投影
 
 function runIndexPath(base) { return path.join(base, 'index.json'); }
 
@@ -176,6 +176,8 @@ function runSummary(rep) {
     timedOut: !!rep.timedOut,
     maxDurationMs: rep.maxDurationMs || null,
     budgetOverrunMs: typeof rep.budgetOverrunMs === 'number' ? rep.budgetOverrunMs : null,
+    // 启动耗时投影（v3）：launchMs 含 profile 锁等待与浏览器启动（口径同 player 测量点）；旧报告/启动失败/未启动=null
+    launchMs: typeof rep.launchMs === 'number' ? rep.launchMs : null,
   };
 }
 

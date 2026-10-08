@@ -297,6 +297,33 @@ const ADV_CASES = [
     src: `await expect(page.getByTestId('y')).toBeVisible();`,
     forbidIds: ['PW006'],
   },
+
+  // ---- r47：修饰断言形态（expect.soft / expect.poll）——匹配面扩宽时钉住正反两面 ----
+  {
+    name: 'PW006 修饰形态：expect.soft 缺 await + 异步来源仍命中（soft 不 await 同样假通过）',
+    src: `expect.soft(page.getByTestId('y')).toBeVisible();`,
+    expectIds: ['PW006'],
+  },
+  {
+    name: 'PW006 修饰形态：expect.poll 缺 await + 异步来源仍命中',
+    src: `expect.poll(() => page.getByTestId('n').textContent()).toHaveText('5');`,
+    expectIds: ['PW006'],
+  },
+  {
+    name: 'PW006 修饰形态守卫：await expect.soft(...) 不冤枉',
+    src: `await expect.soft(page.getByTestId('y')).toBeVisible();`,
+    forbidIds: ['PW006'],
+  },
+  {
+    name: 'PW006 修饰形态守卫：await expect.poll(...) 不冤枉',
+    src: `await expect.poll(() => page.getByTestId('n').textContent()).toHaveText('5');`,
+    forbidIds: ['PW006'],
+  },
+  {
+    name: 'PW006 修饰形态守卫：expect.soft 同步值不 await 不冤枉（requireAsyncSource 闸门对面同样适用）',
+    src: `const amount = '¥99.00';\n  expect.soft(amount).toBe('¥99.00');`,
+    forbidIds: ['PW006'],
+  },
   {
     name: 'PW013 守卫：test.setTimeout(30_000) 短超时不冤枉（阈值判据不许退回数位数）',
     src: `test.setTimeout(30_000);`,

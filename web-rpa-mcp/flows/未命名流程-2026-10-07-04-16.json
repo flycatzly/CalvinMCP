@@ -1,0 +1,574 @@
+{
+  "id": "未命名流程-2026-10-07-04-16",
+  "name": "未命名流程-2026-10-07 04:16",
+  "version": 1,
+  "createdAt": "2026-10-07T04:16:21.753Z",
+  "updatedAt": "2026-10-07T04:16:21.753Z",
+  "startUrl": "https://gitee.com/flycatzly/calvin-mcp",
+  "params": [],
+  "steps": [
+    {
+      "op": "goto",
+      "url": "https://gitee.com/flycatzly/calvin-mcp",
+      "seq": 1
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Issues 0",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Issues 0",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "Issues 0",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "div.site-content:nth-of-type(3) > div.git-project-header:nth-of-type(1) > div.git-project-nav:nth-of-type(3) > div.ui.container > div.ui.secondary > a.item:nth-of-type(2)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[3]/div[1]/div[1]/a[2]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "Issues 0",
+        "text": "Issues 0",
+        "attrs": {
+          "href": "/flycatzly/calvin-mcp/issues"
+        },
+        "classes": [
+          "item"
+        ],
+        "path": [
+          "div.git-project-header",
+          "div.git-project-nav",
+          "div.ui.container",
+          "div.ui.secondary",
+          "a.item"
+        ],
+        "prevText": "代码",
+        "nextText": "Pull Requests 1"
+      },
+      "tag": "a",
+      "text": "Issues 0",
+      "time": 1791346545356,
+      "seq": 2,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Pull Requests 1",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Pull Requests 1",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "Pull Requests 1",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "div.site-content:nth-of-type(3) > div.git-project-header:nth-of-type(1) > div.git-project-nav:nth-of-type(3) > div.ui.container > div.ui.secondary > a.item:nth-of-type(3)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[3]/div[1]/div[1]/a[3]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "Pull Requests 1",
+        "text": "Pull Requests 1",
+        "attrs": {
+          "href": "/flycatzly/calvin-mcp/pulls"
+        },
+        "classes": [
+          "item"
+        ],
+        "path": [
+          "div.git-project-header",
+          "div.git-project-nav",
+          "div.ui.container",
+          "div.ui.secondary",
+          "a.item"
+        ],
+        "prevText": "Issues 0",
+        "nextText": "Wiki"
+      },
+      "tag": "a",
+      "text": "Pull Requests 1",
+      "time": 1791346548221,
+      "seq": 3,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "全部",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "全部",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "全部",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "#git-pull-requests-filters > a.item:nth-of-type(1)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[2]/div[1]/div[1]/form[1]/a[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "全部",
+        "text": "全部",
+        "attrs": {
+          "href": "/flycatzly/calvin-mcp/pulls?assignee_id=&author_id=&label_ids=&label_text=&milestone_id=&priority=&project_id=flycatzly%"
+        },
+        "classes": [
+          "item"
+        ],
+        "path": [
+          "div.ui.flat",
+          "div.panel-header",
+          "div.filters-wrapper",
+          "form#git-pull-requests-filters",
+          "a.item"
+        ],
+        "prevText": "",
+        "nextText": "开启的 1"
+      },
+      "tag": "a",
+      "text": "全部",
+      "time": 1791346550978,
+      "seq": 4,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "text",
+          "value": "服务",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "div.git-project-nav:nth-of-type(3) > div.ui.container > div.ui.secondary > div.item > div.ui.pointing > div:nth-of-type(1)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[1]/div[1]/div[1]/div[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "div",
+        "role": null,
+        "name": "服务",
+        "text": "服务",
+        "attrs": {},
+        "classes": [],
+        "path": [
+          "div.ui.container",
+          "div.ui.secondary",
+          "div.item",
+          "div.ui.pointing",
+          "div"
+        ],
+        "prevText": "",
+        "nextText": "JavaDoc PHPDoc 质量分析 Jenkins for Gitee 腾讯云托管 腾讯云 Serverless 悬"
+      },
+      "tag": "div",
+      "text": "服务",
+      "time": 1791346553600,
+      "seq": 5
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Wiki",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "Wiki",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "Wiki",
+          "exact": true
+        },
+        {
+          "strategy": "css",
+          "value": "div.site-content:nth-of-type(3) > div.git-project-header:nth-of-type(1) > div.git-project-nav:nth-of-type(3) > div.ui.container > div.ui.secondary > a.item:nth-of-type(4)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[3]/div[1]/div[1]/a[4]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "Wiki",
+        "text": "Wiki",
+        "attrs": {
+          "href": "/flycatzly/calvin-mcp/wikis"
+        },
+        "classes": [
+          "item"
+        ],
+        "path": [
+          "div.git-project-header",
+          "div.git-project-nav",
+          "div.ui.container",
+          "div.ui.secondary",
+          "a.item"
+        ],
+        "prevText": "Pull Requests 1",
+        "nextText": "统计"
+      },
+      "tag": "a",
+      "text": "Wiki",
+      "time": 1791346555058,
+      "seq": 6,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "企业版",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "企业版",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "企业版",
+          "exact": true
+        },
+        {
+          "strategy": "title",
+          "value": "企业版"
+        },
+        {
+          "strategy": "css",
+          "value": "#git-header-nav > div.ui.container > div.ui.menu > a.item:nth-of-type(2)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//body[1]/header[1]/div[1]/div[1]/a[2]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "企业版",
+        "text": "企业版",
+        "attrs": {
+          "title": "企业版",
+          "href": "/enterprises"
+        },
+        "classes": [
+          "item"
+        ],
+        "path": [
+          "body.git-project.lang-zh-CN",
+          "header#git-header-nav",
+          "div.ui.container",
+          "div.ui.menu",
+          "a.item"
+        ],
+        "prevText": "开源",
+        "nextText": "高校版"
+      },
+      "tag": "a",
+      "text": "企业版",
+      "time": 1791346556816,
+      "seq": 7,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "css",
+          "value": "div.m-auto.flex > nav.sm\\:hidden:nth-of-type(1) > ul.mb-0.flex > li.mx-3.flex-shrink-0:nth-of-type(1) > a.relative.flex > span"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//nav[1]/ul[1]/li[1]/a[1]/span[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "span",
+        "role": null,
+        "name": "<img alt=\"gitee logo\" loading=\"lazy\" decoding=\"async\" data-nimg=\"intrinsic\" style=\"position:absolute;top:0;left:0;bottom",
+        "text": "<img alt=\"gitee logo\" loading=\"lazy\" decoding=\"async\" data-nimg=\"intrinsic\" style=\"position:absolute;top:0;left:0;bottom:0;right:0;box-sizing:border-box;padding",
+        "attrs": {},
+        "classes": [],
+        "path": [
+          "nav.sm:hidden",
+          "ul.mb-0.flex",
+          "li.mx-3.flex-shrink-0",
+          "a.relative.flex",
+          "span"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "span",
+      "text": "<img alt=\"gitee logo\" loading=\"lazy\" decoding=\"async\" data-nimg=\"intrinsic\" styl",
+      "time": 1791346557847,
+      "seq": 8,
+      "waitForNav": "load"
+    },
+    {
+      "op": "goto",
+      "url": "https://gitee.com/enterprises",
+      "seq": 9,
+      "afterNav": true
+    },
+    {
+      "op": "goto",
+      "url": "https://gitee.com/flycatzly/calvin-mcp/wikis",
+      "seq": 10,
+      "afterNav": true
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "CalvinMCP",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "CalvinMCP",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "CalvinMCP",
+          "exact": true
+        },
+        {
+          "strategy": "title",
+          "value": "CalvinMCP"
+        },
+        {
+          "strategy": "css",
+          "value": "div.ui.container:nth-of-type(2) > div.git-project-header-details > div.git-project-header-container > h2.git-project-title.mt-0 > span.project-title:nth-of-type(1) > a.repository:nth-of-type(2)"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[1]/h2[1]/span[1]/a[2]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "CalvinMCP",
+        "text": "CalvinMCP",
+        "attrs": {
+          "title": "CalvinMCP",
+          "href": "/flycatzly/calvin-mcp"
+        },
+        "classes": [
+          "repository"
+        ],
+        "path": [
+          "div.git-project-header-details",
+          "div.git-project-header-container",
+          "h2.git-project-title.mt-0",
+          "span.project-title",
+          "a.repository"
+        ],
+        "prevText": "Alvin",
+        "nextText": ""
+      },
+      "tag": "a",
+      "text": "CalvinMCP",
+      "time": 1791346565868,
+      "seq": 11,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "calvin-db-mcp",
+          "exact": true
+        },
+        {
+          "strategy": "role",
+          "value": "link",
+          "name": "calvin-db-mcp",
+          "exact": false
+        },
+        {
+          "strategy": "text",
+          "value": "calvin-db-mcp",
+          "exact": true
+        },
+        {
+          "strategy": "title",
+          "value": "calvin-db-mcp"
+        },
+        {
+          "strategy": "css",
+          "value": "#tree-slider > div.row.tree-item:nth-of-type(4) > div.five.wide:nth-of-type(1) > a.tree-folder-item"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//div[1]/div[2]/div[4]/div[1]/a[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "a",
+        "role": "link",
+        "name": "calvin-db-mcp",
+        "text": "calvin-db-mcp",
+        "attrs": {
+          "title": "calvin-db-mcp",
+          "href": "/flycatzly/calvin-mcp/tree/master/calvin-db-mcp"
+        },
+        "classes": [
+          "tree-folder-item"
+        ],
+        "path": [
+          "div.ui.flat",
+          "div#tree-slider",
+          "div.row.tree-item",
+          "div.five.wide",
+          "a.tree-folder-item"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "a",
+      "text": "calvin-db-mcp",
+      "time": 1791346568878,
+      "seq": 12,
+      "waitForNav": "load"
+    },
+    {
+      "op": "click",
+      "locators": [
+        {
+          "strategy": "css",
+          "value": "#gotop > i.iconfont.icon-top"
+        },
+        {
+          "strategy": "xpath",
+          "value": "//body[1]/div[5]/div[6]/i[1]"
+        }
+      ],
+      "fingerprint": {
+        "tag": "i",
+        "role": null,
+        "name": "",
+        "text": "",
+        "attrs": {},
+        "classes": [
+          "iconfont",
+          "icon-top"
+        ],
+        "path": [
+          "html",
+          "body.git-project.lang-zh-CN",
+          "div.side-toolbar",
+          "div#gotop",
+          "i.iconfont.icon-top"
+        ],
+        "prevText": "",
+        "nextText": ""
+      },
+      "tag": "i",
+      "time": 1791346573962,
+      "seq": 13
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "tableNotEmpty",
+      "selector": "table tbody tr",
+      "min": 1,
+      "message": "结果列表不能为空（页面改版点错位置时最容易产出空表）"
+    }
+  ],
+  "recording": {
+    "sessionId": "rec-f2a58081",
+    "startedAt": "2026-10-07T04:15:40.393Z",
+    "finishedAt": "2026-10-07T04:16:21.753Z",
+    "notes": [],
+    "downloads": [],
+    "finalUrl": "https://gitee.com/flycatzly/calvin-mcp/tree/master/calvin-db-mcp",
+    "browserShape": {
+      "rowCounts": {
+        "table tbody tr": 42,
+        ".el-table__row": 0,
+        ".ant-table-row": 0,
+        "[role=\"row\"]": 0,
+        "ul li.list-item": 0,
+        ".vxe-body--row": 0
+      },
+      "emptyHit": null,
+      "url": "https://gitee.com/flycatzly/calvin-mcp/tree/master/calvin-db-mcp",
+      "title": "calvin-db-mcp · Alvin/CalvinMCP - 码云 - 开源中国"
+    }
+  }
+}

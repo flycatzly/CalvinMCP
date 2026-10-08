@@ -13,7 +13,7 @@
  * --keep-artifacts 保留产物目录（.playwright-artifacts/ 等）；默认全绿后自动清理、失败保留现场。
  * --mode 1|2|3 按《部署说明》§15.3 判据行复跑三态验收 —— 每态不只跑对应命令，
  *   还校验状态本身（依赖在不在、SKIP 是否诚实、矩阵是否真跑），对不上直接 exit 1：
- *   1 = 零依赖裸跑（12 套）；2 = 零依赖 + 浏览器面（13 套，执行层诚实 SKIP）；
+ *   1 = 零依赖裸跑（13 套）；2 = 零依赖 + 浏览器面（14 套，执行层诚实 SKIP）；
  *   3 = 全量（可选依赖必须就位，矩阵真跑且聚 4 签名）。
  *   没有 --mode 时不校验状态（开发机日常回归用，装没装依赖都能跑）。
  */
@@ -23,7 +23,8 @@ import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { resolvePlaywrightRunner, resolveCliRunner } from '../lib/runner.js';
-import { SUITES, planWaves, coreCounts, expectedAssertions, summarizeSuiteExit, PIN_FILES } from './suites.mjs';
+import { writeCrashBundle } from '../lib/crashbundle.js';
+import { SUITES, planWaves, coreCounts, serialAssertions, expectedAssertions, summarizeSuiteExit, PIN_FILES } from './suites.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -51,6 +52,13 @@ if (mode === '1' && argv.includes('--with-browser')) {
 }
 const withBrowser = mode === '2' || mode === '3' ? true : argv.includes('--with-browser');
 
+// 验收口径：可选依赖只认副本本地（runner.js 的 PVMCP_LOCAL_ONLY_DEPS，全程置 1）。
+// 为什么验收必须与「执行契约」分面 —— 执行面兜底机器级全局是文档化契约
+// （@playwright/cli 由本机提供、装法 npm i -g），但零依赖判定若也认机器全局，
+// 装了全局 shim 的机器上 mode 2 预检顶红、门禁嵌套验收永不可绿、纯净包的
+// cli_health 会被坏全局顶替掉「诚实报缺」形态。验收只对（副本）负责：
+// 跳过与否必须与「本次运行里工具真跑起来会不会失败」一致，不能另写一份猜测。
+process.env.PVMCP_LOCAL_ONLY_DEPS = '1';
 // 可选依赖探测：与 run_verify/runCli 用同一套解析逻辑（runner.js），
 // 跳过与否必须与「工具真跑起来会不会失败」一致，不能另写一份猜测。
 // 纯净发布包按口径不带 node_modules —— 执行层缺失时诚实 SKIP，不红着脸报失败。
@@ -60,9 +68,9 @@ const HAS_CLI = !!resolveCliRunner(ROOT);
 // 预检：状态不对就别白跑 —— mode 2 验的是零依赖态的「诚实 SKIP」形态、mode 3 验的是真全量，
 // 提前拦下省一轮几分钟的无效回归（对不上是环境错不是产品错，修法也不同）。
 if (mode === '2' && (HAS_TEST || HAS_CLI)) {
-  console.error('判据[mode 2] 是零依赖态：本机已能解析可选依赖（@playwright/test/@playwright/cli）——');
-  console.error('  这不是零依赖环境，跑了也验不了「诚实 SKIP」形态。请在一次性纯净副本（无 node_modules）上跑；');
-  console.error('  本机要跑全量请用 --mode 3。');
+  console.error('判据[mode 2] 是零依赖态：这棵树已带可选依赖（node_modules 里能解析 @playwright/test/@playwright/cli）——');
+  console.error('  副本自带依赖就验不了「诚实 SKIP」形态。请在一次性纯净副本（无 node_modules）上跑；');
+  console.error('  要跑全量请用 --mode 3。');
   process.exit(1);
 }
 if (mode === '3' && (!HAS_TEST || !HAS_CLI)) {
@@ -109,7 +117,9 @@ console.log(`执行方式：${parallel ? '并发（--parallel，见下方警告�
 //     3) demo/generated-* 读写互踩 → 生成器套件写临时目录，编排产物目录名在
 //        distribute/deployed-check 的排除表里（任意层级）；
 //     4) 部署副本验证比对整棵树，任何并发写入都会报假漂移 → planWaves 让它独占末波（serial: true）。
-//   现在 --parallel 是「波内并发、波间串行」：非 serial 套件同波并发，部署副本验证独占末波殿后。
+//   现在 --parallel 是「波内按帽并发、波间串行」：非 serial 套件分波、每波 ≤ MAX_WAVE（suites.mjs，
+//   2026-10 实测 9~14 进程同起的启动风暴会 0xC0000409 打崩套件、挤兑 cli_health 假红，8 跑 2 损伤），
+//   部署副本验证独占末波殿后。
 //   串行仍是默认 —— 并发缩短的是墙钟时间，串行换的是零意外；日常门禁用串行，
 //   显式 --parallel 才开波内并发（部署前想快跑一轮时用）。
 //   另：收尾统一 kill-all 收割孤儿浏览器（否则残留句柄会让 distribute 的 rmSync 报 EPERM，实测踩过）。
@@ -174,16 +184,36 @@ function runSuite(s) {
     // 而「卡住」比「失败」更难排查 —— 看不到任何输出，也拿不到退出码。
     // 实测踩过一次死循环（skipToken 返回后退），所以这道守卫是必需品，不是保险起见。
     const HANG_MS = 240_000;
+    // 崩溃/异常退出/挂死现场立即落盘（r44）：尾部 12 行进内存摘要，全量进 bundle。
+    // 证据不落盘=不可分析（r43 取证 campaign：0xC0000409 靠即时落盘才定住；
+    // sanity 瞬断因输出被吞永久不可分类）。写失败只告警，绝不掀翻判定。
+    const persistBundle = (code, extra = {}) => {
+      const b = writeCrashBundle(ROOT, {
+        suiteName: s.name, suiteFile: s.file,
+        exitCode: code, out, err,
+        startedAt: started, endedAt: Date.now(),
+        durationMs: Date.now() - started,
+        mode, parallel,
+        freememGB: Math.round(os.freemem() / 1048576) / 1024,
+        rssMB: Math.round(process.memoryUsage().rss / 1048576),
+        ...extra,
+      });
+      if (b.written) console.log(`  ↳ 崩溃现场已落盘：${path.relative(ROOT, b.dir)}`);
+      else if (String(b.reason || '').startsWith('WRITE_FAILED')) console.log(`  ⚠ 崩溃现场落盘失败：${b.reason}（不影响判定）`);
+      return b.written ? path.relative(ROOT, b.dir) : null;
+    };
     const hangTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      const crashBundle = persistBundle(null, { passCount: null, skipCount: null });
       resolve({
         ...s,
         ok: false,
         detail: `挂死超时（>${HANG_MS / 1000}s），已强制终止`,
         failedLines: ['疑似死循环：请对该套单跑并加迭代计数定位'],
         seconds: Math.round((Date.now() - started) / 100) / 10,
+        crashBundle,
       });
     }, HANG_MS);
     const settle = (fn) => { if (settled) return; settled = true; clearTimeout(hangTimer); fn(); };
@@ -193,10 +223,13 @@ function runSuite(s) {
     child.on('close', (code) => settle(() => {
       // 退出取证归类抽在 suites.summarizeSuiteExit（加固 H20 钉住）：
       // 崩溃（无 FAIL 行）时输出尾部（含 stderr）必须带出来，崩溃根因不许丢。
+      const summary = summarizeSuiteExit(code, out, err);
+      const crashBundle = persistBundle(code, { passCount: summary.passCount, skipCount: summary.skipCount });
       resolve({
         ...s,
-        ...summarizeSuiteExit(code, out, err),
+        ...summary,
         seconds: Math.round((Date.now() - started) / 100) / 10,
+        crashBundle,
       });
     }));
   });
@@ -288,11 +321,12 @@ console.log(failed.length
 
 // --mode 判据校验（§15.3 判据行）：跑完不算完，状态要对得上。
 // 期望断言总数 = 核心段（coreCounts：与套件声明同源，数字单一源）+ 存在性钉（H10/H14/H22 各钉一个
-// . 前缀基础设施文件，在位才生效、纯净包里诚实 SKIP 不计数）+ 部署副本段（装了才跑，未安装诚实 SKIP 不计数）。
+// . 前缀基础设施文件，在位才生效、纯净包里诚实 SKIP 不计数）+ serial 段（serial: true 套件，
+// 装了才跑、未安装诚实 SKIP 不计数；基数走 serialAssertions 与 planWaves 同源，r41 解耦）。
 // 合法断言变更时改 suites.mjs 的声明并同步 §15.3 判据行（H16/H22 机械对账）——
 // 对不上就失败，防止断言悄悄变少（静默失效）。
 const CORE = coreCounts();
-const DEPLOYED_N = SUITES.find((s) => s.serial).assertions;
+const SERIAL_N = serialAssertions();
 const DOT_PINS = SUITES.reduce((n, s) => n + (s.dotPins || 0), 0);
 
 // 逐套件断言数对账（数字单一源）：每套实跑 PASS 数必须等于 suites.mjs 声明 ——
@@ -313,15 +347,22 @@ let modeFailed = false;
 if (mode) {
   // 只计通过套件的断言：失败套件跑出的半截数字没有判据意义（check[0] 已经拦红）
   const total = results.reduce((n, r) => n + (r.ok ? r.passCount || 0 : 0), 0);
-  const deployedRan = results.some((r) => r.file && r.file.includes('deployed-check') && !r.skipped && r.ok);
-  const expected = CORE[mode] + pins + (deployedRan ? DEPLOYED_N : 0);
+  // serial 段只计「真跑（未 SKIP 且通过）的 serial 套件」的声明断言数 —— 按 suites.mjs
+  // 声明（serial: true）匹配，不硬编码 deployed-check 文件名（r41）：多 serial 拓扑下
+  // 每个跑了的 serial 都要计入，未装部署副本时诚实 SKIP 如实计 0。
+  const serialN = results.reduce((n, r) => {
+    if (!r.ok || r.skipped || !r.file) return n;
+    const s = SUITES.find((x) => x.serial && x.file === r.file);
+    return n + (s ? s.assertions : 0);
+  }, 0);
+  const expected = CORE[mode] + pins + serialN;
   const matrix = results.find((r) => r.name === '真实浏览器回归矩阵');
   const browserSuites = settled.filter((r) => r.browser);
   const checks = [];
-  checks.push([`套件全数在且无失败（${results.length} 套）`, failed.length === 0 && results.length === (mode === '1' ? 13 : 14)]);
+  checks.push([`套件全数在且无失败（${results.length} 套）`, failed.length === 0 && results.length === (mode === '1' ? 16 : 17)]);
   if (mode === '1') {
-    checks.push(['5 个浏览器套件以「需要 --with-browser」诚实 SKIP',
-      browserSuites.length === 5 && browserSuites.every((r) => r.skipped && (r.detail || '').includes('需要 --with-browser'))]);
+    checks.push(['6 个浏览器套件以「需要 --with-browser」诚实 SKIP',
+      browserSuites.length === 6 && browserSuites.every((r) => r.skipped && (r.detail || '').includes('需要 --with-browser'))]);
     checks.push(['无「缺可选依赖」类 SKIP（裸跑面不碰执行层）',
       !results.some((r) => r.skipped && (r.detail || '').includes('缺可选依赖'))]);
   }
@@ -339,15 +380,15 @@ if (mode) {
       !!(matrix && matrix.matrix && matrix.matrix.passed === 2 && matrix.matrix.failed === 6
         && matrix.matrix.flaky === 1 && matrix.matrix.clusters === 4)]);
   }
-  checks.push([`断言总数 ${total} = 期望 ${expected}（核心 ${CORE[mode]} + . 前缀钉 ${pins}/${DOT_PINS} + 部署副本 ${deployedRan ? DEPLOYED_N : 0}）`,
+  checks.push([`断言总数 ${total} = 期望 ${expected}（核心 ${CORE[mode]} + . 前缀钉 ${pins}/${DOT_PINS} + serial 段 ${serialN}）`,
     total === expected]);
   checks.push([`逐套件断言数与 suites.mjs 声明一致（数字单一源）`,
     countDrift.length === 0]);
   modeFailed = checks.some(([, ok]) => !ok);
   const passN = results.length - failed.length;
-  const shape = mode === '1' ? `${passN}/13（${total} 断言）`
-    : mode === '2' ? `${passN}/14（${total} 断言 + 诚实 SKIP）`
-      : `${passN}/14（${total} 断言 + 矩阵 4 签名）`;
+  const shape = mode === '1' ? `${passN}/16（${total} 断言）`
+    : mode === '2' ? `${passN}/17（${total} 断言 + 诚实 SKIP）`
+      : `${passN}/17（${total} 断言 + 矩阵 4 签名）`;
   console.log(`\n判据[mode ${mode}]：${shape} —— ${modeFailed ? '判据不满足 ❌' : '与《部署说明》§15.3 判据一致 ✅'}`);
   for (const [desc, ok] of checks) if (!ok) console.log(`  ✗ ${desc}`);
 }

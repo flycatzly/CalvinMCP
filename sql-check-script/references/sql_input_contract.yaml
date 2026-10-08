@@ -1,4 +1,4 @@
-# 版本 v1.4.28 · sql-check-script · 更新记录见 README.md「更新记录」
+# 版本 v1.4.46 · sql-check-script · 更新记录见 README.md「更新记录」
 # SQL 输入契约（用户填写）
 # 全链路检测前必填；缺了它 AI 只能瞎猜。
 
@@ -46,3 +46,30 @@ return_contract:
     rows_field: tables            # tables[].name 为表名（可带 schema 参数指定库）
   describe_table:
     note: columns / indexes / table_comment / approx_rows（先于写 SQL 调用，防幻觉字段）
+
+# ============================================================
+# 巡检一键 manifest 契约（--manifest JSON 清单；v1.4.34 起纳入 config-lint）
+# 与 巡检一键.mjs 解析字段互证——yaml 记了脚本没收的键即 FAIL（字段漂移双向报警）
+# ============================================================
+inspect_manifest:
+  top_keys:
+    - items
+    - project
+    - source
+    - sample
+    - consistency
+  item_keys:
+    - sql
+    - chain
+    - note
+    - tables
+  consistency_keys:
+    - name
+    - dialect
+    - leftTable
+    - leftKey
+    - leftValue
+    - rightTable
+    - rightKey
+    - rightValue
+    - confidence

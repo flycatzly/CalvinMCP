@@ -28,15 +28,15 @@ import { decryptAny, isEnc2, masterKeyBound } from "./crypt2.mjs";
 //         对外 API 面（selftest 经 server.mjs 导入）保持不变。
 import {
   sanitizeSql, stripComments, stripLeadingComments, guardReadOnly, guardWrite, extractWriteTarget,
-  enforceLimit, checkWhereFragment, createTableGuard, createTableName, ToolError,
+  enforceLimit, stripStatementTail, checkWhereFragment, createTableGuard, createTableName, ToolError,
 } from "./guard.mjs";
 import { createPoolManager, pgStreamable } from "./pool.mjs";
 // v1.6.9 观测面打点（可选）：DBMCP_ERR_LOG 未设置时零行为，写失败静默，契约零侵入
-import { setScrub, logToolCall } from "./observe.mjs";
+import { setScrub, logToolCall, obsSnapshot } from "./observe.mjs";
 export {
   sanitizeSql, stripComments, guardReadOnly, guardWrite, extractWriteTarget,
   whereHasColumn, exprHasColumn, extractWhereClause, ToolError,
-  enforceLimit, checkWhereFragment, createTableGuard, createTableName,
+  enforceLimit, stripStatementTail, checkWhereFragment, createTableGuard, createTableName,
 } from "./guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,7 @@ function pkgVersion(fallback) {
     return JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8")).version || fallback;
   } catch { return fallback; }
 }
-export const VERSION = pkgVersion("1.6.32");
+export const VERSION = pkgVersion("1.6.56");
 
 /* ------------------------- v1.2.0 SQLite 支持（助手） ------------------------- */
 
@@ -86,6 +86,37 @@ export function isReadOnlyPragma(sql) {
 }
 
 /* ---------------------------------- config --------------------------------- */
+
+/** v1.6.55: 配置归一（reloadConfig 专用；loadConfig 启动路径保持字节不变）——clamp/形态收敛。 */
+export function normalizeCfg(raw, file) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ToolError("E_CONFIG", "配置内容不是 JSON 对象（中止，旧配置保持生效）");
+  }
+  const cfg = { ...raw };
+  cfg.maxRows = clampInt(cfg.maxRows, 1, 5000, 200);
+  cfg.timeoutMs = clampInt(cfg.timeoutMs, 1000, 600000, 30000);
+  cfg.allowWrites = cfg.allowWrites === true;
+  cfg.maxAffectedRows = Number(cfg.maxAffectedRows) === 0 ? 0 : clampInt(cfg.maxAffectedRows, 1, 1e9, 500);
+  if (cfg.sources !== undefined && (typeof cfg.sources !== "object" || Array.isArray(cfg.sources))) {
+    throw new ToolError("E_CONFIG", "sources 必须是对象（中止，旧配置保持生效）");
+  }
+  cfg.sources = cfg.sources || {};
+  cfg.__file = file;
+  cfg.__initRequired = Object.keys(cfg.sources).length === 0;
+  return cfg;
+}
+
+/** v1.6.55: 源差异纯函数（自测可断言）——新增/删除/url|enc|file 变化的源 id 列表。 */
+export function computeChangedSources(oldSources, newSources) {
+  const sig = (s) => (s && typeof s === "object") ? String(s.url || s.enc || s.file || "") : "";
+  const changed = new Set();
+  for (const [id, ns] of Object.entries(newSources || {})) {
+    const os = (oldSources || {})[id];
+    if (!os || sig(os) !== sig(ns)) changed.add(id);
+  }
+  for (const id of Object.keys(oldSources || {})) if (!(newSources || {})[id]) changed.add(id);
+  return [...changed];
+}
 
 function loadConfig() {
   const file = process.env.DBMCP_CONFIG || path.join(__dirname, "dbmcp.config.json");
@@ -148,7 +179,7 @@ export function enumArg(v, name, allowed, dflt) {
   throw new ToolError("E_PARAM", `Invalid '${name}': ${JSON.stringify(v)} is not one of [${allowed.join(", ")}].`);
 }
 
-const cfg = loadConfig();
+let cfg = loadConfig(); // v1.6.55: reload_config 就地换血（见 reloadConfig；getSource/scrub 均读活绑定）
 
 /* --------------------------- url 解密（enc → url，仅驻内存） --------------------------- */
 // dbmcp.config.json 中的 url 以 enc 字段加密存储。v1.5.0 起两种格式按前缀分派（decryptAny）：
@@ -214,13 +245,54 @@ export function secretListFromSources(sources) {
 }
 
 /** scrub 的纯函数形态（list 显式传入，供自测直接断言清洗行为） */
+// v1.6.36: 零命中预筛——单次交替正则 test 替代 list.length 次 includes 全扫（225KB/8 键实测 2.1×）。
+// 命中或空表仍回落到逐键 split/join 原循环，输出与旧版逐字节恒等（预筛只短路"确定零命中"）。
+const SCRUB_RE_CACHE = new WeakMap();
+function scrubAltRe(list) {
+  let re = SCRUB_RE_CACHE.get(list);
+  if (re === undefined) {
+    re = list.length ? new RegExp(list.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")) : null;
+    SCRUB_RE_CACHE.set(list, re);
+  }
+  return re;
+}
+// v1.6.42: 纯数字口令（≥4 位）的上下文清洗——whole-T 裸串清洗会把 JSON 数字 token
+//（`"amt":424242`）洗成 `"amt":***` → 响应非法 JSON（bench_r1642 实证：现状 T 合法 JSON=false）。
+// 数字 token 与字符串字面量在 T 里可按上下文区分：数字 token 前缀（跳过空格，兼容 pretty
+// `": 424242"`）是 `:`。处置：数字键只清洗非数字-token 语境（字符串字面量/自由文本照洗），
+// 数字 token 原样保留——响应合法性恢复且文本面口令仍被掩（纯方案 a「退出清洗」的泄漏面已实测：
+// 裸数字口令在文本里原样残留）。已知取舍：自由文本里「冒号+空格+纯数字」恰等于口令的形态不被
+// 清洗（数据保真优先——JSON 数字 token 是高频形态，文本命中是罕见形态）；长数字片段
+//（口令是更长数字串的子串）不清洗，防误伤数据。scrubBuffer/scrubToBuffer（字节域）本身仍不改；
+// CSV 导出面已由 V1.6.43 单元格级处置收口（csvCellDigitMask，数字口令从字节域清洗列表剔除）。
+const DIGIT_KEY_RE = /^\d{4,}$/;
+function maskDigitKeyContext(t, k) {
+  let out = "", i = 0;
+  for (;;) {
+    const idx = t.indexOf(k, i);
+    if (idx === -1) { out += t.slice(i); return out; }
+    const before = t.charCodeAt(idx - 1);
+    const after = t.charCodeAt(idx + k.length);
+    const beforeDigit = before >= 48 && before <= 57;   // '0'-'9'
+    const afterDigit = after >= 48 && after <= 57;
+    let p = idx - 1;
+    while (p >= 0 && t.charCodeAt(p) === 32) p--;        // 空格回扫（pretty JSON）
+    const isNumberToken = p >= 0 && t.charCodeAt(p) === 58; // ':'
+    if (beforeDigit || afterDigit || isNumberToken) out += t.slice(i, idx + k.length);
+    else out += t.slice(i, idx) + "***";
+    i = idx + k.length;
+  }
+}
 export function scrubWith(text, list) {
   let t = String(text);
-  for (const k of list) if (t.includes(k)) t = t.split(k).join("***");
+  if (!t || !list.length) return t;
+  const re = scrubAltRe(list);
+  if (re && !re.test(t)) return t; // 零命中快路径：1 扫代替 list.length 次 includes
+  for (const k of list) if (t.includes(k)) t = DIGIT_KEY_RE.test(k) ? maskDigitKeyContext(t, k) : t.split(k).join("***");
   return t;
 }
 
-const { list: SECRET_LIST, shortIds: SHORT_PWD_IDS } = secretListFromSources(cfg.sources);
+let { list: SECRET_LIST, shortIds: SHORT_PWD_IDS } = secretListFromSources(cfg.sources); // v1.6.55: reload 重建
 if (SHORT_PWD_IDS.length) {
   console.error(`[calvin-db-mcp] 警告: 源 ${SHORT_PWD_IDS.join(", ")} 的口令长度 <4，裸口令不参与输出清洗（防误伤正常文本）；user:pass@ 结构化形态仍会清洗。建议改用更长口令。`);
 }
@@ -230,10 +302,59 @@ export function getConfiguredSecrets() {
   return SECRET_LIST;
 }
 
+/**
+ * v1.6.55: 配置热切换核心（reload_config 工具面）。安全序：读文件→JSON 解析→normalizeCfg 形态
+ * 校验→逐源 enc 解密探针（任一失败即中止，旧配置保持生效）→提交（cfg 对象就地换血——
+ * getSource/scrub/manager 全读活绑定）→重建 SECRET_LIST→标记变更源池 stale（getPool 惰性关闭，
+ * busy 不掐在途查询）。恒从 DBMCP_CONFIG 路径重载——不接受文件名参数（零任意路径读取面）。
+ */
+function reloadConfig() {
+  const file = process.env.DBMCP_CONFIG || path.join(__dirname, "dbmcp.config.json");
+  if (!fs.existsSync(file)) {
+    throw new ToolError("E_CONFIG", `配置文件不存在: ${file}（重载中止，当前状态保持）。请先执行 node import-dbeaver.mjs <.dbp> 生成配置后再重载。`);
+  }
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {
+    throw new ToolError("E_CONFIG", "配置文件 JSON 解析失败（重载中止，旧配置保持生效）: " + e.message);
+  }
+  const next = normalizeCfg(raw, file);
+  // enc 解密 + 源形态归一（镜像启动路径 189-212：url=decryptAny(enc) 就地赋值 + type 归一）——
+  // 只做在 next.sources（新对象）上；任一解密失败即中止，旧配置保持生效。
+  for (const [id, s] of Object.entries(next.sources)) {
+    if (s && typeof s === "object") {
+      if (s.enc && !s.url) {
+        try { s.url = decryptAny(s.enc); } catch {
+          throw new ToolError("E_CONFIG", `源 '${id}' 的 enc 解密失败（重载中止，旧配置保持生效）`);
+        }
+      }
+      const declared = String(s.type || "").toLowerCase();
+      s.type = declared ? (declared === "oceanbase" ? "mysql" : declared)
+        : (/^postgres/i.test(String(s.url || "")) ? "postgres"
+          : /^sqlite:/i.test(String(s.url || "")) ? "sqlite"
+          : "mysql");
+    }
+  }
+  const changed = computeChangedSources(cfg.sources, next.sources);
+  Object.assign(cfg, next);                       // 就地换血：全部活绑定读到新值
+  const sl = secretListFromSources(cfg.sources);
+  SECRET_LIST = sl.list;
+  SHORT_PWD_IDS = sl.shortIds;
+  for (const id of changed) markStale(id);        // 池惰性换新（getPool 触达且空闲时关旧建新）
+  return { sources: Object.keys(cfg.sources).length, init_required: cfg.__initRequired === true, changed };
+}
+
 /** 将文本中出现的任何已配置口令替换为 ***（所有工具响应统一出口处调用）。includes 预判避免无命中时反复重建字符串 */
 export function scrub(text) {
   return scrubWith(text, SECRET_LIST);
 }
+// v1.6.38 判据（勿再试）：normVal/normPost 短字符串「逐值零命中清洗」已实测并回退——
+// SECRET_LIST 只含 URL 解析出的百分号编码形态（new URL().password 恒为编码态，裸口令进不了
+// 列表），编码字符集 ⊆ JSON T 层安全字符，whole-T 出口清洗不存在「引号/控制符口令漏洗」面；
+// 逐值清洗对洁净载荷字节零差异、纯 +53µs@千行（24× 噪声地板）＝负优化。
+// 前提变化才可重试：secretListFromSources 未来加入 decodeURIComponent 形态时，须带开关重测
+// （届时含引号口令才真正入列表，whole-T 才有漏洗面）。bench_r1638_scrub.mjs 存档。
+// 另一已知权衡（未修，见更新记录）：纯数字口令（≥4 位）被 whole-T 清洗会把响应里同值数字
+// 洗成 *** → 非法 JSON（洗烂 vs 泄漏取舍，V1.6.38 报告单列）。
 
 /**
  * v1.6.27: scrub 的字节域形态——逐 key 在 UTF-8 字节流上把口令替换为 ***，直出 Buffer。
@@ -484,7 +605,7 @@ function getSource(id) {
 // v1.4.0: 连接层拆分至 pool.mjs（依赖注入 cfg/getSource/clampInt/sqliteFilePath），此处构造单例
 // v1.5.3: 注入 scrub（慢查询日志的 SQL 预览同过输出清洗）+ 解构 withTransaction（import atomic）
 // v1.6.21: runCopyIn（import_data 的 PG COPY FROM STDIN 批路径）
-const { getPool, runQuery, runQueryStream, runCopyIn, withTransaction } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub });
+const { getPool, runQuery, runQueryStream, runCopyIn, withTransaction, getObs, markStale } = createPoolManager({ cfg, getSource, clampInt, sqliteFilePath, scrub, classify: classifyError }); // v1.6.56: classifyError 注入观测面（错误码分布）
 
 /* ------------------------------ identifier utils ---------------------------- */
 
@@ -547,6 +668,8 @@ export function countTruncatedCells(rows) {
   if (!Array.isArray(rows)) return 0;
   let n = 0;
   for (const r of rows) {
+    // v1.6.36 保持 Object.values 形态：for-in+hasOwn 零分配版同脚本对照反而慢 2.6×
+    //（43.9 vs 17.1µs@1000 行，噪声 0.2µs）——V8 原生 values+短闭包快于 JS 迭代协议，勿再试。
     if (r && typeof r === "object" && Object.values(r).some((v) => typeof v === "string" && v.length > max)) n++;
   }
   return n;
@@ -559,8 +682,97 @@ export function countTruncatedCells(rows) {
  *     两条路径口径不一致，往返对比会对不上）；文件大小由 20MB 导出上限兜底。
  *  2) Buffer 输出完整十六进制（与 csvCell 同口径，往返可还原），不再用 <binary …> 预览标记。
  * 工具响应面行为不变（截断 + 8 字节预览）。口令清洗两条路径都在出口统一做（scrub）。
+ * v1.6.36: 序列化改走「规范化一遍 + 原生 JSON.stringify」——逐值 replacer 回调是 CPU profile
+ * 头号自耗时（stringify 路径 30%），其机制成本（每值一次 JS 调用）无法在 replacer 形态内消除。
+ * 旧实现冻结为 stringifyReplacer 供 selftest 差分钉对照；两者对同一载荷逐字节恒等（含 toJSON
+ * 语义序与各特殊分支，bench_ser_v1636 9/9 恒等门 + 同脚本对照 −15.8%@1000 行）。
  */
+function binPreviewFrom(buf) {
+  const hex = buf.subarray(0, 8).toString("hex");
+  return buf.length > 8 ? `<binary ${buf.length} bytes: ${hex}…>` : `<binary ${buf.length} bytes: ${hex}>`;
+}
+
+/**
+ * 属性值入口：先走 toJSON（spec 序 25.5.2.1 第 2 步——仅 Object/BigInt 查 toJSON，且只作用于
+ * 属性原始值一次：toJSON 的返回值不再套用 toJSON，但其属性照常走本入口），再进 normPost。
+ * 原始值快路径就地返回（行集叶子占绝对多数，免二跳调用）。
+ */
+function normVal(v, max, exportMode, key) {
+  const t = typeof v;
+  if (t === "string") {
+    // 超长文本先清洗口令再截断，避免口令被截成前缀后清洗失效
+    return v.length > max ? truncateCell(scrub(v), max) : v;
+  }
+  if (t === "number") return Number.isFinite(v) ? v : String(v);
+  if (t === "object" ? v === null : t !== "bigint") return v; // null/布尔/函数/符号/undefined 直通
+  if (typeof v.toJSON === "function") v = v.toJSON(key);
+  return normPost(v, max, exportMode);
+}
+
+/** toJSON 之后的值处理（镜像旧 replacer 分支 + 原生派发预处理）；复制式，不改调用方可见数据。 */
+function normPost(v, max, exportMode) {
+  const t = typeof v;
+  if (t === "string") return v.length > max ? truncateCell(scrub(v), max) : v;
+  if (t === "number") return Number.isFinite(v) ? v : String(v);
+  if (t === "bigint") return v.toString();
+  if (t === "object" ? v === null : true) return v;
+  // v1.6.16: live 字节视图（Uint8Array/Buffer/DataView）统一十六进制口径——node:sqlite 的
+  // BLOB 返回 Uint8Array（无 toJSON），旧版只认 {type:"Buffer"} 形状，Uint8Array 被 JSON
+  // 序列化成 {"0":..} 键值垃圾（对抗测试台实测抓获）；mysql2/pg 的 Buffer 实例先经 toJSON
+  // 转成 {type:"Buffer"} 形状（下一分支），链式 toJSON 直出的 Buffer 视图走本分支，与旧口径同
+  if (ArrayBuffer.isView(v)) {
+    return exportMode ? Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("hex") : binPreviewFrom(Buffer.from(v.buffer, v.byteOffset, v.byteLength));
+  }
+  if (v.type === "Buffer" && Array.isArray(v.data)) {
+    if (exportMode) return Buffer.from(v.data).toString("hex");
+    // v1.0.2: 附带前 8 字节十六进制预览——二进制主键/UUID 场景下，只有 <binary N bytes> 无法辨认行
+    return binPreviewFrom(Buffer.from(v.data));
+  }
+  if (Array.isArray(v)) {
+    const out = new Array(v.length);
+    for (let i = 0; i < v.length; i++) out[i] = normVal(v[i], max, exportMode, String(i));
+    return out;
+  }
+  // 装箱原始值（new Number/String/Boolean、Object(bigint)）必须原样交还：原生派发按内部槽
+  // 展开（[[NumberData]] 等），如 new Number(NaN)→null、Object(5n)→TypeError；复制成 {}
+  // 会偏离冻结真源。constructor 快筛 + 品牌检验防伪造（{constructor:Number} 按普通对象复制）。
+  const c = v.constructor;
+  if (c === Number || c === String || c === Boolean || c === BigInt) {
+    try {
+      if (c === Number) Number.prototype.valueOf.call(v);
+      else if (c === String) String.prototype.valueOf.call(v);
+      else if (c === Boolean) Boolean.prototype.valueOf.call(v);
+      else BigInt.prototype.valueOf.call(v);
+      return v;
+    } catch { /* 伪造 constructor：落回普通对象复制 */ }
+  }
+  const out = {};
+  for (const k in v) {
+    if (!Object.hasOwn(v, k)) continue; // 与 JSON.stringify 同：只序列化自有可枚举字符串键
+    const nv = normVal(v[k], max, exportMode, k);
+    // toJSON 键：可调用值在旧路径整键省略；若复制进副本，终扫会二次调用（破坏"只作用一次"
+    // 语义，如 toJSON 返 {toJSON:…} 的链式形）。函数值省略 = 旧输出同，且无二次调用。
+    if (k === "toJSON" && typeof nv === "function") continue;
+    // __proto__ 列名：赋值语义会改原型而非建自有键（原生走 DefineOwnProperty），特例建自有键。
+    if (k === "__proto__") { Object.defineProperty(out, k, { value: nv, enumerable: true, configurable: true, writable: true }); continue; }
+    out[k] = nv;
+  }
+  return out;
+}
+
 export function stringify(v, opts = {}) {
+  const exportMode = opts.export === true;
+  const pretty = process.env.DBMCP_PRETTY === "1";
+  const max = exportMode ? Infinity : maxCellChars();
+  // 第二参是 replacer 槽，必须显式 null 才能让第三参 space 生效（pretty 由此生效）
+  return JSON.stringify(normVal(v, max, exportMode, ""), null, pretty ? 2 : undefined);
+}
+
+/**
+ * v1.6.36 冻结真源：逐值 replacer 旧实现。产品路径已走 stringify（规范化 walk）；本函数仅用于
+ * selftest 差分钉与微基准对照（stringify(x) 必须与 stringifyReplacer(x) 逐字节恒等）。
+ */
+export function stringifyReplacer(v, opts = {}) {
   const exportMode = opts.export === true;
   const pretty = process.env.DBMCP_PRETTY === "1";
   const max = exportMode ? Infinity : maxCellChars();
@@ -690,6 +902,7 @@ const TOOLS = [
         source: { type: "string", description: "Source id from list_sources." },
         sql: { type: "string", description: "A single read-only statement. Prefer an explicit LIMIT for large tables." },
         max_rows: { type: "integer", minimum: 1, maximum: 5000, description: "Max rows returned (default from config, usually 200). Values above the max are clamped to the max, not rejected." },
+        offset: { type: "integer", minimum: 0, maximum: 1000000, description: "Skip the first N rows and return the following page (default 0). Pair with max_rows and a stable ORDER BY for paging big tables." },
       },
       required: ["source", "sql"],
       additionalProperties: false,
@@ -729,6 +942,7 @@ const TOOLS = [
         limit: { type: "integer", minimum: 1, maximum: 50, description: "Max rows to sample (default 10). Values above the max are clamped to the max, not rejected." },
         where: { type: "string", description: "Optional WHERE condition (boolean expression, without the WHERE keyword)." },
         order_by: { type: "string", description: "\"column\" or \"column ASC|DESC\" (e.g. created_at DESC). Defaults to ascending." },
+        offset: { type: "integer", minimum: 0, maximum: 1000000, description: "Skip the first N rows and sample the following page (default 0). Use a stable order_by when paging." },
       },
       required: ["source", "table"],
       additionalProperties: false,
@@ -910,6 +1124,34 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
+  {
+    name: "server_stats",
+    title: "Server Observability Snapshot",
+    description:
+      "In-memory observability snapshot: per-source query counters (count/errors/slow/total_ms/avg_ms), recent slow queries (last 32, scrubbed, threshold from DBMCP_SLOW_MS default 2000ms), " +
+      "and an aggregate report (error-code distribution + slow queries by statement type). " +
+      "Always available (no log-file dependency); fails open — observability never changes query behavior. Returns version, uptime_s, per_source/recent_slow/report. Example: {}.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "reload_config",
+    title: "Reload Connection Config",
+    description:
+      "Reload dbmcp.config.json from disk WITHOUT restarting the server (multi-environment switch / post-import refresh). " +
+      "Safe order: parse → shape validation → every source's enc decrypt probe → commit (in-flight queries are never killed; stale connection pools close lazily when idle). " +
+      "Any validation failure aborts with E_CONFIG and the previous config stays active. Returns {sources, init_required, changed}. Example: {}.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 ];
 
 const INSTRUCTIONS =
@@ -988,7 +1230,7 @@ async function listTables(args) {
          FROM sqlite_master
         WHERE type IN ('table', 'view')
           AND substr(name, 1, 7) <> 'sqlite_'
-          AND (? IS NULL OR name LIKE '%' || ? || '%')
+          AND (? IS NULL OR instr(lower(name), lower(?)) > 0)
         ORDER BY name
         LIMIT ${limit + 1}`,
       [nameLike, nameLike]
@@ -1002,7 +1244,7 @@ async function listTables(args) {
               NULLIF(TABLE_COMMENT, '') AS comment
          FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = COALESCE(?, DATABASE())
-          AND (? IS NULL OR TABLE_NAME LIKE CONCAT('%', ?, '%'))
+          AND (? IS NULL OR INSTR(LOWER(TABLE_NAME), LOWER(?)) > 0)
         ORDER BY TABLE_NAME
         LIMIT ${limit + 1}`,
       [schema, nameLike, nameLike]
@@ -1018,7 +1260,7 @@ async function listTables(args) {
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = COALESCE($1, 'public') AND c.relkind IN ('r','p','v','m')
-          AND ($2::text IS NULL OR c.relname ILIKE '%' || $2 || '%')
+          AND ($2::text IS NULL OR strpos(lower(c.relname), lower($2)) > 0)
         ORDER BY c.relname
         LIMIT ${limit + 1}`,
       [schema, nameLike]
@@ -1174,30 +1416,63 @@ async function doQuery(args) {
     guardReadOnly(args.sql, maskDialect(src.type));
   }
   const maxRows = intArg(args.max_rows, "max_rows", 1, 5000, cfg.maxRows);
+  // v1.6.53: offset 分页——跳过前 N 行取后续页（intArg 正整数校验 0..1e6，零注入面）。
+  const offset = intArg(args.offset, "offset", 0, 1_000_000, 0);
 
-  const finalSql = enforceLimit(args.sql, maxRows, maskDialect(src.type));
+  const finalSql = enforceLimit(args.sql, maxRows, maskDialect(src.type), offset);
+  const bareSql = stripStatementTail(args.sql, maskDialect(src.type));
+  let executedSql = finalSql;
   let qres;
   try {
     qres = await runQuery(args.source, finalSql);
   } catch (e) {
     // v1.0.3: 自动 LIMIT 的外层派生表要求列名唯一——未加别名的重名列（如 SELECT a.name, b.name）
     // 在 MySQL 上报 ER_DUP_FIELDNAME，透传原生错误会让用户以为 SQL 本身写错。给出可操作的提示。
+    // v1.6.34: 该错若由我们的包裹引起（同一语句不包裹时 MySQL 不报错，PG/SQLite 也不报），
+    // 先降级重试裸语句——行数由执行后截断兜底（与括号复合/SHOW 同口径），重名结果列由
+    // runQuery 的 __N 消歧映射兜住、值不丢。用户自己写的派生表重名列重试仍报同一错时，
+    // 回退到可操作的加别名提示。
     if (e?.code === "ER_DUP_FIELDNAME") {
-      throw new ToolError("E_PARAM", 
-        "自动 LIMIT 生成的派生表要求列名唯一：请为重名列添加别名（如 SELECT u.name AS user_name, o.name AS order_name）后重试。" +
-        `（原始错误: ${e.message}）`
-      );
+      if (finalSql !== bareSql) {
+        try {
+          qres = await runQuery(args.source, bareSql);
+          executedSql = bareSql;
+        } catch (e2) {
+          if (e2?.code === "ER_DUP_FIELDNAME") {
+            throw new ToolError("E_PARAM",
+              "结果列或派生表列名重复：请为重名列添加别名（如 SELECT u.name AS user_name, o.name AS order_name）后重试。" +
+              `（原始错误: ${e2.message}）`
+            );
+          }
+          throw e2;
+        }
+      } else {
+        throw new ToolError("E_PARAM",
+          "结果列或派生表列名重复：请为重名列添加别名（如 SELECT u.name AS user_name, o.name AS order_name）后重试。" +
+          `（原始错误: ${e.message}）`
+        );
+      }
+    } else {
+      throw e;
     }
-    throw e;
   }
   const { rows, fields, ms, renamed } = qres;
-  const truncated = rows.length > maxRows;
-  const visible = rows.slice(0, maxRows);
+  // v1.6.53: offset 分页双层语义——包裹语句（SELECT/WITH）OFFSET 已在 enforceLimit 外层生效，
+  // rows 为预偏移页（slice 不再偏移，truncated=探测行判定下一页存在性）；不包裹语句（括号复合/
+  // SHOW）走执行后 slice 偏移。包裹判定与 enforceLimit 输出前缀耦合（手写钉锁定该耦合）。
+  const wrappedOffset = offset > 0 && /^SELECT \* FROM \(\n/.test(finalSql);
+  const truncated = wrappedOffset ? rows.length > maxRows
+    : offset > 0 ? rows.length > offset + maxRows
+    : rows.length > maxRows;
+  const visible = wrappedOffset ? rows.slice(0, maxRows)
+    : offset > 0 ? rows.slice(offset, offset + maxRows)
+    : rows.slice(0, maxRows);
   return {
     source: args.source,
-    sql_executed: finalSql,
+    sql_executed: executedSql,
     row_count: visible.length,
     truncated,
+    ...(offset ? { offset } : {}),   // v1.6.53: 仅 offset>0 回显（默认响应形状字节不变）
     truncated_cells: countTruncatedCells(visible),   // v1.0.1: 含被截断超长单元格的行数
     duration_ms: ms,
     columns: fields,
@@ -1213,7 +1488,7 @@ async function doQuery(args) {
  * v1.0.1: 新增 where 过滤；order_by 接受 "col" / "col ASC" / "col DESC"（旧版只接受裸列名，
  * 传 "created_at DESC" 会抛 Invalid identifier —— 而"看最新几条"正是最高频用法）。
  */
-export function sampleSql(dbType, ref, { where, orderBy, limit } = {}) {
+export function sampleSql(dbType, ref, { where, orderBy, limit, offset } = {}) {
   let w = "";
   if (where) {
     // v1.1.1: 抽取为 guard.checkWhereFragment（与 count_rows / distinct_values 共用同一校验）
@@ -1226,7 +1501,9 @@ export function sampleSql(dbType, ref, { where, orderBy, limit } = {}) {
     if (!m) throw new ToolError("E_PARAM", "Invalid order_by: use \"column\" or \"column ASC|DESC\" (e.g. created_at DESC).");
     o = ` ORDER BY ${quoteIdent(dbType, m[1])}${m[2] ? " " + m[2].toUpperCase() : ""}`;
   }
-  return `SELECT * FROM ${ref}${w}${o} LIMIT ${limit}`;
+  // v1.6.53: offset 分页——offset>0 追加 OFFSET（intArg 产物纯数字，零注入面）；
+  // offset=0/缺省/负（handler 层 intArg 已拒负）不追加（旧 SQL 形状字节不变，既有钉零漂移）。
+  return `SELECT * FROM ${ref}${w}${o} LIMIT ${limit}${offset > 0 ? ` OFFSET ${offset}` : ""}`;
 }
 
 async function sampleData(args) {
@@ -1234,8 +1511,10 @@ async function sampleData(args) {
   const split = splitIdent(args.table);
   const schema = args.schema || split.schema || (src.type === "mysql" || src.type === "sqlite" ? null : "public");
   const limit = intArg(args.limit, "limit", 1, 50, 10);
+  // v1.6.53: offset 分页（跳过前 N 行取后续页；深翻页建议配合稳定 order_by）
+  const offset = intArg(args.offset, "offset", 0, 1_000_000, 0);
   const sql = sampleSql(src.type, tableRef(src.type, schema, split.table), {
-    where: args.where, orderBy: args.order_by, limit,
+    where: args.where, orderBy: args.order_by, limit, offset,
   });
   guardReadOnly(sql, maskDialect(src.type)); // 纵深防御：拼装后的语句再过一次只读守卫
   const { rows, fields, ms } = await runQuery(args.source, sql);
@@ -1243,6 +1522,7 @@ async function sampleData(args) {
     source: args.source, table: split.table, where: args.where || null, sql_executed: sql, row_count: rows.length,
     truncated_cells: countTruncatedCells(rows),
     duration_ms: ms, columns: fields, rows,
+    ...(offset ? { offset } : {}),   // v1.6.53: 仅 offset>0 回显（默认响应形状字节不变）
   };
 }
 
@@ -1363,7 +1643,7 @@ export function findColumnsSql(dbType, { schema, column, limit }) {
                    NULLIF(COLUMN_COMMENT, '') AS comment
               FROM information_schema.COLUMNS
              WHERE TABLE_SCHEMA = COALESCE(?, DATABASE())
-               AND COLUMN_NAME LIKE CONCAT('%', ?, '%')
+               AND INSTR(LOWER(COLUMN_NAME), LOWER(?)) > 0
              ORDER BY TABLE_NAME, ORDINAL_POSITION
              LIMIT ${limit + 1}`,
       values: [schema, column],
@@ -1388,7 +1668,7 @@ export function findColumnsSql(dbType, { schema, column, limit }) {
            WHERE n.nspname = COALESCE($1, 'public')
              AND c.relkind IN ('r', 'p', 'v', 'm')
              AND a.attnum > 0 AND NOT a.attisdropped
-             AND a.attname ILIKE '%' || $2 || '%'
+             AND strpos(lower(a.attname), lower($2)) > 0
            ORDER BY c.relname, a.attnum
            LIMIT ${limit + 1}`,
     values: [schema, column],
@@ -1649,7 +1929,13 @@ export function importBatchSize(dbType, colCount) {
   const cols = Math.max(1, Math.floor(Number(colCount) || 1));
   // 预算裕量: sqlite 20000 < 32766（编译默认，且 25000 实测可用）; mysql/pg 50000 < 65535
   const budget = dbType === "sqlite" ? 20000 : 50000;
-  return Math.max(1, Math.min(1000, Math.floor(budget / cols)));
+  // v1.6.46: 封顶 1000→5000——写段批大小敏感面（bench_r1646，30k 行双独立 run 一致）：
+  // mysql @5000 +17~20%（@10000 +26.6% 但 pg 平台化不取）、pg COPY @5000 +32.2%（2.8× dup
+  // 臂地板）、sqlite @5000 +61~64%（双 run 一致）；批耗时亚线性（固定往返开销摊薄）。窄表
+  // cols≤4(sqlite)/≤10(mysql|pg) 拿满 5000，宽表仍由占位符预算兜底（cols=60 不变 333/833）。
+  // 已知代价（如实）：约束错回退逐行定位的最坏扫描上界 1000→5000 行（仅错误路径，批序语义不变）；
+  // 取消粒度按批——5000 行批耗时 ~4-37ms，取消延迟无感。失败注入实测文案形状/1499 行数不变。
+  return Math.max(1, Math.min(5000, Math.floor(budget / cols)));
 }
 
 /**
@@ -1754,20 +2040,24 @@ export function parseCsv(text) {
     parts = [];
     return field;
   };
+  // v1.6.47: charCodeAt 数值分派（语义逐字不变，差分门 12/12 恒等：对抗语料 + 真实 10k 全链
+  // valueRows）——src[i] 逐字符产生 1 字符串，charCodeAt 数字比较免掉该分配与字符串比较；
+  // 解析链同脚本 A/B（bench_r1647_mech）：10k −22.0%（46× dup 地板）、30k −17.2%（15×）。
+  const QUOTE = 34, COMMA = 44, CR = 13, LF = 10;
   for (let i = 0; i < src.length; i++) {
-    const c = src[i];
+    const c = src.charCodeAt(i);
     if (inQuotes) {
-      if (c === '"') {
-        if (src[i + 1] === '"') { endRun(i); parts.push('"'); i += 1; }
+      if (c === QUOTE) {
+        if (src.charCodeAt(i + 1) === QUOTE) { endRun(i); parts.push('"'); i += 1; }
         else { endRun(i); inQuotes = false; }
       } else if (runStart === -1) runStart = i;
       continue;
     }
-    if (c === '"') { endRun(i); inQuotes = true; continue; }
-    if (c === ",") { row.push(takeField(i)); continue; }
-    if (c === "\n" || c === "\r") {
+    if (c === QUOTE) { endRun(i); inQuotes = true; continue; }
+    if (c === COMMA) { row.push(takeField(i)); continue; }
+    if (c === LF || c === CR) {
       const end = i;
-      if (c === "\r" && src[i + 1] === "\n") i += 1;
+      if (c === CR && src.charCodeAt(i + 1) === LF) i += 1;
       row.push(takeField(end)); rows.push(row); row = []; continue;
     }
     if (runStart === -1) runStart = i;
@@ -1804,22 +2094,24 @@ export function createCsvSegmenter() {
       pending += text;
       let i = scanPos;
       const end = pending.length;
+      // v1.6.47: charCodeAt 数值分派（与 parseCsv 同款，差分门 12/12 恒等；链 A/B −17~22%）
+      const QUOTE = 34, COMMA = 44, CR = 13, LF = 10;
       while (i < end) {
-        const c = pending[i];
+        const c = pending.charCodeAt(i);
         // 收尾定性暂缓：段尾 lookahead 未知的字符（引号外 `\r` 待判 CRLF、引号内 `"` 待判转义对）
-        if (i === end - 1 && ((!inQuotes && c === "\r") || (inQuotes && c === '"'))) break;
+        if (i === end - 1 && ((!inQuotes && c === CR) || (inQuotes && c === QUOTE))) break;
         if (inQuotes) {
-          if (c === '"') {
-            if (pending[i + 1] === '"') { fieldTouched = true; i += 1; }
+          if (c === QUOTE) {
+            if (pending.charCodeAt(i + 1) === QUOTE) { fieldTouched = true; i += 1; }
             else inQuotes = false;
           } else fieldTouched = true;
           i += 1;
           continue;
         }
-        if (c === '"') { inQuotes = true; i += 1; continue; }
-        if (c === ",") { sawComma = true; i += 1; continue; }
-        if (c === "\n" || c === "\r") {
-          if (c === "\r" && pending[i + 1] === "\n") i += 1;
+        if (c === QUOTE) { inQuotes = true; i += 1; continue; }
+        if (c === COMMA) { sawComma = true; i += 1; continue; }
+        if (c === LF || c === CR) {
+          if (c === CR && pending.charCodeAt(i + 1) === LF) i += 1;
           if (sawComma || fieldTouched) cut = i + 1; // 非空记录终止→切点前进；空记录不设切点（归下一段）
           fieldTouched = false;
           sawComma = false;
@@ -2216,6 +2508,26 @@ export function createBatchWriter(write, batchBytes = 262144) {
  * 数字/bigint 不中和（"-5" 是公式风险面但 -5 是数值，改写会破坏数值语义；字符串 "-5" 仍中和）。
  * neutralize=false 为逃生口（raw_formulas），仅供下游确实要公式语义时使用。
  */
+/**
+ * v1.6.43: 数字口令的 CSV 单元格级处置（纯函数，供 selftest 直接断言）。
+ * 触发背景：纯数字口令（≥4 位）在字节域整内容清洗里会把裸数字单元（值恰等于口令）洗成 ***
+ * → 导出数据损坏（bench_r1643 实证：`1,424242,...` → `1,***,...`，且长数字片段 `4242420`
+ * → `***0` 连坐）；含口令子串的文本单元则是真实泄漏面必须掩。
+ * 规则：全数字单元（/^\\d+$/）视为数据值/长数字片段整体保真；其余单元含数字口令子串 → 掩为 ***。
+ * 与 JSON 口径的显式不对称（防漂移钉住）：JSON 有引号结构可区分「字符串值恰等于口令」（V1.6.42
+ * 掩之）与数字 token（保真）；CSV 无引号结构可分（文本 "424242" 与数字 424242 渲染同形），
+ * 按数据保真优先整体保真——「文本单元恰等于口令」的泄漏面在 CSV 是已接受取舍。
+ * 只对 ≥4 位纯数字键生效（DIGIT_KEY_RE，与 SECRET_LIST 收录口径一致）；digitKeys 为空恒直通。
+ */
+export function csvCellDigitMask(s, digitKeys) {
+  if (!digitKeys.length || typeof s !== "string") return s;
+  if (/^\d+$/.test(s)) return s;
+  for (const dk of digitKeys) {
+    if (s.includes(dk)) s = s.split(dk).join("***");
+  }
+  return s;
+}
+
 export function csvCell(v, neutralize = true) {
   let s;
   let isStr = false;
@@ -2249,11 +2561,12 @@ export function unneutralizeCell(v) {
  * streamCsvLines 改走零物化融合循环（见各函数注释）。本函数保留行串物化形态即为差分钉的真源：
  * 流式三链 vs 本函数的逐字节恒等由自测模糊钉锁定（非同义反复——两套实现）。
  */
-function eachCsvLine(fields, rows, neutralize, maxBytes, emit) {
+function eachCsvLine(fields, rows, neutralize, maxBytes, emit, digitKeys = []) {
   let neutralized = 0;
   const cell = (v) => {
     if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
-    return csvCell(v, neutralize);
+    // v1.6.43: 数字口令单元格级处置（见 csvCellDigitMask 注释）；digitKeys 默认空=零行为变化
+    return csvCellDigitMask(csvCell(v, neutralize), digitKeys);
   };
   const header = fields.map((f) => cell(f)).join(",");
   let bytes = Buffer.byteLength(header, "utf8") + 2;
@@ -2276,9 +2589,9 @@ function eachCsvLine(fields, rows, neutralize, maxBytes, emit) {
  * 组装 CSV 字符串（v1.5.1 早停语义）。保留字符串形态作为保真真源：孤立代理项行（字节域会与
  * 字面 U+FFFD 混同）的回落路径要维持旧版字符串级 scrub 语义时走这里。
  */
-export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES, digitKeys = []) {
   const lines = [];
-  const { neutralized } = eachCsvLine(fields, rows, neutralize, maxBytes, (line) => lines.push(line));
+  const { neutralized } = eachCsvLine(fields, rows, neutralize, maxBytes, (line) => lines.push(line), digitKeys);
   return { content: lines.join("\r\n") + "\r\n", formula_cells_neutralized: neutralized };
 }
 
@@ -2295,20 +2608,20 @@ export function exportToCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPO
  * saw_lone_surrogate：任一格含孤立代理项时为 true——这种内容物化成字节后与字面 U+FFFD 不可分，
  * 字节域口令匹配可能与字符串域分叉，调用方应回落字符串链（见 doExportData）。
  */
-export function exportToCsvBuffer(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
-  const scan = measureCsv(fields, rows, neutralize, maxBytes);
+export function exportToCsvBuffer(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES, digitKeys = []) {
+  const scan = measureCsv(fields, rows, neutralize, maxBytes, digitKeys);
   const buf = Buffer.allocUnsafe(scan.totalBytes);
   const n = fields.length;
   let off = 0;
   for (let j = 0; j < n; j++) {
     if (j) off += buf.write(",", off, "utf8");
-    off += buf.write(csvCell(fields[j], neutralize), off, "utf8");
+    off += buf.write(csvCellDigitMask(csvCell(fields[j], neutralize), digitKeys), off, "utf8");
   }
   off += buf.write("\r\n", off, "utf8");
   for (const r of rows) {
     for (let j = 0; j < n; j++) {
       if (j) off += buf.write(",", off, "utf8");
-      off += buf.write(csvCell(r?.[fields[j]], neutralize), off, "utf8");
+      off += buf.write(csvCellDigitMask(csvCell(r?.[fields[j]], neutralize), digitKeys), off, "utf8");
     }
     off += buf.write("\r\n", off, "utf8");
   }
@@ -2326,7 +2639,7 @@ export function exportToCsvBuffer(fields, rows, neutralize = true, maxBytes = MA
  * totalBytes = 内容字节数（行字节 + 每行 2 字节 CRLF，含尾行），neutralized = 公式中和计数。
  * 超 maxBytes 抛 E_LIMIT（组装期早停，文案如实"未写盘"；逐行边界与 eachCsvLine 同点位）。
  */
-export function measureCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
+export function measureCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPORT_BYTES, digitKeys = []) {
   let neutralized = 0;
   let sawLone = false;
   const n = fields.length;
@@ -2336,7 +2649,7 @@ export function measureCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPOR
   for (let j = 0; j < n; j++) {
     const v = fields[j];
     if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
-    const s = csvCell(v, neutralize);
+    const s = csvCellDigitMask(csvCell(v, neutralize), digitKeys); // v1.6.43: 与直写/字符串链同口径（掩码后字节）
     if (j) lb += 1;
     lb += Buffer.byteLength(s, "utf8");
     if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) sawLone = true;
@@ -2348,7 +2661,7 @@ export function measureCsv(fields, rows, neutralize = true, maxBytes = MAX_EXPOR
     for (let j = 0; j < n; j++) {
       const v = r?.[fields[j]];
       if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
-      const s = csvCell(v, neutralize);
+      const s = csvCellDigitMask(csvCell(v, neutralize), digitKeys);
       if (j) lb += 1;
       lb += Buffer.byteLength(s, "utf8");
       if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) sawLone = true;
@@ -2419,15 +2732,32 @@ export function createCsvRowSink(write, fields, list, neutralize = true, maxByte
   let sawLone = false;
   let bytes = 0;
   const abortOnSentinel = opts.sentinel === "abort";
+  const digitKeys = Array.isArray(opts.digitKeys) ? opts.digitKeys : []; // v1.6.43: 数字口令单元格级处置（默认空=零行为变化）
   const overLimit = () => new ToolError("E_LIMIT", `导出内容超过上限 ${maxBytes} 字节（组装期早停，未写盘）。请用 limit 参数缩小范围后重试。`);
   const cell = (v) => {
-    if (neutralize && typeof v === "string" && /^[=+\-@\t\r]/.test(v)) neutralized++;
-    const s = csvCell(v, neutralize);
+    // v1.6.40: csvCell 内联（单次中和检测）——旧形态 cell 与 csvCell 各测一次
+    // /^[=+\-@\t\r]/（重复预检），内联后 30k 行发射 clean/dirty 各 −4.7%/−5.7%（4.4×/5.1×
+    // 噪声地板，bench_r1640_mech 三数据集字节门恒等）。csvCell 本体保留为回落链真源
+    //（exportToCsv 差分钉盯防两形漂移）。
+    // v1.6.40 判据（勿再试）：行级「洁净快路径」（合并正则 + 整行 join 单次 put）实测
+    // 三数据集全负（−1.4~−7.8%，负 15~37× 地板）——每字段一次较重合并正则 + 逐行 parts
+    // 数组/join 分配贵过现有逐字段 put；与 V1.6.36/38 结论同根因：重构发射形态打不过
+    // 现有融合形态。bench_r1640_mech.mjs 存档。
+    let s, isStr = false;
+    if (v === null || v === undefined) s = "";
+    else if (typeof v === "bigint") s = v.toString();
+    else if (typeof v === "number") s = String(v);
+    else if (v && typeof v === "object" && ArrayBuffer.isView(v)) s = Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("hex");
+    else if (v && typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) s = Buffer.from(v.data).toString("hex");
+    else { s = String(v); isStr = true; }
+    if (neutralize && isStr && /^[=+\-@\t\r]/.test(s)) { s = "'" + s; neutralized++; }
     if (!sawLone && ANY_SURROGATE.test(s) && LONE_SURROGATE.test(s)) {
       sawLone = true;
       if (abortOnSentinel) throw new ContentSentinelAbort();
     }
-    return s;
+    // v1.6.43: 数字口令单元格级处置（引号转义后套用；裸数字单元不引号→全数字判定仍成立，
+    // 引号包裹单元含子串→掩入引号内，*** 无转义字符零影响）
+    return csvCellDigitMask(/[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s, digitKeys);
   };
   const line = (get) => {
     let lb = 2;
@@ -2471,8 +2801,8 @@ export function createCsvRowSink(write, fields, list, neutralize = true, maxByte
  * 早停仅在两遍间行集被改的互斥场景触发，届时已刷出的批只落临时文件、目标文件不出现
  *（原子占位未让位）。
  */
-export function streamCsvLines(write, fields, rows, list, neutralize = true, maxBytes = MAX_EXPORT_BYTES) {
-  const sink = createCsvRowSink(write, fields, list, neutralize, maxBytes);
+export function streamCsvLines(write, fields, rows, list, neutralize = true, maxBytes = MAX_EXPORT_BYTES, opts = {}) {
+  const sink = createCsvRowSink(write, fields, list, neutralize, maxBytes, opts);
   for (const r of rows) sink.row(r);
   return sink.finish().written;
 }
@@ -2517,7 +2847,7 @@ export function resolveExportTarget(dir, args, src, ext) {
  * 错误序（与物化链的差异，仅共现场合可观察）：文件名解析与存在预检先于查询（快速失败预检，
  * 省去无谓等待）——E_PARAM → E_DB → E_LIMIT；物化链为 E_DB → E_LIMIT → E_PARAM。
  */
-async function exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0) {
+async function exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0, digitKeys = [], plainKeys = SECRET_LIST) {
   const file = resolveExportTarget(dir, args, src, ".csv");
   // 快速失败预检（省去无谓等待）；跨进程互斥由 writeFileStreamAtomic 的原子占位最终强制
   if (fs.existsSync(file) && args.overwrite !== true) {
@@ -2533,12 +2863,12 @@ async function exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFor
     // 碎片生命周期契约。writeFn 为 async（writeFileStreamAtomic v1.6.32 混合形态）：驱动流
     // 消费完成后才做原子占位。
     const bw = createBatchWriter((b) => { fs.writeSync(fd, b); });
-    const sink = createCsvRowSink(bw.push, null, SECRET_LIST, neutralizeFormulas, MAX_EXPORT_BYTES, { sentinel: "abort" });
+    // v1.6.43: 数字口令从管线列表剔除（单元格级处置在 sink 内完成，见 csvCellDigitMask）
+    const sink = createCsvRowSink(bw.push, null, plainKeys, neutralizeFormulas, MAX_EXPORT_BYTES, { sentinel: "abort", digitKeys });
     await runQueryStream(args.source, finalSql, {
       onFields: (names) => sink.header(names),
       onRow: (r) => {
-        console.error("TRACE server:2539 onRow rowCount=%d limit=%d", rowCount, limit);
-        if (rowCount >= limit) { truncated = true; console.error("TRACE server:2539 TRUNCATE rowCount=%d >= limit=%d", rowCount, limit); return false; }
+        if (rowCount >= limit) { truncated = true; return false; }
         sink.row(r);
         rowCount++;
         return true;
@@ -2555,7 +2885,7 @@ async function exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFor
     }
   }, args.overwrite === true);
   return {
-    source: args.source, file, format: "csv", row_count: rowCount, truncated, bytes,  // TRACE rowCount=%d limit=%d at return  // TRACE rowCount=%d limit=%d at return
+    source: args.source, file, format: "csv", row_count: rowCount, truncated, bytes,
     duration_ms: Date.now() - t0,
     formula_cells_neutralized: formulaCells,
     note: "文件已写入 MCP 服务所在机器的导出白名单目录。",
@@ -2588,10 +2918,14 @@ async function doExportData(args) {
   //    修改时第二遍快照可能与第一遍不同——与旧版 measureCsv/exportToCsv 两遍链同级，不新增
   //    劣化。
   const keySentinel = SECRET_LIST.some((k) => LONE_SURROGATE.test(k));
+  // v1.6.43: 数字口令拆两账——csvDigitKeys 走单元格级处置（见 csvCellDigitMask），
+  // csvPlainKeys 仍走字节域/管线清洗；两账并集 = SECRET_LIST（非数字键清洗面零变化）。
+  const csvDigitKeys = SECRET_LIST.filter((k) => DIGIT_KEY_RE.test(k));
+  const csvPlainKeys = SECRET_LIST.filter((k) => !DIGIT_KEY_RE.test(k));
   const pgStreamOk = src.type !== "postgres" || pgStreamable(finalSql);
   if (format === "csv" && !keySentinel && pgStreamOk) {
     try {
-      return await exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0);
+      return await exportCsvStreaming(args, src, dir, finalSql, limit, neutralizeFormulas, t0, csvDigitKeys, csvPlainKeys);
     } catch (e) {
       if (!isContentSentinelAbort(e)) throw e;
       // 内容哨兵命中：回落物化链（重查 → measureCsv 哨兵 → 字符串链 scrubToBuffer）
@@ -2610,17 +2944,20 @@ async function doExportData(args) {
     // INTEGER 经 setReadBigInts 是 BigInt，实测崩溃），且需要 Buffer 十六进制与 scrub 清洗。
     // v1.6.3: export 模式不截断单元格、Buffer 全量 hex——导出文件要数据保真（见 stringify 注释）。
     // v1.6.28: JSON 路径无逐行结构，仍走 字符串 → scrubToBuffer（内部守孤立代理门）。
+    // v1.6.43: 数字口令在 JSON 导出走 scrubWith 字符串链（V1.6.42 JSON 数字 token 上下文规则）——
+    // scrubToBuffer 字节域无上下文，会洗烂导出 JSON 的数字 token；仅在存在数字口令时才切换链路
+    //（罕见配置，字符串链代价可接受），无数字口令时字节域快路径不变。
     const content = stringify({ row_count: visible.length, truncated, columns: cols, rows: visible }, { export: true });
-    scrubbed = scrubToBuffer(content, SECRET_LIST);
+    scrubbed = csvDigitKeys.length ? Buffer.from(scrubWith(content, SECRET_LIST), "utf8") : scrubToBuffer(content, SECRET_LIST);
   } else {
     // v1.6.29: pass 1 只计量（顺带孤立代理哨兵）——早停文案"未写盘"仍如实（此时零写盘）。
     // 哨兵触发则回落字符串链（语义与旧版逐字节恒等，见 scrubToBuffer 注释）；
     // 未触发走流式直写（逐行 → scrub 管线 → fd，消 scrubbed 全量缓冲）。
-    const scan = measureCsv(cols, visible, neutralizeFormulas);
+    const scan = measureCsv(cols, visible, neutralizeFormulas, MAX_EXPORT_BYTES, csvDigitKeys);
     formulaCells = scan.neutralized;
     if (scan.saw_lone_surrogate || SECRET_LIST.some((k) => LONE_SURROGATE.test(k))) {
-      const content = exportToCsv(cols, visible, neutralizeFormulas).content;
-      scrubbed = scrubToBuffer(content, SECRET_LIST);
+      const content = exportToCsv(cols, visible, neutralizeFormulas, MAX_EXPORT_BYTES, csvDigitKeys).content;
+      scrubbed = scrubToBuffer(content, csvPlainKeys);
     } else {
       csvStreaming = true;
     }
@@ -2828,9 +3165,28 @@ async function findDatabase(args) {
   return { query: args.name, env_filter: args.env || null, match_count: out.length, matches: out, note: out.length ? "Use the returned id as 'source' in other tools." : "No match - try list_sources." };
 }
 
+/**
+ * v1.6.54: server_stats——内存观测快照（observe.mjs 纯函数簇 obsSnapshot）。
+ * 无文件依赖（DBMCP_ERR_LOG 未启用同样可用，无"未启用即空"歧义）；未初始化部署返回
+ * init_required 显式提示（与 list_sources 同形态，不静默空）；同步微秒级路径，无取消面。
+ */
+async function serverStats() {
+  if (cfg.__initRequired) {
+    return { init_required: true, note: "server_stats 需要连接配置（dbmcp.config.json）。请先执行 node import-dbeaver.mjs <DBeaver导出的.dbp文件> 初始化。" };
+  }
+  return { version: VERSION, ...obsSnapshot(getObs(), scrub) };
+}
+
 /* ------------------------------- MCP dispatch -------------------------------- */
 
 function resultContent(data) {
+  // v1.6.38 剖析定盘：此处 stringify(data)（pass1）与 stdio 主循环 JSON.stringify(resp)（pass2）
+  // 构成「双份序列化」——text 是嵌进信封的 JSON 字符串，pass2 的整体转义为 MCP text 协议必需，
+  // 非重复劳动可消除。单遍预转义 emitter 候选已实测**负优化 2×**（bench_r1638_mech：千行
+  // 1101µs vs 冻结链 554µs；字节恒等门 17/17 过仍慢——~2 万片 parts.push+join 打不过原生
+  // C++ stringify，与 V1.6.36 replacer 陷阱同根因）——勿再试 JS 逐片 emit 形态。
+  // 客户端侧唯一剩余杠杆是 pass1 的 normVal walk+clone（~120µs@千行）：zip 期归一化候选被
+  // V1.6.37 zipRows BigInt 保真钉阻断（行为不得漂移），勿在 zipRows 内改值语义。
   return { content: [{ type: "text", text: scrub(stringify(data)) }] };
 }
 
@@ -2917,6 +3273,8 @@ async function callTool(name, args, logMeta) {
       case "count_rows":      data = await countRows(args); break;
       case "execute":         data = await doExecute(args); break;
       case "create_table":    data = await doCreateTable(args); break;
+      case "server_stats":    data = await serverStats(); break;
+      case "reload_config":   data = reloadConfig(); break;
       case "find_database":   data = await findDatabase(args); break;
       default:
         errMeta = { code: "E_PARAM", retry: "no-retry" };

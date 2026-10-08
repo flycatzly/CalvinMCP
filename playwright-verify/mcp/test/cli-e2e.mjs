@@ -14,8 +14,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { runCli, ensureArtifactDirs, ARTIFACT_DIRS } from '../lib/cli.js';
+import { runCli, cliHealthCheck, ensureArtifactDirs, ARTIFACT_DIRS } from '../lib/cli.js';
 import { resolveCliRunner } from '../lib/runner.js';
 import { installStandaloneReap } from './reap.mjs';
 
@@ -145,6 +146,77 @@ if (headedSnap.ok) {
   const hs = await runCli({ cwd: ROOT, session: `${SESSION}-h`, subcommand: 'snapshot', args: [] });
   check('headed 下快照照样落盘', hs.ok && !!hs.artifacts?.snapshot && fs.existsSync(hs.artifacts.snapshot));
   await runCli({ cwd: ROOT, session: `${SESSION}-h`, subcommand: 'close', args: [] });
+}
+
+/* ---- 10) 通道配置自愈闭环（活体：陈旧配置 + 空缓存 → 自动重写并重试通过）---- */
+/*
+ * 真机复现 r35 诊断出的事故形态：配置是旧版生成器留下的 executablePath 钉
+ * （顶层死字段假钉），缓存被清后 open 报「Browser ... is not installed」。
+ * 自愈应当：分类命中 → 决策矩阵判 stale-exec-pin → 重写为 channel 式配置 →
+ * 重试闭环通过（系统自带 Edge，不需要 ms-playwright 缓存）。
+ * 沙箱做法：临时目录 + node_modules junction 到仓库（resolveCliRunner 只认
+ * cwd/node_modules 不上溯），PLAYWRIGHT_BROWSERS_PATH 指空目录模拟缓存被清。
+ */
+{
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-heal-e2e-'));
+  const emptyBrowsers = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-empty-browsers-'));
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(sandbox, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    linked = false;
+  }
+  if (!linked) {
+    log('SKIP  H24 活体自愈（本环境无法创建 node_modules 软链 —— 沙箱里找不到 CLI 执行层）');
+  } else {
+    const cfgDir = path.join(sandbox, '.playwright');
+    fs.mkdirSync(cfgDir, { recursive: true });
+    // 旧版生成器产物：机器生成标记 + 顶层 executablePath 钉（实测的死字段假钉形态）
+    fs.writeFileSync(path.join(cfgDir, 'cli.config.json'), JSON.stringify({
+      _说明: '由 setup-cli-config.mjs 生成。显式声明浏览器通道，保证源码目录与安装目录行为一致。',
+      _平台: `${process.platform} (x64)`,
+      _通道来源: '本地 chromium-1243',
+      browser: { browserName: 'chromium', executablePath: 'C:/no-such-cache/chromium-1243/chrome-win64/chrome.exe' },
+    }, null, 2), 'utf8');
+
+    const saved = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    process.env.PLAYWRIGHT_BROWSERS_PATH = emptyBrowsers;
+    let heal;
+    try {
+      heal = await cliHealthCheck({ cwd: sandbox, session: `e2e-heal-${Date.now().toString(36)}` });
+    } finally {
+      if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
+    }
+
+    const ah = heal.autoHeal;
+    check('autoHeal 如实标注（triggered/signature/decision/rewritten/retried）',
+      ah?.triggered === true && ah?.signature === 'browser-not-installed'
+      && ah?.decision === 'regenerate' && ah?.reason === 'stale-exec-pin'
+      && ah?.rewritten === true && ah?.retried === true,
+      JSON.stringify(ah || null));
+    const healedCfg = JSON.parse(fs.readFileSync(path.join(cfgDir, 'cli.config.json'), 'utf8'));
+    check('自愈重写的配置任一层级无 executablePath（路径钉正是锁死通道的根源）',
+      healedCfg.browser?.executablePath === undefined
+      && healedCfg.browser?.launchOptions?.executablePath === undefined
+      && typeof healedCfg._说明 === 'string' && healedCfg._说明.includes('setup-cli-config'),
+      JSON.stringify(healedCfg.browser || {}));
+    if (process.platform === 'win32') {
+      check('H24 活体自愈：空缓存下重写通道配置后重试通过（真浏览器，4 步全绿）',
+        heal.ok === true && ah?.recovered === true && heal.steps.length === 4 && heal.steps.every((s) => s.ok),
+        heal.ok ? heal.verdict : (heal.message || '').slice(0, 160));
+    } else {
+      log('SKIP  H24 活体自愈恢复断言（非 win32 无 msedge 通道，空缓存下重试必失败 —— 钉的是通道自愈在本平台可用）');
+    }
+    // 正常运行（无浏览器缺失）不该落 autoHeal 字段 —— 字段可选口径：缺字段≠异常。
+    const healthy = await cliHealthCheck({ cwd: ROOT, session: `e2e-heal-ok-${Date.now().toString(36)}` });
+    check('正常运行不落 autoHeal 字段（缺字段=未触发，不是异常也不是数据）',
+      healthy.ok === true && healthy.autoHeal === undefined,
+      `ok=${healthy.ok} autoHeal=${JSON.stringify(healthy.autoHeal ?? null)}`);
+  }
+  fs.rmSync(sandbox, { recursive: true, force: true });
+  fs.rmSync(emptyBrowsers, { recursive: true, force: true });
 }
 
 /* ---- 清理 ---- */

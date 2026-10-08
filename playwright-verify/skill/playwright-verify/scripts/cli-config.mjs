@@ -8,12 +8,21 @@
  * 决策矩阵（decideCliConfig），按优先级：
  *   1) PVMCP_BROWSER_CHANNEL 显式指定        → regenerate（显式意图最高）
  *   2) 配置缺失 / 解析失败                    → regenerate（杜绝「装完忘生成」）
+ *   2b) 机器生成配置残留 executablePath 钉    → regenerate（stale-exec-pin）
  *   3) 配置带 _平台 且与当前平台一致          → keep（含手工调过的 launchOptions）
  *   4) 配置带 _平台 但平台不符（跨平台安装）  → regenerate
  *   5) 配置没有 _平台（手工写的）             → keep（用户显式意图优先）
  *
  * 为什么 5 保留而不重生成：手工配置可能是精心调过的（headless 参数、代理、
  * 指定可执行文件路径），重生成会把它们抹掉 —— 宁可保留也不猜错。
+ *
+ * 为什么有 2b（真机实测的陈旧格式自锁）：executablePath 路径钉有两个坑 ——
+ * 顶层 browser.executablePath 是**死字段**（launch 根本不读，钉了个假钉，
+ * 实际仍在找缓存 chromium，缓存一删就崩而报错不像配置问题）；
+ * launchOptions.executablePath 会**顶掉 channel**（两者并存时路径钉赢，
+ * 于是「channel: msedge」被静默忽略）。机器生成物（带 _说明 标记）出现
+ * 任一层级的路径钉即判陈旧，按平台重生成通道配置；手工配置含钉
+ * 是用户显式意图（自定义构建），走 5 保留。
  */
 
 /**
@@ -54,6 +63,17 @@ export function decideCliConfig({ cfg = null, platform = process.platform, envCh
   }
   if (cfg === null || typeof cfg !== 'object') {
     return { action: 'regenerate', reason: 'missing-or-broken', detail: '配置缺失或解析失败' };
+  }
+  // 2b) 机器生成物里的 executablePath 钉 = 陈旧格式自锁（见文件头注释的实测依据）。
+  // 顶层钉是死字段假钉、launchOptions 钉顶掉 channel —— 两种都让通道声明失效。
+  const machineGenerated = typeof cfg._说明 === 'string' && cfg._说明.includes('setup-cli-config');
+  const hasExecPin = Boolean(cfg.browser?.executablePath || cfg.browser?.launchOptions?.executablePath);
+  if (machineGenerated && hasExecPin) {
+    return {
+      action: 'regenerate',
+      reason: 'stale-exec-pin',
+      detail: '机器生成配置残留 executablePath 钉（顶层=死字段假钉 / launchOptions=顶掉 channel），按平台重生成通道配置',
+    };
   }
   const plat = typeof cfg._平台 === 'string' ? cfg._平台 : null;
   if (plat && plat.startsWith(platform)) {

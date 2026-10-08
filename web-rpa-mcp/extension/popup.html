@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="dot" id="conn-dot"></span>
+    <b>Web RPA 控制台</b>
+    <span id="conn-text" class="muted">连接中…</span>
+    <span class="spacer"></span>
+    <span id="zoom-bar" class="hide" title="页面缩放（仅网页版）">
+      <button id="zoom-out" class="ghost small">－</button>
+      <input id="zoom-slider" type="range" min="75" max="150" step="5" value="100">
+      <button id="zoom-in" class="ghost small">＋</button>
+      <span id="zoom-val" class="muted">100%</span>
+      <button id="zoom-full" class="ghost small" title="占满浏览器窗口">⛶</button>
+    </span>
+    <button id="btn-settings" class="ghost" title="桥接地址设置">⚙</button>
+  </header>
+
+  <div id="settings" class="hide panel">
+    <label>桥接地址
+      <input id="bridge-url" type="text" placeholder="http://127.0.0.1:8317">
+    </label>
+    <label>访问令牌（桥接设置 WEBRPA_BRIDGE_TOKEN 时才需要；网页版也可用 /console?token=xxx 打开）
+      <input id="rpa-token" type="password" placeholder="留空=不启用鉴权">
+    </label>
+    <div class="row">
+      <button id="btn-save-settings" class="primary">保存并重连</button>
+      <span id="settings-msg" class="muted"></span>
+    </div>
+    <p class="hint">桥接服务未启动时，在仓库目录执行：<code>node mcp/bridge.mjs</code>（默认端口 8317，只监听本机 127.0.0.1）。启用 token：<code>WEBRPA_BRIDGE_TOKEN=你的令牌 node mcp/bridge.mjs</code></p>
+  </div>
+
+  <nav id="tabs">
+    <button data-tab="status" class="on">状态</button>
+    <button data-tab="record">录制</button>
+    <button data-tab="flows">流程</button>
+    <button data-tab="schedule">定时</button>
+    <button data-tab="system">系统</button>
+    <button data-tab="console">控制台</button>
+  </nav>
+
+  <main>
+    <!-- ============ 状态 ============ -->
+    <section id="tab-status" class="tab on">
+      <div class="card" id="mode-banner">
+        <div class="card-head">运行模式（插拔式）</div>
+        <div id="mode-body" class="muted">检测中…</div>
+      </div>
+      <div class="card">
+        <div class="card-head">▶ 运行中回放<span class="spacer"></span><span id="running-when" class="muted"></span></div>
+        <div id="running-body" class="muted">加载中…</div>
+      </div>
+
+      <div class="card" id="health-card">
+        <div class="card-head">运行状态
+          <span class="spacer"></span>
+          <button id="btn-refresh-health" class="ghost small">刷新</button>
+        </div>
+        <div id="health-body" class="muted">加载中…</div>
+      </div>
+
+      <details class="card">
+        <summary>doctor 环境自检</summary>
+        <button id="btn-doctor" class="primary">运行自检</button>
+        <pre id="doctor-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>status_report 无人值守总览</summary>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="sr-only-problems"> 只看有问题的</label>
+          <button id="btn-status-report" class="primary">查看</button>
+        </div>
+        <div id="sr-out"></div>
+      </details>
+    </section>
+
+    <!-- ============ 录制 ============ -->
+    <section id="tab-record" class="tab">
+      <div class="card">
+        <div class="card-head">开始录制
+          <span class="spacer"></span>
+          <button id="btn-record-status" class="ghost small">刷新状态</button>
+        </div>
+        <p class="hint">点「开始录制」会打开一个可见浏览器窗口，在里面演示日常操作，完成后回这里点「结束并保存」。</p>
+        <label>起始网址 *<input id="rec-url" type="text" placeholder="https://example.com/report"></label>
+        <div class="row">
+          <label>技能名称<input id="rec-name" type="text" placeholder="不填=用网址生成"></label>
+        </div>
+        <details>
+          <summary class="muted">高级（视口）</summary>
+          <div class="row">
+            <label>宽<input id="rec-vw" type="number" min="1" placeholder="1440"></label>
+            <label>高<input id="rec-vh" type="number" min="1" placeholder="900"></label>
+          </div>
+        </details>
+        <button id="btn-record-start" class="primary">▶ 开始录制</button>
+      </div>
+
+      <div class="card" id="rec-live" style="display:none">
+        <div class="card-head">录制中<span id="rec-mode" class="muted"></span>
+          <span class="spacer"></span>
+          <span id="rec-steps-count" class="muted"></span>
+        </div>
+        <pre id="rec-live-steps" class="out"></pre>
+        <div id="rec-live-notes"></div>
+      </div>
+
+      <div class="card" id="rec-idle" style="display:none">
+        <div class="muted">当前没有进行中的录制</div>
+      </div>
+
+      <div class="card" id="rec-stop-card" style="display:none">
+        <div class="card-head">结束 / 取消</div>
+        <label>保存名称<input id="rec-stop-name" type="text" placeholder="不填=沿用开始时的名称"></label>
+        <div class="row">
+          <button id="btn-record-stop" class="primary">■ 结束并保存</button>
+          <button id="btn-record-cancel" class="danger">✕ 取消录制</button>
+        </div>
+        <pre id="rec-stop-out" class="out hide"></pre>
+      </div>
+
+      <details class="card">
+        <summary>片段重录（只重录录错的一段）</summary>
+        <label>流程<select id="splice-flow"><option value="">先在「流程」页刷新列表</option></select></label>
+        <div class="row">
+          <label>从第几步<input id="splice-from" type="number" min="1" value="1"></label>
+          <label>到第几步<input id="splice-to" type="number" min="1" placeholder="不填=到最后"></label>
+        </div>
+        <label>重放前缀的变量 JSON<textarea id="splice-params" rows="2" placeholder='{"日期":"2026-10-07"}'></textarea></label>
+        <label class="chk"><input type="checkbox" id="splice-keep-suffix" checked> 保留目标段之后的原步骤</label>
+        <button id="btn-splice-start" class="primary">开始片段重录</button>
+      </details>
+    </section>
+
+    <!-- ============ 流程 ============ -->
+    <section id="tab-flows" class="tab">
+      <div class="card">
+        <div class="row">
+          <button id="btn-flows-refresh" class="primary">刷新流程列表</button>
+          <span id="flows-count" class="muted"></span>
+        </div>
+      </div>
+      <div id="flows-list"></div>
+
+      <div class="card" id="local-flows-card">
+        <div class="card-head">📁 本地流程（独立模式 · 不依赖 MCP）<span class="spacer"></span><span id="local-flows-count" class="muted"></span><button id="btn-local-import" class="ghost small" title="导入本地流程 JSON（本地格式或 MCP 流程 JSON 均可）">导入</button><input id="local-import-file" type="file" accept="application/json,.json" style="display:none"></div>
+        <div id="local-flows-body" class="muted">加载中…</div>
+      </div>
+
+      <details class="card">
+        <summary>串联运行 chain_run（多流程一条线跑完）</summary>
+        <label>items JSON<textarea id="chain-items" rows="4" placeholder='[{"flow":"流程a"},{"flow":"流程b","continueOnError":true}]'></textarea></label>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="chain-headed"> 显示浏览器窗口</label>
+          <label class="chk"><input type="checkbox" id="chain-notify"> 发送告警</label>
+          <label>总时限 ms<input id="chain-maxms" type="number" min="0" placeholder="不限"></label>
+        </div>
+        <button id="btn-chain-run" class="primary">▶ 串联运行</button>
+        <pre id="chain-out" class="out hide"></pre>
+      </details>
+    </section>
+
+    <!-- ============ 定时 ============ -->
+    <section id="tab-schedule" class="tab">
+      <div class="card">
+        <div class="card-head">定时任务
+          <span class="spacer"></span>
+          <button id="btn-sched-refresh" class="ghost small">刷新</button>
+        </div>
+        <div id="sched-list" class="muted">加载中…</div>
+      </div>
+
+      <details class="card">
+        <summary>新增定时任务</summary>
+        <label>流程<select id="sched-flow"><option value="">先刷新流程列表</option></select></label>
+        <div class="row">
+          <label>频率
+            <select id="sched-freq">
+              <option value="daily">daily 每天</option>
+              <option value="weekly">weekly 每周</option>
+              <option value="hourly">hourly 每小时</option>
+              <option value="minute">minute 每 N 分钟</option>
+              <option value="once">once 指定日期</option>
+              <option value="logon">logon 登录时</option>
+            </select>
+          </label>
+          <label>时刻 HH:mm<input id="sched-at" type="text" placeholder="09:00"></label>
+        </div>
+        <div id="sched-days-row" class="row hide">
+          <label class="chk"><input type="checkbox" value="MON">一</label>
+          <label class="chk"><input type="checkbox" value="TUE">二</label>
+          <label class="chk"><input type="checkbox" value="WED">三</label>
+          <label class="chk"><input type="checkbox" value="THU">四</label>
+          <label class="chk"><input type="checkbox" value="FRI">五</label>
+          <label class="chk"><input type="checkbox" value="SAT">六</label>
+          <label class="chk"><input type="checkbox" value="SUN">日</label>
+        </div>
+        <div class="row" id="sched-minute-row" style="display:none">
+          <label>每 N 分钟<input id="sched-every-min" type="number" min="1"></label>
+        </div>
+        <div class="row" id="sched-hourly-row" style="display:none">
+          <label>每 N 小时<input id="sched-every-hour" type="number" min="1"></label>
+        </div>
+        <div class="row" id="sched-date-row" style="display:none">
+          <label>日期<input id="sched-date" type="text" placeholder="2026/10/01"></label>
+        </div>
+        <label>变量 JSON<textarea id="sched-params" rows="2" placeholder='{"日期":"2026-10-07"}'></textarea></label>
+        <label class="chk"><input type="checkbox" id="sched-headed"> 定时运行时显示浏览器窗口</label>
+        <button id="btn-sched-add" class="primary">注册定时任务</button>
+      </details>
+    </section>
+
+    <!-- ============ 系统 ============ -->
+    <section id="tab-system" class="tab">
+      <details class="card">
+        <summary>告警通知 notify</summary>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="nt-enabled"> 启用</label>
+          <label>类型
+            <select id="nt-type">
+              <option value="generic">generic</option>
+              <option value="wecom">wecom 企业微信</option>
+              <option value="dingtalk">dingtalk 钉钉</option>
+              <option value="feishu">feishu 飞书</option>
+              <option value="slack">slack</option>
+            </select>
+          </label>
+        </div>
+        <label>Webhook<input id="nt-webhook" type="text" placeholder="https://qyapi.weixin.qq.com/..."></label>
+        <div class="row">
+          <label class="chk"><input type="checkbox" value="failure" checked> failure</label>
+          <label class="chk"><input type="checkbox" value="healed" checked> healed</label>
+          <label class="chk"><input type="checkbox" value="success"> success</label>
+          <label class="chk"><input type="checkbox" value="all"> all</label>
+        </div>
+        <label>@ 提醒文本<input id="nt-mention" type="text" placeholder="可选"></label>
+        <div class="row">
+          <button id="btn-notify-save" class="primary">保存告警配置</button>
+          <button id="btn-notify-load" class="ghost">读取当前配置</button>
+          <button id="btn-notify-test" class="ghost">发送测试</button>
+        </div>
+        <pre id="notify-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>凭据 secret</summary>
+        <div class="row">
+          <button id="btn-secret-list" class="ghost">列出凭据</button>
+        </div>
+        <div class="row">
+          <label>名称<input id="sec-name" type="text"></label>
+          <label>值<input id="sec-value" type="password"></label>
+        </div>
+        <div class="row">
+          <button id="btn-secret-set" class="primary">加密保存</button>
+          <button id="btn-secret-delete" class="danger">删除</button>
+        </div>
+        <pre id="secret-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>持久化登录 profile</summary>
+        <p class="hint">先打开一次浏览器人工登录（扫码/密码），登录态会被保存，之后无头回放自动复用。</p>
+        <label>登录后停留的网址<input id="pf-url" type="text" placeholder="https://example.com"></label>
+        <div class="row">
+          <label>成功标志文本<input id="pf-success-text" type="text" placeholder="如：工作台"></label>
+          <label>或成功网址包含<input id="pf-success-url" type="text" placeholder="如：/dashboard"></label>
+        </div>
+        <div class="row">
+          <button id="btn-profile-login" class="primary">打开浏览器登录</button>
+          <button id="btn-profile-info" class="ghost">查看状态</button>
+          <button id="btn-profile-reset" class="danger">清空登录态</button>
+        </div>
+        <pre id="profile-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>配置 config</summary>
+        <button id="btn-config-get" class="ghost">查看当前配置</button>
+        <label>patch JSON（合并式更新，只覆盖传入字段）<textarea id="cfg-patch" rows="3" placeholder='{"browser":{"headless":true}}'></textarea></label>
+        <button id="btn-config-set" class="primary">更新配置</button>
+        <pre id="config-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>执行锁 lock</summary>
+        <label>流程 id（不填=全部）<input id="lock-flow" type="text" placeholder="排查『明明没在跑却提示正在执行』"></label>
+        <div class="row">
+          <button id="btn-lock-status" class="ghost">查看锁</button>
+          <button id="btn-lock-release" class="danger">强制释放锁</button>
+        </div>
+        <pre id="lock-out" class="out hide"></pre>
+      </details>
+
+      <details class="card">
+        <summary>历史清理 runs_prune</summary>
+        <p class="hint">默认只预演不删除；确认预演结果没问题再去掉「只预演」。</p>
+        <div class="row">
+          <label>流程 id（不填=全部）<input id="prune-flow" type="text"></label>
+        </div>
+        <div class="row">
+          <label>保留最近 N 次<input id="prune-count" type="number" min="0"></label>
+          <label>保留 N 天内<input id="prune-days" type="number" min="0"></label>
+        </div>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="prune-dry" checked> 只预演</label>
+          <label class="chk"><input type="checkbox" id="prune-logs"> 同时清理日志</label>
+          <button id="btn-prune" class="primary">执行</button>
+        </div>
+        <pre id="prune-out" class="out hide"></pre>
+      </details>
+    </section>
+
+    <!-- ============ 控制台 ============ -->
+    <section id="tab-console" class="tab">
+      <div class="card">
+        <div class="card-head">原始工具调用
+          <span class="spacer"></span>
+          <button id="btn-console-tools" class="ghost small">刷新工具表</button>
+        </div>
+        <p class="hint">这里能调用全部 MCP 工具（含未在上方面板单独做界面的 flow_import / flow_step_* 等）。</p>
+        <label>工具<select id="console-tool"><option value="">加载中…</option></select></label>
+        <div id="console-desc" class="hint hide"></div>
+        <label>参数 JSON<textarea id="console-args" rows="5">{}</textarea></label>
+        <button id="btn-console-call" class="primary">调用</button>
+        <pre id="console-out" class="out hide"></pre>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="hide"></div>
+  <script src="standalone-core.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

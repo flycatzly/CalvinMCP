@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>playwright-verify 控制台</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">PW</span>
+      <div>
+        <div class="title">playwright-verify 控制台</div>
+        <div class="subtitle" id="serverInfo">未连接</div>
+      </div>
+    </div>
+    <div class="conn">
+      <span class="dot" id="statusDot" title="桥连接状态"></span>
+      <button id="modeBtn" class="btn mode" title="独立模式：录制/回放/导出本地可用；依赖模式：全部 16 个 MCP 工具">⚡ 依赖 MCP</button>
+      <input id="baseUrl" type="text" spellcheck="false" aria-label="桥地址">
+      <input id="token" type="password" spellcheck="false" placeholder="口令（可选，x-bridge-token）" aria-label="桥口令">
+      <button id="saveCfg" class="btn">保存并重连</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div id="localNotice" class="local-notice" hidden>🔋 独立模式：工具面需要 MCP 桥（本页只保留本地能力说明）。悬浮球的录制/回放/导出 JSON 不依赖桥，随时可用；点右上「⚡ 依赖 MCP」切回全工具面。</div>
+      <input id="toolFilter" type="search" placeholder="筛选工具…" aria-label="筛选工具">
+      <nav id="toolList" aria-label="工具列表"></nav>
+    </aside>
+
+    <section class="content">
+      <div id="toolMeta" class="tool-meta">
+        <h1 id="toolTitle">选择左侧的工具</h1>
+        <p id="toolDesc" class="tool-desc">控制台按 tools/list 的 inputSchema 动态生成表单，
+          服务端有什么工具这里就有什么操作 —— 不维护第二份工具清单。</p>
+      </div>
+
+      <form id="toolForm" class="tool-form"></form>
+      <div class="actions">
+        <button id="runBtn" class="btn primary" type="button">调用</button>
+        <button id="resetBtn" class="btn" type="button">重置</button>
+        <span id="runStatus" class="run-status"></span>
+      </div>
+
+      <section class="result" aria-label="调用结果">
+        <div class="result-head">
+          <h2>结果</h2>
+          <button id="copyBtn" class="btn small" type="button">复制</button>
+        </div>
+        <pre id="resultText" class="result-text">（还没有调用）</pre>
+        <details id="structuredBox" hidden>
+          <summary>structuredContent（结构化结果）</summary>
+          <pre id="resultStructured" class="result-text"></pre>
+        </details>
+      </section>
+
+      <section class="history" aria-label="调用历史">
+        <h2>历史</h2>
+        <ul id="historyList"></ul>
+      </section>
+    </section>
+  </main>
+
+  <script src="panel.js"></script>
+</body>
+</html>

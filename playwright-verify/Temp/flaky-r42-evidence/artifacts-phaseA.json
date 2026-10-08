@@ -1,0 +1,4682 @@
+[
+  {
+    "idx": 1,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy40hoxy1tnx",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy40bxcke2ig",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy40j8hlg0ja",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy40p06yq1bf",
+        "url": "http://127.0.0.1:59220/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy40rxctpgpo",
+        "url": "http://127.0.0.1:59220/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4163xt1kv9",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy40x4vvogqp",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy410uqh7ugy",
+        "url": "http://127.0.0.1:59220/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy418mfwj27s.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy3zt054p4bc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy3zw8qetwa7.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy3zxslgrsb7.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy401hleiwiz.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4055xyitgi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy408zl9dt3p.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy40b1qweepx.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41a4gqav3c.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41bkapel3o.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41d1kr7b4n.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 2,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy42bqc0co5s",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4261pwjhgf",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy42dbspsfjt",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy42j24zsr8n",
+        "url": "http://127.0.0.1:65204/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy42m15z0he4",
+        "url": "http://127.0.0.1:65204/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy42zz4j0w9t",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy42r32o1aeq",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy42urqprn0m",
+        "url": "http://127.0.0.1:65204/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy432ds1aira.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41mubvqjum.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41q26o8em9.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41rphngksb.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41vgo34cf0.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy41zc1det2k.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4234ie5y1l.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy42567nh6q4.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy433uyjtcbi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy435asyugvj.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy436q6iz1yf.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 3,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy445k2hs6zz",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy43zs34oqz3",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4474avx36m",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy44cv3wprvj",
+        "url": "http://127.0.0.1:53513/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy44frznov7a",
+        "url": "http://127.0.0.1:53513/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy44tt9moffc",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy44kwsz8us5",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy44olq9udcz",
+        "url": "http://127.0.0.1:53513/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy44w8sfp6hy.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43gldyzpjb.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43juq7ucc9.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43lgi5332m.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43p6v01j16.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43t14d0oei.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43wtvwmiqs.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy43ywqp6uih.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy44xprqhpg8.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy44z40f6m8u.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy450htlq0f5.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 4,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy45zco09wdb",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy45tm6nedkp",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy460wsvn0nr",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy466omfgjpp",
+        "url": "http://127.0.0.1:58523/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy469nwi2120",
+        "url": "http://127.0.0.1:58523/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy46nwl5ww5e",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy46etkvi8qr",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy46iismh018",
+        "url": "http://127.0.0.1:58523/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy46qb87tpxm.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45ah23mzep.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45dryuo2nw.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45fg82hd38.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45j5kcab9j.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45mwmurkoe.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45qnz93xti.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy45spo93f1p.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy46rtpb7u9a.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy46ta2s334b.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy46uqgz5t0c.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 5,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy47teau9d2f",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy47no2ovugm",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy47uxlwfvso",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy480ovf1fzr",
+        "url": "http://127.0.0.1:64972/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy483lqjhpob",
+        "url": "http://127.0.0.1:64972/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy48hn5fz7wr",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy488o1durq0",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy48cdniwzo9",
+        "url": "http://127.0.0.1:64972/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy48k5gt6rml.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy474llam8wc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy477y94m11b.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy479ifxoy2b.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy47d9291pll.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy47h0ahdvr4.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy47kr1k085b.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy47msh5d5c2.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy48lnxnglrx.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy48n1uzgeex.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy48ofqroo4s.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 6,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy49n694cdvt",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy49hgkw967l",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy49orwavwu1",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy49uiv3shlr",
+        "url": "http://127.0.0.1:62927/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy49xgp4j8e7",
+        "url": "http://127.0.0.1:62927/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4abpjife2s",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4a2l6h13hy",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4a6cnmcu0e",
+        "url": "http://127.0.0.1:62927/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4ae7y1r751.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy48y7bnov48.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy491hkvp7bp.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy493239kcnc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy496txibeia.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy49alory56g.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy49eg22ska1.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy49gkztpjdh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4afqkqcwxy.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ah4sjbzzr.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4aiji3me4t.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 7,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4bhj32ftdo",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4bbqqzxg10",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4bj44k8am1",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4boz0xqznw",
+        "url": "http://127.0.0.1:64020/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4brzsvoofi",
+        "url": "http://127.0.0.1:64020/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4c6ay4ymec",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4bx4pdabm7",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4c0vw6qsah",
+        "url": "http://127.0.0.1:64020/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4c8qw88s3q.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4asiatkml5.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4avugplcxh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4axenct5z4.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4b183w5hg0.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4b4z41wl5n.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4b8op32dxi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4batuzgd7o.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ca8m8ke3x.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4cbmo05atf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4cd39xgamp.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 8,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4dbz97s8c9",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4d6a0zediw",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4ddl8c88n0",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4djd262ltj",
+        "url": "http://127.0.0.1:63930/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4dmdfmuk2f",
+        "url": "http://127.0.0.1:63930/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4e0nwr3j1q",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4drksho1yh",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4dvb4b14yj",
+        "url": "http://127.0.0.1:63930/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4e33fwqsy8.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4cmu1rsc92.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4cq4er2mqh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4crrm9rizx.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4cvmykbzuw.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4czdkkd4qq.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4d39iqocbu.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4d5dtygvzn.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4e4l566v0k.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4e60o8isl5.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4e7g860k3s.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 9,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4f6ozt4rks",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4f0sqzgero",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4f89ltue7o",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4fe3uiaasy",
+        "url": "http://127.0.0.1:53751/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4fh6jdlrfo",
+        "url": "http://127.0.0.1:53751/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4fvj28ca90",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4fmesf10yd",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4fq73w2rcl",
+        "url": "http://127.0.0.1:53751/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4fy0hby7ii.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ehb4q7we7.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ekodsppo9.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4em920cs7v.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4epz9vmo72.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4etu5letj3.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4exqhjtefu.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ezwandye3.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4fzi5wtano.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4g0xy67yfc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4g2el0f59w.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 10,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4h1qd3i8d2",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4gvytahmc4",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4h3e13h6uo",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4h95ehr5q0",
+        "url": "http://127.0.0.1:57278/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4hc4qkmvkz",
+        "url": "http://127.0.0.1:57278/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4hqi4fifrp",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4hhbjn4p95",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4hl6dxbuu0",
+        "url": "http://127.0.0.1:57278/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4ht0d91l24.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gcaoazril.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gfj2n9fjf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gh6s3da66.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gl2laduul.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4goy5wnnj5.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gsvd9cuzi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4gv1eg3ed6.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4huimpmd7u.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4hvy5htn5v.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4hxdx75pyb.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 11,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4iwg41q6dl",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4iqqvbkyf7",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4iy0ileekq",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4j3tessgtg",
+        "url": "http://127.0.0.1:60041/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4j6t2b9pgs",
+        "url": "http://127.0.0.1:60041/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4jl4w01lxt",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4jbyd0q0wp",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4jfqrfq40i",
+        "url": "http://127.0.0.1:60041/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4jnm8jt61w.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4i7eco35lp.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4iantqo0nj.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4icah4rue6.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ig0pbgjrf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ijt3aw7yp.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4inleh75rf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4iprzr54bh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4jp50wxn1q.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4jqnd77iqp.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4js5cpia1c.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 12,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4kr67pn249",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4klgwtejdz",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4kspshqwpm",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4kyjf8unm0",
+        "url": "http://127.0.0.1:55827/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4l1hecz2k3",
+        "url": "http://127.0.0.1:55827/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4lfxfocy91",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4l6pl5v7ee",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4lakhl62ji",
+        "url": "http://127.0.0.1:55827/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4ligmw3ka8.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4k24g8w132.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4k5dln41cd.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4k70uaimg2.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4kaqzy766w.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4kemwkss3d.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4kii95ez4b.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4kkki0uq4t.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4lk0gmadia.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4llgou7zpq.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4lmxvngv0c.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 13,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4mlwy4o56l",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4mg69psxea",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4mnh5px8qr",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4mt7vywzqm",
+        "url": "http://127.0.0.1:49203/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4mw8ioqr6x",
+        "url": "http://127.0.0.1:49203/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4nanquxdco",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4n1dwgu3kc",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4n55yyogrc",
+        "url": "http://127.0.0.1:49203/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4nd5h63y2l.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4lwtxhqyxs.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4m031h78cg.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4m1p41kauy.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4m5gq35m0w.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4m9ea548z9.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4md4cyryf5.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4mf920b1sr.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4neoecgfxm.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ng58v5d70.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4nhncny7o5.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 14,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4ohcisirnp",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4obklh2ldn",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4oj14ip9bm",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4oouaqi54z",
+        "url": "http://127.0.0.1:55855/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4orttinhrf",
+        "url": "http://127.0.0.1:55855/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4p6dawek8j",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4ox09lsfis",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4p0qql7ce3",
+        "url": "http://127.0.0.1:55855/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4p8zuph942.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4nrmrp5lgh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4nv0abjw2o.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4nwoun5wqo.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4o0kgdccid.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4o4kihxoxa.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4o8eao9uaf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4oalvb4uvl.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4panv0q4hi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pc7vjy4df.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pdp437ml5.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 15,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4qcskhp4wn",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4q6zgei2dt",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4qecrvpk7x",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4qk4gq3bs1",
+        "url": "http://127.0.0.1:49586/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4qn4hpmtxy",
+        "url": "http://127.0.0.1:49586/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4r1lnbabmi",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4qsegxqrxx",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4qw775z1i1",
+        "url": "http://127.0.0.1:49586/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4r43cb9jyc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pnk57emqy.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pqsnas3uo.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pse82k593.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4pw6v0vqom.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4q01p3t11j.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4q3w0i98rm.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4q608bvvhg.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4r5p14w8un.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4r75rpq1wx.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4r8lhmfk41.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 16,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4s7l5ggyng",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4s1uurq1ev",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4s97tsoxk9",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4sezkcjlh6",
+        "url": "http://127.0.0.1:51363/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4shzvtvquv",
+        "url": "http://127.0.0.1:51363/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4swd08748j",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4sn5nshz2b",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4sqw2ha883",
+        "url": "http://127.0.0.1:51363/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4syx4xy5dj.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4rik6a7ht3.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4rltsixyz8.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4rnf12twks.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4rr9p29tz3.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4rv0anvldi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ryqz22onc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4s0wcn5muq.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4t0hf3kx50.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4t201zp9fu.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4t3iqdweqy.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 17,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4u2m9namta",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4twssmo7cq",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4u465gk4lt",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4u9yxo5z1u",
+        "url": "http://127.0.0.1:65251/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4ud0jx0iv6",
+        "url": "http://127.0.0.1:65251/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4urbdx6zp5",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4ui6yxge20",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4ulxibv7j6",
+        "url": "http://127.0.0.1:65251/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4utv5eissa.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tdc7egh1j.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tgp1by1s6.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tid86x998.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tm5jbr57o.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tpwpc5vxk.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ttsau323w.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4tvw5kwaib.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4uvf5ivm21.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4uwx3eab1r.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4uyi0m1t78.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 18,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4vyaexih41",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4vshaqvc1i",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4vzy6vjc31",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4w6034yicj",
+        "url": "http://127.0.0.1:52745/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4w91nkvf19",
+        "url": "http://127.0.0.1:52745/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4wnqhh2qzl",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4we9mv0nib",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4wi3ibpnkk",
+        "url": "http://127.0.0.1:52745/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4wq9bs7hup.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4v8o40ddbi.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vbzyncjbh.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vdpo20dij.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vhm0frgqc.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vle5uh4zf.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vp89q2bc5.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4vrg6mt0fs.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4wrrr53b65.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4wtb2mornv.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4wuso5wivl.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 19,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4xttcrd2mo",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4xo44if8ac",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4xvfrhdk7i",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4y17k9dtmx",
+        "url": "http://127.0.0.1:56744/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4y47pzbtf5",
+        "url": "http://127.0.0.1:56744/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy4yii84obhc",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy4y9cvgcuqa",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy4yd4ose0cy",
+        "url": "http://127.0.0.1:56744/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy4yl1a0vd6o.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4x4ljdb75q.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4x7v7jrjyu.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4x9jbjappw.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4xddkww689.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4xh7htxa16.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4xl0jwbz9j.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4xn6wb6ka9.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4yml76fu7l.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4yo3r6j9wl.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4ypmva6wvl.json",
+        "unreadable": true
+      }
+    ]
+  },
+  {
+    "idx": 20,
+    "artifacts": [
+      {
+        "dir": "collect-flowC0-muy4zou1rorz5",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC1-muy4zj4jkaj6y",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC2-muy4zqg37lgma",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 4,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC3-muy4zwaomwd2j",
+        "url": "http://127.0.0.1:49689/static?page=1",
+        "verdict": "Pass",
+        "stopReason": "no-new-rows",
+        "pagesScanned": 2,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC4-muy4zz9shep2m",
+        "url": "http://127.0.0.1:49689/inf?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 3,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC6-muy50dplaq1h4",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "single-page",
+        "pagesScanned": 1,
+        "rowCount": 5,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8a-muy504gmyprux",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "max-pages",
+        "pagesScanned": 2,
+        "rowCount": 10,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          }
+        ]
+      },
+      {
+        "dir": "collect-flowC8b-muy5087iq6pb2",
+        "url": "http://127.0.0.1:49689/paged?page=1",
+        "verdict": "Pass",
+        "stopReason": "empty",
+        "pagesScanned": 2,
+        "rowCount": 15,
+        "pages": [
+          {
+            "page": 1,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 2,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 3,
+            "rowCount": 5,
+            "added": 5
+          },
+          {
+            "page": 4,
+            "rowCount": 0,
+            "added": 0
+          }
+        ]
+      },
+      {
+        "dir": "explore-muy50g771w4lx.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4yzhyuky56.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4z2qrq070x.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4z4flqdkq7.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4z86v1p8uu.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4zc2nr885l.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4zfwqjf8tb.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy4zi46dobab.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy50hstzi5b0.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy50je006ruo.json",
+        "unreadable": true
+      },
+      {
+        "dir": "nl-muy50ku8pho11.json",
+        "unreadable": true
+      }
+    ]
+  }
+]

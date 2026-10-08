@@ -1,0 +1,32 @@
+PASS  桥自起且 tools/list=16（新鲜度验证，混载进程挡在门外）
+PASS  猫耳球注入（pv-floating 常驻本地靶场页）
+PASS  MV3 Service Worker 就位（中转通道在）
+PASS  SW storage 注入桥地址（base 只进扩展侧）
+PASS  点球开面板
+PASS  状态点转绿（SW 中转→真桥连通）
+PASS  🎬 录制开始（球体脉冲态）
+PASS  录制捕获 4 原始步（fill×2 双事件+press+影子树点击），口令字段录制期跳过
+PASS  ⏹ 结束保存（归一 3 步，日志回执）
+PASS  红线：口令值不进扩展 storage 任何键
+PASS  刷新后录制恢复（回放/生成按钮解禁）
+PASS  ▶ 回放 3 步全 ✓（fill+press+开放影子树深搜命中）
+PASS  🔍 巡检走中转真执行（本地页，巡检完成）
+PASS  📊 采集走中转（无表格 → 工具诚实报空）
+PASS  📝 用录制生成脚本（门禁完整执行，键集在 schema 白名单）
+PASS  📤 导出录制 JSON（本地下载触发，日志回执行数与 write:false 口径）
+FAIL  切独立模式（真浏览器）：状态点橙 pv-local、生成停用、导出保留（本地能力不依赖桥）  {"toLocal":{"ok":false,"tries":3,"attempts":["try1:locator.click: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m - waiting for locator('pv-floating [data-act=\"mode\"]')\u001b[22m\n\u001b[2m - locator
+PASS  独立模式下导出录制 JSON 仍可用（插拔式核心主张：断桥不断本地）
+FAIL  切回依赖模式：状态点回到健康探活形态（pv_mode 持久化往返闭环）  {"toMcp":{"ok":false,"tries":3,"attempts":["try1:locator.click: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m - waiting for locator('pv-floating [data-act=\"mode\"]')\u001b[22m\n\u001b[2m - locator r
+PASS  回放 URL 守门（非录制页诚实拒绝，不乱点）
+PASS  录制 B：关闭影子树点击 → 录到可达宿主选择器（document 层重定向的诚实结果）
+PASS  关闭影子树宿主回放 ✓（点可达宿主，绝不假装穿透不可达树）
+PASS  目标消失后回放：诚实停止（未找到即停，绝不盲点后续）
+PASS  R2 稳定性：录制→保存 1 步
+PASS  R2 稳定性：回放 1 步 ✓
+PASS  录制管理：干净列表连录两条 → storage 列表 2（新在前，值正确）
+PASS  录制管理：UI 删除较早一条 → storage 列表 1（剩较新的 mgmt-two）
+PASS  录制管理：剩余那条回放 ✓（选中态跟随删除自动切换）
+PASS  录制管理：真浏览器行内重命名 → storage 名字更新
+PASS  扩展侧全程零 console/page error
+
+floating-e2e：2 项失败

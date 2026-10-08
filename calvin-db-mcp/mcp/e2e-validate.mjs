@@ -1,5 +1,5 @@
 /**
- * e2e-validate.mjs — 全链路 E2E 验证套件（真实 stdio 子进程 · 16 工具全调用面）
+ * e2e-validate.mjs — 全链路 E2E 验证套件（真实 stdio 子进程 · 18 工具全调用面）
  *
  * v1.6.4 起随包常驻（此前为临时套件；v1.6.3 的三缺陷均由它抓获）。
  * 链路为「真客户端」形态：spawn server.mjs → stdio JSON-RPC → 协议握手/工具发现 →
@@ -108,7 +108,7 @@ try {
     await rpc("notifications/initialized", {});
     const tools = await rpc("tools/list", {});
     const names = tools?.result?.tools?.map((t) => t.name);
-    ok("tools/list: 16 个工具", names?.length === 16, String(names?.length));
+    ok("tools/list: 18 个工具", names?.length === 18, String(names?.length));
     // 无 id 通知不得回复（JSON-RPC 2.0）：发出后 400ms 内 stdout 行数不得增加
     const before = linesSeen;
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "ping" }) + "\n");
@@ -124,6 +124,10 @@ try {
     ok("list_sources: demo 源可见", ls?.sources?.some((s) => s.id === "demo" && s.type === "sqlite"));
     const fd = jsonOf(await call("find_database", { name: "demo", probe: true }));
     ok("find_database: 命中 + probe 可达", fd?.match_count === 1 && fd?.matches?.[0]?.reachable === true);
+    const ss = jsonOf(await call("server_stats", {}));
+    ok("server_stats: version + 形状（v1.6.54）", typeof ss?.version === "string" && Array.isArray(ss?.per_source) && Array.isArray(ss?.recent_slow) && typeof ss?.slow_ms_threshold === "number");
+    const rc = jsonOf(await call("reload_config", {}));
+    ok("reload_config: 同内容零差异（v1.6.55）", Array.isArray(rc?.changed) && rc.changed.length === 0, JSON.stringify(rc?.changed));
     const lt = jsonOf(await call("list_tables", { source: "demo" }));
     ok("list_tables: books 表", lt?.tables?.some((t) => t.name === "books"));
     const dt = jsonOf(await call("describe_table", { source: "demo", table: "books" }));

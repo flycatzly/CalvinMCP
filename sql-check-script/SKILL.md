@@ -5,7 +5,7 @@ description: 当需要对项目 SQL 做质量检测或对测试库做只读数�
 
 # SQL 检测与分析 Skill（全链路质量检测 + 只读数据分析）
 
-> 版本 v1.4.28 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.22) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
+> 版本 v1.4.46 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.51) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
 
 ## 角色设定
 
@@ -21,6 +21,8 @@ description: 当需要对项目 SQL 做质量检测或对测试库做只读数�
 
 - **模式 A：SQL 质量检测（全链路）**：代码里的 SQL → 真实库取证（表结构/索引/EXPLAIN/数据量）→ 风险等级 + 优化建议 + 巡检报告
 - **模式 B：只读数据分析**：自然语言问题 → 生成带注释只读 SQL → 先审后执行 → 结果解读 + 异常提示
+
+> 批量巡检的机械取证环节可用 `巡检一键.mjs` 自动化：SQL 清单（位置参数或 `--manifest` JSON 清单——调用链/业务背景/涉及表直进报告卡片，consistency 声明自动生成第四节对账骨架并实测）→ 只读预审（写词/多语句/纯注释整批拒绝）→ EXPLAIN/表行数/脱敏样例取证 → 按巡检报告模板生成报告骨架（六节对齐模板）；风险判定与优化建议仍留人工。用法与清单形态见 `README.md`「更新记录」最新条目。
 
 核心原则：**不猜，取证；只读，先审后执行。**
 
@@ -104,7 +106,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 
 ## 前置条件
 
-依赖本地 MCP `calvin-db-mcp`（v1.6.22，同级目录部署；安装见《部署说明.md》）：
+依赖本地 MCP `calvin-db-mcp`（v1.6.37，同级目录部署；安装见《部署说明.md》）：
 
 - **安装与验证步骤见 `README.md`**（复制技能 → `node install.mjs` 导入 `.dbp` → 重启客户端）
 - 依赖已装、自检通过（本机当前：依赖 ✓，`node mcp\selftest.mjs` 0 failed ✓；用例数随版本增长，勿以 passed 数为验收线）
@@ -112,7 +114,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 - **数据库账号须最小权限**：只读场景用 SELECT-only 账号，且只授权测试库/影子库（MCP 层防护不是最终权限边界）
 - 未就绪时退化为静态分析，结论一律标「待验证」
 
-## MCP 工具速查（calvin-db-mcp v1.6.22 共 16 个）
+## MCP 工具速查（calvin-db-mcp v1.6.37 共 16 个）
 
 | 工具 | 模式 | 用途 |
 |------|------|------|
@@ -149,10 +151,15 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 sql-check-script/
 ├── SKILL.md
 ├── README.md                          # 安装 / 验证 / 用法
+├── 部署说明.md                         # 部署完整指引（含全部自然语言使用示例）
+├── distribute.mjs                     # 发布打包：纯净化副本生成
+├── 巡检一键.mjs                        # 巡检自动化：SQL 清单→只读预审→EXPLAIN/行数/样例取证→报告骨架（六节对齐模板）
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（105 用例，live 段自动门控）
+│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（108 用例，live 段自动门控）
 │   ├── config_lint_test.mjs           # 护栏配置门禁：references/ 两配置（解析/结构/白名单红线/跨文件一致性）
-│   └── run_all.mjs                    # 一键验收：selftest + sqlite-validate + mysql-validate(门控) + docsync + config-lint + E2E 合并裁决
+│   ├── docsync_test.mjs               # 文档一致性门禁（15 检查项：版本标记/口径数字/汇总行引文/树与引用完整性/示例结构/格式模板骨架/工作流口径/巡检示例对齐/产物防混入）
+│   ├── inspect_one_test.mjs           # 巡检一键 CLI 门禁（免 DB 25 用例：预审四门/落盘守门/manifest 门/consistency 门/jobs 门/增量门/基线门/参数面）
+│   └── run_all.mjs                    # 一键验收：selftest + sqlite-validate + mysql-validate(门控) + docsync + config-lint + inspect + E2E 合并裁决
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链
 │   ├── sql_check_workflow.md           # 模式 A：八步证据版质量检测
@@ -162,7 +169,8 @@ sql-check-script/
 │   ├── 巡检报告模板.md                  # 模式 A 交付
 │   ├── 分析报告模板.md                  # 模式 B 交付
 │   ├── 示例_订单列表慢查询.md           # 模式 A 合格输出对照
-│   └── 示例_状态分布分析.md             # 模式 B 合格输出对照
+│   ├── 示例_状态分布分析.md             # 模式 B 合格输出对照
+│   └── 示例_巡检报告.md                 # 模式 A 巡检交付合格输出对照
 ├── references/
 │   ├── sql_input_contract.yaml
 │   ├── 白名单与脱敏配置.yaml
@@ -177,7 +185,10 @@ sql-check-script/
 └── assets/sample_sql/
     ├── order_list_slow.sql
     ├── order_join_deep_page.sql
-    └── 状态分布分析.sql
+    ├── 状态分布分析.sql
+    ├── 状态分布分析_pg.sql              # PG 平行样例：双引号中文别名 + 窗口占比
+    ├── 深分页慢查询_pg.sql              # PG 平行样例：LIMIT/OFFSET 深分页 + NULLS LAST
+    └── manifest_example.json           # 巡检一键 manifest 示例（config-lint 契约互证）
 ```
 
 ## 常见错误自查

@@ -1,0 +1,24 @@
+PASS  用例表存在  D:\work\MCP\playwright-verify\demo\cases\e2e.xlsx
+PASS  读表成功
+PASS  读到 2 条用例  2
+PASS  识别出「用例名称/步骤/预期结果/环境/账号」列  {"title":1,"steps":3,"expect":4,"env":5,"account":6}
+PASS  无 openpyxl 时内置解析兜底仍读到 2 条用例  exit=0 caseCount=2 
+PASS  「TC-101」全部步骤可映射  5 步
+PASS  「TC-101」含至少一条断言  goto,fill,fill,click,assertVisible
+PASS  「TC-102」全部步骤可映射  2 步
+PASS  「TC-102」含至少一条断言  goto,assertText
+PASS  编排成功  编排完成，全部步骤均已映射。
+PASS  生成门禁通过  {"verdict":"生成物通过静态门禁（语法 OK / ERROR 0），可以写入仓库","lint":{"errorCount":0,"warnCount":2},"syntax":true}
+PASS  脚本已落盘  DemoPage.ts, from-excel.spec.ts
+PASS  页面层与用例层分开  pages/DemoPage.ts, tests/from-excel.spec.ts
+PASS  用例层文件存在  D:\work\MCP\playwright-verify\demo\generated-e2e\tests\from-excel.spec.ts
+PASS  用例层不内联定位细节
+PASS  用例层带「本用例证明」的说明
+PASS  页面层包含三段式方法（fill/click/断言）
+
+--- 真跑编排产物 ---
+PASS  Playwright 执行完成（退出码 0）  exit=0，日志 D:\work\MCP\playwright-verify\.playwright-artifacts\logs\playwright-test.out.log
+PASS  报告显示全部通过  通过 2 / 失败 0
+PASS  没有偶发（retries=0，通过就是真通过）  偶发 0
+
+Excel 编排端到端验证全部通过 ✅

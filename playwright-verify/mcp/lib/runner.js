@@ -204,14 +204,24 @@ export function resolveCliRunner(cwd) {
   if (fs.existsSync(cliJs)) {
     return { command: process.execPath, prefix: [cliJs], how: 'node @playwright/cli/playwright-cli.js' };
   }
-  // 全局安装位置（npm 全局 node_modules）
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    if (!dir) continue;
-    const p = path.join(dir, '..', '@playwright', 'cli', 'playwright-cli.js');
-    if (fs.existsSync(p)) return { command: process.execPath, prefix: [p], how: p };
-  }
   const localBin = path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? 'playwright-cli.cmd' : 'playwright-cli');
-  const exe = findExecutable('playwright-cli', process.env, cwd);
+  // 验收口径开关：PVMCP_LOCAL_ONLY_DEPS=1 时可选依赖只认副本本地（cwd/node_modules），
+  // 机器级全局（npm i -g / PATH shim）一律不认。判定面与执行面必须分开的理由：
+  // 执行面兜底全局是**文档化契约**（部署说明：@playwright/cli 由本机提供，装法 npm i -g），
+  // 删不得；但零依赖判定（mode 2 预检 / 套件 SKIP / cli_health 诚实报缺）若也认机器全局，
+  // 装了全局 shim 的开发机就永远验不了「纯净包诚实 SKIP」形态 —— 包级零依赖被污染成
+  // （包，机器）性质，发版门禁嵌套的 mode 2 在这类机器上永不可绿。verify-all 全程置此开关，
+  // 让验收只对副本负责；真实用户不设开关，执行契约原样。
+  const localOnly = process.env.PVMCP_LOCAL_ONLY_DEPS === '1';
+  // 全局安装位置（npm 全局 node_modules）—— 执行契约兜底（见上），验收口径不走
+  if (!localOnly) {
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      if (!dir) continue;
+      const p = path.join(dir, '..', '@playwright', 'cli', 'playwright-cli.js');
+      if (fs.existsSync(p)) return { command: process.execPath, prefix: [p], how: p };
+    }
+  }
+  const exe = localOnly ? null : findExecutable('playwright-cli', process.env, cwd);
   if (exe || fs.existsSync(localBin)) {
     // 兜底：只能用 shim，此时必须开 shell（Windows 下 .cmd 无法直接 spawn）
     return {

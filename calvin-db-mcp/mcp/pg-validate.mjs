@@ -269,6 +269,43 @@ try {
       esx.text.slice(0, 140));
   }
 
+  // ⑫-c v1.6.33 pg 游标批量边界：PG_FETCH_BATCH 单一真源 + 批边界完备。钉的 bug 类是
+  // 「FETCH 批量与退出阈值两处字面量漂移 → 超过首批的行被静默截断」（退出阈值大于 FETCH 批量
+  // 时，满首批即退出）。fixture 从 pool.mjs 源读常量定尺寸——调参改批量后钉自动跟随不失效。
+  {
+    const poolSrc = fs.readFileSync(path.join(here, "pool.mjs"), "utf8");
+    const pbm = poolSrc.match(/const PG_FETCH_BATCH = (\d+);/);
+    check("PG_FETCH_BATCH 单一真源：FETCH 语句与游标退出阈值共用常量（无裸数字字面量）",
+      !!pbm && !/FETCH FORWARD \d+/.test(poolSrc) && !/rows\.length < \d+/.test(poolSrc)
+        && poolSrc.includes("res.rows.length < PG_FETCH_BATCH")
+        && poolSrc.includes("FETCH FORWARD ${PG_FETCH_BATCH} FROM qm_cur"),
+      pbm ? pbm[0] : "PG_FETCH_BATCH 常量缺失");
+    const PB = pbm ? Number(pbm[1]) : 1000;
+    const BT = "pg_probe_batch";
+    await mgr.runQuery(PG_ID, `DROP TABLE IF EXISTS ${BT}`);
+    await mgr.runQuery(PG_ID, `CREATE TABLE ${BT} AS SELECT g AS id, 'r' || g AS name FROM generate_series(1, ${2 * PB + 1}) g`);
+    const bqSql = `SELECT id, name FROM ${BT} ORDER BY id`;
+    await call("export_data", { source: PG_ID, sql: bqSql, format: "json", filename: "batch_ref.json", overwrite: true });
+    const bqRows = JSON.parse(fs.readFileSync(path.join(exportDir, "batch_ref.json"), "utf8")).rows || [];
+    const bqc = await call("export_data", { source: PG_ID, sql: bqSql, format: "csv", filename: "batch_full.csv", overwrite: true });
+    const bqWant = "id,name\r\n" + bqRows.map((r) => r.id + "," + r.name).join("\r\n") + "\r\n";
+    const bqGot = fs.readFileSync(path.join(exportDir, "batch_full.csv"), "utf8");
+    check(`导出 2PB+1=${2 * PB + 1} 行（两整批+尾单行）流式 CSV 与 JSON 物化逐字节恒等（游标不丢尾批）`,
+      !bqc.isError && bqRows.length === 2 * PB + 1 && bqGot === bqWant
+        && Number(bqc.data?.row_count) === 2 * PB + 1 && bqc.data?.truncated === false,
+      bqc.text.slice(0, 140) + ` | rows=${bqRows.length} bytes ${bqGot.length} vs ${bqWant.length}`);
+    let edgeOk = true;
+    const edgeDetail = [];
+    for (const k of [PB - 1, PB, PB + 1]) {
+      const r = await call("export_data", { source: PG_ID, sql: `SELECT id, name FROM ${BT} WHERE id <= ${k} ORDER BY id`, format: "csv", filename: `batch_e${k}.csv`, overwrite: true });
+      const dataLines = fs.readFileSync(path.join(exportDir, `batch_e${k}.csv`), "utf8").trim().split(/\r?\n/).length - 1;
+      edgeOk = edgeOk && !r.isError && Number(r.data?.row_count) === k && r.data?.truncated === false && dataLines === k;
+      edgeDetail.push(`${k}:${r.data?.row_count}/${dataLines}`);
+    }
+    check(`导出批边界 PB-1/PB/PB+1（${PB - 1}/${PB}/${PB + 1}）行全量不丢不误截`, edgeOk, edgeDetail.join(" "));
+    await mgr.runQuery(PG_ID, `DROP TABLE IF EXISTS ${BT}`);
+  }
+
   /* ⑬ 全工具面钉测（v1.6.18，对标 mysql-validate）：画像/发现类/查询类/计划写入建表/事务。
         PG 方言分支此前只在纯函数单测验证——information_schema $n 占位符、EXPLAIN (FORMAT JSON)、
         COUNT(*)::bigint 字符串化、ILIKE 子串匹配、括号复合不包外层 LIMIT，此处全部真实端到端执行。 */

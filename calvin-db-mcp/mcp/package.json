@@ -1,6 +1,6 @@
 {
   "name": "calvin-db-mcp",
-  "version": "1.6.32",
+  "version": "1.6.56",
   "private": true,
   "type": "module",
   "description": "MySQL + PostgreSQL + SQLite MCP server, LLM-friendly with read-only guard and data verification tools",
@@ -15,8 +15,8 @@
     "node": ">=18.17"
   },
   "dependencies": {
-    "mysql2": "^3.24.4",
-    "pg": "^8.23.0"
+    "mysql2": "^3.24.5",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "javascript-obfuscator": "^5.8.0"

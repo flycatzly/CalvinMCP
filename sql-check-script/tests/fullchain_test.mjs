@@ -30,7 +30,7 @@
  * 计数断言口径：demo.db 是共享演示资产（sqlite-add.mjs / MCP 演示都会合法写它），行数会变 ——
  *   计数断言一律「与独立 SQL COUNT 交叉一致 / 与开跑基线一致」，不锚定魔法数字。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
@@ -654,6 +654,102 @@ try {
         skip("live-pg", `已过断言照计，其后中断（连接/权限/环境问题）：${e?.message ?? e}`);
       }
     }
+  }
+
+  // ---------- 巡检一键 --html 高亮回归（spawnSync CLI × 2 轮：首轮无 diff 无高亮 / 次轮新增卡片+摘要增量行） ----------
+  {
+    const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "巡检一键.mjs");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fc-html-"));
+    try {
+      const cfgArg = spawnEnv.DBMCP_CONFIG ? ["--config", spawnEnv.DBMCP_CONFIG] : [];
+      fs.writeFileSync(path.join(tmp, "a.sql"), "SELECT id FROM books LIMIT 1;\n");
+      fs.writeFileSync(path.join(tmp, "b.sql"), "SELECT id FROM books;\n");
+      const cliRun = (out, files, html) => spawnSync(process.execPath,
+        [CLI, "--source", DEMO_SOURCE, "--project", "fc_html", "--baseline-dir", path.join(tmp, "bl"),
+         "--out", path.join(tmp, out), ...(html ? ["--html"] : []), ...cfgArg, ...files.map((f) => path.join(tmp, f))],
+        { encoding: "utf8", timeout: 60000, env: spawnEnv });
+      // 首轮：单 SQL 建基线 + HTML（无上份 → 无卡片高亮、无增量行）
+      const r1 = cliRun("r1.md", ["a.sql"], true);
+      const h1 = fs.existsSync(path.join(tmp, "r1.html")) ? fs.readFileSync(path.join(tmp, "r1.html"), "utf8") : "";
+      ok("html-reg: 首轮生成 HTML 且无卡片高亮（无上份）", r1.status === 0 && !!h1 && !/class="card-(added|changed)"/.test(h1) && !h1.includes("vs 上份"),
+        `exit=${r1.status} ${((r1.stdout || "") + (r1.stderr || "")).slice(-160)}`);
+      // 次轮：新增 b.sql 卡片 → card-added + 摘要表 vs 上份行
+      const r2 = cliRun("r2.md", ["a.sql", "b.sql"], true);
+      const h2 = fs.existsSync(path.join(tmp, "r2.html")) ? fs.readFileSync(path.join(tmp, "r2.html"), "utf8") : "";
+      ok("html-reg: 次轮新增卡片高亮 card-added + 徽标", r2.status === 0 && /class="card-added"[^>]*>卡片[^<]*<span class="delta-badge">新增/.test(h2),
+        `exit=${r2.status} ${((r2.stdout || "") + (r2.stderr || "")).slice(-160)}`);
+      ok("html-reg: 次轮摘要表含 vs 上份增量行", /vs 上份（[^）]+）<\/td><td>新增SQL 1/.test(h2), h2.match(/vs 上份[^<]*/)?.[0]?.slice(0, 100) || "无该行");
+    } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 竞态容忍 */ } }
+  }
+
+  // ---------- 巡检一键 --json 结构化输出回归（spawnSync CLI；schema 字段断言） ----------
+  {
+    const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "巡检一键.mjs");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fc-json-"));
+    try {
+      const cfgArg = spawnEnv.DBMCP_CONFIG ? ["--config", spawnEnv.DBMCP_CONFIG] : [];
+      fs.writeFileSync(path.join(tmp, "a.sql"), "SELECT id FROM books LIMIT 1;\n");
+      const r = spawnSync(process.execPath,
+        [CLI, "--source", DEMO_SOURCE, "--project", "fc_json", "--json",
+         "--out", path.join(tmp, "r.md"), ...cfgArg, path.join(tmp, "a.sql")],
+        { encoding: "utf8", timeout: 60000, env: spawnEnv });
+      const jPath = path.join(tmp, "r.json");
+      const jRaw = fs.existsSync(jPath) ? fs.readFileSync(jPath, "utf8") : "";
+      let jo = null;
+      try { jo = JSON.parse(jRaw); } catch { /* parse fail below */ }
+      ok("json-reg: --json 生成 .json 文件且合法 JSON", r.status === 0 && !!jo,
+        `exit=${r.status} ${((r.stdout || "") + (r.stderr || "")).slice(-120)}`);
+      if (jo) {
+        ok("json-reg: 顶层字段齐全（generator/version/generatedAt/project/source/sqlCount/summary/items/consistency）",
+          ["generator", "version", "generatedAt", "project", "source", "sqlCount", "summary", "items", "consistency"].every((k) => k in jo),
+          `keys=${Object.keys(jo).join(",")}`);
+        ok("json-reg: summary 四字段（planOk/planErr/tableTotal/tableErr）且为数字",
+          jo.summary && ["planOk", "planErr", "tableTotal", "tableErr"].every((k) => typeof jo.summary[k] === "number"),
+          `summary=${JSON.stringify(jo.summary)}`);
+        ok("json-reg: items[0] 含 name/sqlMasked/planOk/tables 且 planOk 为布尔",
+          Array.isArray(jo.items) && jo.items.length > 0 &&
+          typeof jo.items[0].name === "string" && typeof jo.items[0].sqlMasked === "string" &&
+          typeof jo.items[0].planOk === "boolean" && Array.isArray(jo.items[0].tables),
+          `items[0]=${JSON.stringify(jo.items[0]).slice(0, 120)}`);
+        ok("json-reg: delta 为 null（首轮无上份）", jo.delta === null, `delta=${JSON.stringify(jo.delta)}`);
+      }
+      // 次轮：--baseline-dir 两连跑 → delta 非 null 且含 changeDetails/consistencyChanges 数组
+      fs.writeFileSync(path.join(tmp, "b.sql"), "SELECT id FROM books;\n");
+      const r2 = spawnSync(process.execPath,
+        [CLI, "--source", DEMO_SOURCE, "--project", "fc_json", "--json", "--baseline-dir", path.join(tmp, "bl"),
+         "--out", path.join(tmp, "r2.md"), ...cfgArg, path.join(tmp, "a.sql"), path.join(tmp, "b.sql")],
+        { encoding: "utf8", timeout: 60000, env: spawnEnv });
+      const j2Path = path.join(tmp, "r2.json");
+      const j2Raw = fs.existsSync(j2Path) ? fs.readFileSync(j2Path, "utf8") : "";
+      let jo2 = null;
+      try { jo2 = JSON.parse(j2Raw); } catch { /* parse fail below */ }
+      ok("json-reg: 次轮 --json 生成且合法 JSON", r2.status === 0 && !!jo2,
+        `exit=${r2.status} ${((r2.stdout || "") + (r2.stderr || "")).slice(-120)}`);
+      if (jo2) {
+        ok("json-reg: 次轮 delta 非 null（有上份基线）", jo2.delta !== null, `delta=${JSON.stringify(jo2.delta).slice(0, 120)}`);
+        ok("json-reg: delta 含 changeDetails 数组 + consistencyChanges 数组 + 五计数字段",
+          jo2.delta && Array.isArray(jo2.delta.changeDetails) && Array.isArray(jo2.delta.consistencyChanges) &&
+          ["addedSql", "removedSql", "addedChecks", "removedChecks", "changes"].every((k) => typeof jo2.delta[k] === "number"),
+          `delta=${JSON.stringify(jo2.delta).slice(0, 200)}`);
+        ok("json-reg: 次轮新增卡片被记入 delta.addedSql ≥1", jo2.delta.addedSql >= 1, `addedSql=${jo2.delta?.addedSql}`);
+      }
+      // --report-index：次轮 --baseline-dir 写回后自动生成 _index.json
+      const idxPath = path.join(tmp, "bl", "_index.json");
+      const idxRaw = fs.existsSync(idxPath) ? fs.readFileSync(idxPath, "utf8") : "";
+      let idx = null;
+      try { idx = JSON.parse(idxRaw); } catch { /* parse fail below */ }
+      ok("report-index: --baseline-dir 轮生成 _index.json 且合法 JSON", r2.status === 0 && !!idx,
+        `exists=${fs.existsSync(idxPath)} ${idxRaw.slice(0, 80)}`);
+      if (idx) {
+        ok("report-index: _index.json 含 generatedAt + projects 数组",
+          typeof idx.generatedAt === "string" && Array.isArray(idx.projects) && idx.projects.length >= 1,
+          `keys=${Object.keys(idx).join(",")} projects=${idx.projects?.length}`);
+        ok("report-index: projects[0] 含 project/latestBaseline/historyRows 字段",
+          idx.projects[0] && typeof idx.projects[0].project === "string" &&
+          typeof idx.projects[0].latestBaseline === "string" && typeof idx.projects[0].historyRows === "number",
+          `p0=${JSON.stringify(idx.projects[0])}`);
+      }
+    } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 竞态容忍 */ } }
   }
 
   // ---------- 写后不破坏：行数与开跑基线一致（测「未被写坏」，不是「等于某个数」） ----------

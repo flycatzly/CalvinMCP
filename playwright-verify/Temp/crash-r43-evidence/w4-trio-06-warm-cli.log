@@ -1,0 +1,31 @@
+会话：e2e-muyfodts
+
+PASS  open 成功  已打开页面
+PASS  snapshot 成功  快照已落盘：D:\work\MCP\playwright-verify\.playwright-artifacts\snapshots\e2e-muyfodts-1-muyfoeofkvbhc.md（如需内容请按需读取该文件，不要整棵读进上下文）
+PASS  snapshot 落盘到 snapshots 目录  D:\work\MCP\playwright-verify\.playwright-artifacts\snapshots\e2e-muyfodts-1-muyfoeofkvbhc.md
+PASS  snapshot 文件真实存在且非空  177 bytes
+PASS  快照里有 Ref 编号（e1/e2…）  [ref=e1] [ref=e2] [ref=e3] [ref=e4] [ref=e5]
+PASS  返回值只给摘要，不回快照全文  快照已落盘：D:\work\MCP\playwright-verify\.playwright-artifacts\snapshots\e2e-muyfodts-1-muyfoeofkvbhc.md（如需内容请按需读取该文件，不要整棵读进上
+PASS  能从快照解析出输入框 ref  e3
+PASS  能从快照解析出按钮 ref  e4
+PASS  fill 用 Ref 成功  操作已完成
+PASS  click 用 Ref 成功  操作已完成
+PASS  交互后 snapshot 成功  快照已落盘：D:\work\MCP\playwright-verify\.playwright-artifacts\snapshots\e2e-muyfodts-2-muyfofy9ex7qn.md（如需内容请按需读取该文件，不要整棵读进上下文）
+PASS  第二次快照落到**新**文件（按序号递增）  e2e-muyfodts-1-muyfoeofkvbhc.md → e2e-muyfodts-2-muyfofy9ex7qn.md
+PASS  页面状态真的变了（点击生效：EMPTY → RESULT-OK）    - paragraph [ref=e5]: RESULT-OK
+PASS  输入值真的写进去了（快照里出现 hello-cli）    - textbox "Keyword" [ref=e3]: hello-cli
+PASS  screenshot 成功  截图已落盘：D:\work\MCP\playwright-verify\.playwright-artifacts\screenshots\e2e-muyfodts-1-muyfog7stg2p6.png
+PASS  截图落盘到 screenshots 且是合法 PNG  9060 bytes（PNG 魔数校验通过）
+PASS  find 能在页面里搜到文本  命令已完成（结构化输出见 logFiles）
+PASS  generate-locator 产出定位器  {   "result": "getByRole('button', { name: 'Search' })"
+PASS  run-code 不在白名单内（拒绝任意代码透传）  SUBCOMMAND_NOT_ALLOWED
+PASS  headed 模式可启动  已打开页面
+PASS  headed 下快照照样落盘
+PASS  autoHeal 如实标注（triggered/signature/decision/rewritten/retried）  {"triggered":true,"signature":"browser-not-installed","dist":"chromium","decision":"regenerate","reason":"stale-exec-pin","rewritten":true,"retried":true,"recovered":true}
+PASS  自愈重写的配置任一层级无 executablePath（路径钉正是锁死通道的根源）  {"browserName":"chromium","launchOptions":{"channel":"msedge"}}
+PASS  H24 活体自愈：空缓存下重写通道配置后重试通过（真浏览器，4 步全绿）  CLI 最小闭环通过：能开页面、能拿快照、能截图（首次失败后已自动重写通道配置并重试通过：stale-exec-pin）
+PASS  正常运行不落 autoHeal 字段（缺字段=未触发，不是异常也不是数据）  ok=true autoHeal=null
+
+产物目录：D:\work\MCP\playwright-verify\.playwright-artifacts\snapshots
+          D:\work\MCP\playwright-verify\.playwright-artifacts\screenshots
+CLI 真实交互与落盘验证全部通过 ✅

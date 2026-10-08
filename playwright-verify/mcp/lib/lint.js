@@ -49,6 +49,11 @@ const ASYNC_SOURCE_RE = new RegExp(
   + '|\\.\\s*(?:locator|getBy\\w+|filter|and|or|first|last|nth|visible|waitFor\\w*|evaluate|innerText|inputValue)\\s*\\(',
 );
 
+/** expect 头部剥离（requireAsyncSource 闸门共用，行级/语句级两处同一份）：
+ *  expect( / expect.soft( / expect.poll( 三种头都剥得掉（r47——旧式只剥裸 expect(，
+ *  对 .soft( 剥不掉会把整条匹配文本当参数、inner 取段错位，闸门判据就不可信了）。 */
+const EXPECT_HEAD_RE = /^[^\w]*expect(?:\.\s*(?:soft|poll))?\s*\(/;
+
 /**
  * 规则定义。
  *   scope: 'line'   逐行（在 noComments 或 noStrings 文本上）
@@ -119,12 +124,15 @@ export const RULES = [
     title: 'Playwright 断言没有 await（假通过）',
     // 匹配允许跨行（[^;] 含换行、禁跨语句），上限 5000 字符防病态回溯：
     // prettier 把长断言折行后，行级正则连匹配都匹配不上 —— 规则会静默失明。
-    re: new RegExp(`(?:^|[^\\w.])expect\\s*\\([^;]{0,5000}?\\)\\s*\\.\\s*(?:${ASSERTION_ALT})\\s*\\(`),
+    // r47：匹配面扩 expect.soft( / expect.poll( —— 修饰断言不 await 同样「假通过」，
+    // 与 PW007（断言存在性已含 soft|poll|configure 三形态）保持同一认知面，不再不对称。
+    re: new RegExp(`(?:^|[^\\w.])expect(?:\\.\\s*(?:soft|poll))?\\s*\\([^;]{0,5000}?\\)\\s*\\.\\s*(?:${ASSERTION_ALT})\\s*\\(`),
     requireAsyncSource: true,
     fix: 'Playwright 断言是异步的，不 await 就不会被计入失败，用例会「永远通过」——'
       + '这是最危险的写法，因为它在报告里长得和成功一模一样。'
       + '（判据限定一：只有断言参数是 page/locator/getBy* 这类异步来源时才判 ERROR ——'
-      + 'expect(amount).toBe() 这种同步值断言不 await 是正确的，不该冤枉。'
+      + 'expect(amount).toBe() 这种同步值断言不 await 是正确的，不该冤枉；'
+      + 'expect.soft/expect.poll 同样过这道闸门（它们的 promise 也必须交出去，形态不同判据不变）。'
       + '判据限定二：await 判定在语句级 —— await page.goto(...); expect(...).toBeVisible(); 里'
       + '那个 await 属于 goto，断言本身仍然漏 await；而 const p = expect(...).toBeVisible(); await p; '
       + '这种把 promise 接走再等的写法不算漏。）',
@@ -615,7 +623,7 @@ function runLineRules(ctx, rule, text) {
     }
     // PW006 专用闸门：断言参数不是异步来源时，这条「缺 await」是正常的同步断言，不该冤枉
     if (rule.requireAsyncSource) {
-      const arg = mm[0].replace(/^[^\w]*expect\s*\(/, '');
+      const arg = mm[0].replace(EXPECT_HEAD_RE, '');
       const inner = arg.slice(0, arg.lastIndexOf(')'));
       ASYNC_SOURCE_RE.lastIndex = 0;
       if (!ASYNC_SOURCE_RE.test(inner)) continue;
@@ -704,7 +712,7 @@ function runStmtRules(ctx, rule) {
     if (HAND_BACK_RE.test(prefix)) continue;   // await / return / 变量接走 → 结果交出去了，放过
     // 断言参数不是异步来源时，这条「缺 await」是正常的同步断言，不该冤枉
     if (rule.requireAsyncSource) {
-      const arg = mm[0].replace(/^[^\w]*expect\s*\(/, '');
+      const arg = mm[0].replace(EXPECT_HEAD_RE, '');
       const inner = arg.slice(0, arg.lastIndexOf(')'));
       ASYNC_SOURCE_RE.lastIndex = 0;
       if (!ASYNC_SOURCE_RE.test(inner)) continue;

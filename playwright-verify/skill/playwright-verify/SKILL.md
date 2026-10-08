@@ -210,6 +210,44 @@ playwright-verify/
 
 ## 版本记录
 
+- **v1.21.0（2026-10-08）**：浏览器插件插拔式双模 —— 面板/悬浮球「⚡ 依赖 MCP / 🔋 独立模式」按钮切换（pv_mode 同键持久化）；独立模式本地能力保留（录制/回放/导出/console），桥依赖面停用+守卫诚实提示零发出。全链路排查修 2 真 bug：配置键分裂（面板 base/token vs 背景 pv_base/pv_token → 统一+旧键迁移）、clientInfo 硬编码 1.9.0 → 读 manifest。bridge-check 42→49、floating-check 100→105、floating-e2e 27→30。CORE 728/783/914，全量 945。
+- **v1.20.0（2026-10-08）**：悬浮球导出录制 JSON —— 面板「📤 导出录制」把当前录制转成 generate_scripts 输入载荷（write:false 恒 false）Blob 下载带走（纯本地不走桥），文件名 exportFileName 清洗（保留字符/60 帽/空名与全符号糊回落 recording），整链 try/catch 不掀翻面板。floating-check 92 → 100、floating-e2e 26 → 27。CORE 716/771/899，全量 930。
+- **v1.19.0（2026-10-08）**：PW006 修饰断言形态扫尾 —— 正则扩 expect.soft/expect.poll（不 await 同样假通过，与 PW007 认知面恢复对称），requireAsyncSource 闸门头剥离抽 EXPECT_HEAD_RE 单一源，闸门语义不变；对抗语料 +5 钉，lint-check 53 → 58。CORE 708/763/890，全量 921。
+- **v1.18.0（2026-10-08）**：崩溃/异常退出现场落盘 —— verify-all 崩溃 close 与挂死双分支经 `crashbundle.js` 立即写 `crash-bundles/<时间戳>_<套件>/`（stdout/stderr 全量 + meta.json 双形态退出码），全绿零产出、写失败不掀翻、自修剪 20、不进收尾清理（全绿不抹证据）；crash-bundles 进 exclude.js 单一源。加固 H30 十六钉；hardened 133 → 149；CORE 703/758/885，全量 916。
+- **v1.17.0（2026-10-07）**：录制行内重命名 —— ✎→行内输入（Enter/Esc/空名诚实拒/点行退出），提交走 r41 renameRecording 纯函数落盘（数据保真）。行为钉逮到真产品 bug（appendChild(name) 未声明即用 → 点 ✎ 崩，真浏览器同崩）。floating-check 86 → 92、floating-e2e 25 → 26，咬合 1 组恰中。全量 16 套件 900 断言（+ 矩阵 4 签名）。
+- **v1.16.0（2026-10-07）**：悬浮球富渲染 —— pvFactsLine 关键事实一行化（键序前 4 席、数组计数含 0 如实、verdict 不重复、值保真），接进 resultTextOf：【verdict】facts | 正文（截 300）。floating-check 80 → 86，咬合 1 组恰中。全量 16 套件 900 断言（+ 矩阵 4 签名）。
+- **v1.15.0（2026-10-07）**：判据基数 serial 解耦 —— verify-all 判据行 find 单取第一个 serial 套件改 `serialAssertions()` 求和（suites.mjs 新导出，与 planWaves serials 同源：多 serial 各占一波全计入），serial 计入按声明匹配不硬编码 deployed-check 文件名；H29 五钉（解耦接线/硬编码回归/单 serial 等价恰 30/多 serial 夹具 7+11=18/planWaves 波序列同源）。hardened 128 → 133；CORE mode 1/2/3 = 675/730/856。
+- **v1.14.0（2026-10-07）**：排除口径单一源 —— `mcp/lib/exclude.js`（三集合成 EXCLUDE_DIRS/文件模式/IGNORE_TOP/运行时产物双向豁免 diffManifests），distribute/install/deployed-check 三面派生不写字面量、净树 `nettree.mjs` 脚本化（忠实镜像减排除）、H28 fixture 哨兵七钉（install 沙箱 + nettree 真跑，源文件不误杀/产物不漏排）。hardened 121 → 128；CORE mode 1/2/3 = 670/725/851。
+- **v1.13.0（2026-10-07）**：悬浮球录制管理 —— pv_recordings_list 多条列表（前插/容量帽 10 诚实淘汰/自动命名）、面板内联列表（选中/删除/选中态跟随）、旧单槽读取迁移+兼容写入；纯函数核 6 函数不可变更新。floating-check 71 → 80、floating-e2e 22 → 25，咬合 1 组 2 钉。全量 16 套件 893 断言（+ 矩阵 4 签名）。
+- **v1.12.0（2026-10-07）**：结构化结果可视化 —— 面板 pvStructuredModel 视图模型（kv/表格/深度帽 3/行帽 20/total 诚实）替代 JSON 倾倒，渲染只走 textContent（XSS 面为零、文本通道不动）；悬浮球 verdict 徽标（【Pass】前置、无值不伪造）。bridge-check 34 → 42、floating-check 69 → 71，1 咬合。全量 16 套件 875 断言（+ 矩阵 4 签名）。
+- **v1.11.0（2026-10-07）**：悬浮球端到端转正常驻套件 —— `mcp/test/floating-e2e.mjs` 22 断言（真 msedge+扩展+自起桥+本地靶场三形态：light DOM/开放影子树/关闭影子树，零外网依赖），录制→归一→刷新恢复→回放含深搜→工具快捷→URL 守门→诚实停止→稳定性复跑全钉；修出 keydown key 在事件上（press 真页面录不进）与 Playwright Enter 补发 change 的同值无损归一两个真 bug；floating-check 66 → 69。全量 16 套件 863 断言（+ 矩阵 4 签名）。
+- **v1.10.1（2026-10-07）**：成功判定要证据，不只退出码（H26）—— runCli 加证据面
+  `judgeRunEvidence`：强制落盘子命令（snapshot/screenshot/pdf）产物必须在场且非空、
+  png/pdf 魔数对、快照含 `ref=eN` 标记；CLI 自报 isError 信封（exit 0）判
+  CLI_REPORTED_ERROR 不被吞；open/close 等无产物子命令保持退出码契约。判据全用结构事实。
+  裸 `process.exit(0)` 的假 CLI 不再骗出「最小闭环通过」假绿（复现台实锤修复前后对照）。
+  H26 八钉，hardened-check 107 → 115；负向咬合恰 6 钉红（负向全中、正向不冤枉）、
+  sha256 往返一致。全量 16 套件 853 断言（+ 矩阵 4 签名）。
+- **v1.10.0（2026-10-07）**：猫耳悬浮球 —— `extension/floating.js`（Shadow DOM 隔离、可拖拽猫耳球、录制中脉冲+步数角标、快速面板 🎬/⏹/▶/控制台 + 巡检/采集/生成/NL 快捷）+ `recorder.js` 纯函数核（定位器六级优先级与 canonicalLocator 同口径、敏感双防线含 nameAttr、归一合并/去重/截断、locatorToQuery 非法抛错）；架构 content script → SW 中转（口令只经 x-bridge-token 请求头）→ 桥 → MCP；回放 URL 守门、未找到即停。新套件 floating-check 66 断言（vm 真文件 + stub DOM 真跑，含真机实测 6 处补钉、影子树深搜与代码文本防护），deployed 28 → 30；负向咬合 3 组（5+7+1 红）+ 绿态咬合抓出 nameAttr 真 bug。全量 15 套件 811 断言（+ 矩阵 4 签名）。
+- **v1.9.1（2026-10-07）**：零依赖口径只认副本本地 —— `PVMCP_LOCAL_ONLY_DEPS=1` 时可选依赖
+  只认 cwd/node_modules，机器级全局（npm i -g / PATH shim）不参与判定；verify-all 三模式
+  全程置位，mode 2 预检 / 套件 SKIP / cli_health 诚实报缺全按副本口径。执行契约不变
+  （真实用户 @playwright/cli 仍由本机提供）。修掉全局 shim 机器级假设缺口（门禁嵌套 mode 2
+  永不可绿、净树诚实报缺被顶替、混合态对账静默跳过）。加固 H25 +3、hardened-check 104 → 107；
+  负向咬合 1 组零误伤。全量 14 套件 746 断言（+ 矩阵 4 签名）。
+- **v1.9.0（2026-10-07）**：浏览器插件控制台（MV3）+ 本地桥 —— `extension/` 加载已解压扩展后
+  点图标开整页控制台，表单由 tools/list 的 inputSchema 现场生成、tools/call 调全部 16 个工具；
+  `mcp/bridge.mjs` HTTP ⇄ JSON-RPC 复用 handleMessage（零协议分叉），只绑 127.0.0.1、
+  Host 挡 DNS rebinding、网页来源 403、可选口令三态、4MB 413，参数值不进观测日志（哨兵钉住）。
+  新套件 bridge-check 34 断言，deployed-check 26 → 28；负向咬合 2 组零误伤。
+  全量 14 套件 743 断言（+ 矩阵 4 签名）。
+- **v1.8.18（2026-10-06）**：cli_health 浏览器缺失自愈闭环 —— 三签名分类（含缓存被清的真实报错形态，
+  daemon 噪声行不干扰）+ 决策矩阵 stale-exec-pin 规则（机器生成物残留 executablePath 钉即按平台重生成，
+  手工配置不自动动）+ 重写 channel 式配置重试一次，`autoHeal` 字段如实标注。H13 +4、H24 +3、cli-e2e +4；
+  hardened-check 97 → 104、cli-e2e 21 → 25；全量 13 套件 707 断言（+ 矩阵 4 签名）。
+  另修自愈执行线三处回归（mode 3 抓出，断言数不变）：收尾 close 移到 executePlan 之后的 finally
+  （batch 尾提前关会让自愈 NO_SNAPSHOT）；自愈成功后剩余步骤作废旧批量结果逐步真跑（断言证据
+  不比自愈快照旧）；批量步补记 durationMs。负向咬合 5/3/1 红零误伤。
 - **v1.8.17（2026-10-06）**：setup-browser-config 同步链补齐 —— 第 16 个工具 `setup-browser-config`
   （按平台生成 `.playwright/cli.config.json` 浏览器通道配置；Windows 默认 msedge）入表时没走同步链
   （工具数钉停在 15、EXPECTED 清单漏项、文档工具表漏行）—— 本轮补齐：deployed-check / nl-agent-check

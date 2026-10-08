@@ -26,6 +26,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+// 排除口径单一源（r40）：目录名/顶层忽略/漂移判定全部派生，不写字面量。
+import { EXCLUDE_DIRS as EXCLUDE_DIR_NAMES, IGNORE_TOP as IGNORE_TOP_NAMES, EXPECTED_DEPLOY_EXTRA, diffManifests } from '../lib/exclude.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = path.resolve(__dirname, '../..');
@@ -99,6 +101,10 @@ const mustExist = [
   ['skill/playwright-verify/references', '知识层'],
   ['skill/playwright-verify/scripts/lint_spec.mjs', '脚本包装'],
   ['skill/playwright-verify/assets', '资产模板'],
+  ['mcp/bridge.mjs', '浏览器插件桥（HTTP ⇄ JSON-RPC）'],
+  ['extension/manifest.json', '浏览器插件控制台'],
+  ['extension/floating.js', '猫耳悬浮球（录制/回放/工具快捷）'],
+  ['extension/recorder.js', '录制纯函数核'],
   ['dsh-bundle/cordis.patch.yml', 'DSH bundle'],
 ];
 for (const [rel, label] of mustExist) {
@@ -132,21 +138,10 @@ for (const [rel, label] of optChecks) {
  *   · 运行时产物：安装后跑测试会新生成它们，不属于「该复制的东西」，
  *     但也不会掩盖真实漂移（真实漂移在 mcp/ 与 skill/ 里）。
  */
-const IGNORE_DIRS = new Set([
-  'node_modules', '.git',
-  '.playwright-artifacts',        // CLI 快照/截图/日志（本工具自己的约定目录）
-  '.playwright-cli',              // playwright-cli 自己写的产物（首次跑才会出现）
-  'test-results', 'dist',
-  'generated', 'generated-e2e', 'generated-orchestrated', 'generated-argscheck',  // 编排/生成的产物（args-check 临时生成目录在并行波内正建删，比对必须视而不见）
-  'scratch',                      // 临时探查目录：任何时刻都可能在变，不参与一致性比对
-  '__pycache__',                   // Python 字节码：内嵌编译时源码路径，跨目录重新生成后必然不同
-]);
-const IGNORE_TOP = new Set(['dsh-bundle']);   // 安装时生成，源码目录没有
-/** 允许只在部署副本里出现的运行时产物（跑过测试就会有）。 */
-const EXPECTED_DEPLOY_EXTRA = [
-  /^demo\/generated/,
-  /^test-results\//,
-];
+// 排除口径单一源（r40，../lib/exclude.js）：目录名/顶层忽略/运行时豁免全部派生，
+// 不写字面量（差集理由见 exclude.js 头注）。
+const IGNORE_DIRS = new Set(EXCLUDE_DIR_NAMES);
+const IGNORE_TOP = new Set(IGNORE_TOP_NAMES);   // 安装时生成，源码目录没有
 
 function manifest(root) {
   const out = new Map();
@@ -175,17 +170,17 @@ function manifest(root) {
 
 const srcManifest = manifest(SOURCE);
 const dstManifest = manifest(DIR);
-const missing = [...srcManifest.keys()].filter((k) => !dstManifest.has(k));
+// 漂移判定单一源（r40，exclude.js diffManifests）：运行时产物双向豁免——
+// 「失败保留产物」或「重装前产物已清」任一形态下 generated/test-results 都不算漂移。
+const { missing, extra, unexpectedExtra } = diffManifests(srcManifest.keys(), dstManifest.keys());
 // .playwright/cli.config.json 根本进不了清单（. 前缀已忽略）：install.mjs 会
 // **按目标平台重新生成它**，字节必然与源码不同 —— 那不是漂移，是正确行为。
 // 它由下面的语义校验负责：部署副本的配置必须适配当前平台。
 const differing = [...srcManifest.entries()]
   .filter(([k, v]) => dstManifest.has(k) && (dstManifest.get(k).hash !== v.hash || dstManifest.get(k).size !== v.size))
   .map(([k]) => k);
-// 部署目录里比源码多的文件：允许运行时产物（跑过测试就会有），但要把**非预期**的多余文件报出来 ——
+// 部署目录里比源码多的文件：运行时产物豁免（diffManifests），非预期多余报出来 ——
 // 那通常意味着源码删了文件而安装目录还留着旧的。
-const extra = [...dstManifest.keys()].filter((k) => !srcManifest.has(k));
-const unexpectedExtra = extra.filter((k) => !EXPECTED_DEPLOY_EXTRA.some((re) => re.test(k)));
 
 check('部署副本没有丢文件', missing.length === 0,
   missing.length ? `缺失 ${missing.length} 个：${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ' …' : ''}` : `源码 ${srcManifest.size} 个文件全部在位`);

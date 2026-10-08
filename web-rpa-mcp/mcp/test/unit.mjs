@@ -9,6 +9,7 @@ import { formatDate, addDays, slugify, maskSecret, redactByKey, redactPath, mask
 import { readTable, resolveColumn, readXlsx } from '../lib/table.mjs';
 import { resolveTemplate, resolveBuiltin, resolveToken, autodetectVariables, fromTable, resolveParams } from '../lib/vars.mjs';
 import { acquireLock, acquireLockWithWait, releaseLock } from '../lib/ops.mjs';
+import { redirectAttribution } from '../lib/player.mjs';
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -431,6 +432,29 @@ t('minimum 拒绝负数（负的总超时限不再被静默当"不限"）', () =
   assert.equal(r.error.param, 'maxDurationMs');
   assert.ok(/≥ 0/.test(r.error.message), r.error.message);
 });
+t('minimum:1 连 0 一起拒（0/负的序号、次数、断言阈值不再静默空过）', () => {
+  const S = { type: 'object', properties: { limit: { type: 'integer', minimum: 1 } } };
+  for (const v of [0, -1]) {
+    const r = validateArgs({ limit: v }, S);
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.error.param, 'limit');
+    assert.ok(/≥ 1/.test(r.error.message), r.error.message);
+  }
+  assert.equal(validateArgs({ limit: 1 }, S).ok, true);
+});
+t('minimum:0 只挡负数：0 是「不设下限」的合法值（minLines 语义）', () => {
+  const S = { type: 'object', properties: { minLines: { type: 'integer', minimum: 0 } } };
+  assert.equal(validateArgs({ minLines: 0 }, S).ok, true);
+  const r = validateArgs({ minLines: -1 }, S);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'minLines');
+});
+t('嵌套对象的 minimum 点名完整参数路径（viewport.width）', () => {
+  const S = { type: 'object', properties: { viewport: { type: 'object', properties: { width: { type: 'integer', minimum: 1 } } } } };
+  const r = validateArgs({ viewport: { width: 0 } }, S);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.param, 'viewport.width');
+});
 t('enum 拒绝拼错的取值', () => {
   const r = validateArgs({ flowId: 'x', videoOn: 'sometimes' }, S_RUN);
   assert.equal(r.ok, false);
@@ -582,6 +606,65 @@ await ta('browser.profileWaitMs 配置键可写可读（默认 3000；0=撞上�
     writeConfig({ browser: before });
   }
   assert.equal(readConfig().browser.profileWaitMs, before.profileWaitMs, '恢复后不残留');
+});
+
+/* ---------- 失败归因提示 redirectAttribution（纯函数：风控重定向 vs 合法跳转） ---------- */
+t('redirectAttribution 深页→站点根+点击步 → 提示疑似风控重定向', () => {
+  const msg = redirectAttribution({
+    finalUrl: 'https://gitee.com/',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'goto' }, { op: 'click' }],
+  });
+  assert.ok(typeof msg === 'string' && msg.includes('疑似外部真实站风控重定向'), '应返回提示: ' + msg);
+  assert.ok(msg.includes('SKILL.md 五之四'), '应指引到 SKILL 规范');
+});
+
+t('redirectAttribution URL 一致 → null（无论有无点击）', () => {
+  assert.equal(redirectAttribution({
+    finalUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'click' }],
+  }), null);
+});
+
+t('redirectAttribution 合法站内跳转（停在子页 /issues）→ null 不误报', () => {
+  assert.equal(redirectAttribution({
+    finalUrl: 'https://gitee.com/flycatzly/calvin-mcp/issues',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'goto' }, { op: 'click' }],
+  }), null);
+});
+
+t('redirectAttribution 无点击类步骤（goto 链流程）→ null 保守不提示', () => {
+  assert.equal(redirectAttribution({
+    finalUrl: 'https://gitee.com/',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'goto' }, { op: 'scrollTo' }],
+  }), null);
+});
+
+t('redirectAttribution 验证码类路径 → 提示（hover 同样算点击类）', () => {
+  const msg = redirectAttribution({
+    finalUrl: 'https://gitee.com/security/verify',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'hover' }],
+  });
+  assert.ok(typeof msg === 'string' && msg.includes('疑似外部真实站风控重定向'), '验证码路径应提示: ' + msg);
+});
+
+t('redirectAttribution 跨源偏离+点击步 → 提示', () => {
+  const msg = redirectAttribution({
+    finalUrl: 'https://evil.example.com/phish',
+    startUrl: 'https://gitee.com/flycatzly/calvin-mcp',
+    steps: [{ op: 'clickAndDownload' }],
+  });
+  assert.ok(typeof msg === 'string' && msg.includes('疑似外部真实站风控重定向'), '跨源应提示: ' + msg);
+});
+
+t('redirectAttribution 缺参/非法 URL → null 不抛异常', () => {
+  assert.equal(redirectAttribution(), null);
+  assert.equal(redirectAttribution({ finalUrl: '', startUrl: 'https://a.b/c', steps: [] }), null);
+  assert.equal(redirectAttribution({ finalUrl: 'not a url', startUrl: 'https://a.b/c', steps: [{ op: 'click' }] }), null);
 });
 
 console.log('\n总计: ' + pass + ' passed, ' + fail + ' failed');

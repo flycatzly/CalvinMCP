@@ -694,6 +694,9 @@ const TOOLS = [
       const text = [
         res.verdict || res.message,
         ...res.steps.map((s) => `  ${s.ok ? 'PASS' : 'FAIL'} ${s.step}: ${s.summary}`),
+        // 自愈是透明的：触发了就明说做了什么、成没成（缺省不落此行 = 未触发）
+        ...(res.autoHeal ? [`  自愈：${res.autoHeal.rewritten ? '已重写通道配置' : '未重写（手工配置不自动动）'}`
+          + `（${res.autoHeal.reason}），${res.autoHeal.retried ? (res.autoHeal.recovered ? '重试通过' : '重试仍失败') : '未重试'}`] : []),
       ].join('\n');
       return res.ok ? result(text, res) : fail(text, res, 'HEALTH_FAILED');
     },
@@ -1217,8 +1220,9 @@ const TOOLS = [
           else if (step.act === 'press') subcommand = 'press';
           else if (step.act === 'screenshot') subcommand = 'screenshot';
           else if (step.act === 'expect_text' || step.act === 'expect_visible') subcommand = 'snapshot';
-          else { results.push({ ok: false, detail: `未知动作 ${step.act}` }); continue; }
+          else { results.push({ ok: false, detail: `未知动作 ${step.act}`, durationMs: 0 }); continue; }
 
+          const stepStarted = Date.now();
           const r = await runCli({ cwd: bcwd, session: bsession, subcommand, args, headed: bheaded });
 
           // 跨步状态累积
@@ -1231,20 +1235,30 @@ const TOOLS = [
           else if ((step.act === 'expect_text' || step.act === 'expect_visible') && r.artifacts?.snapshot) evidence = r.artifacts.snapshot;
           else evidence = r.logFiles?.stdout || '';
 
-          results.push({ ok: r.ok, detail: r.summary || '', evidence });
+          // durationMs 如实计步内执行耗时（报告「每步有执行耗时」的口径来源）
+          results.push({ ok: r.ok, detail: r.summary || '', evidence, durationMs: Date.now() - stepStarted });
         }
-        // 收尾：关闭 session，连同 daemon 的浏览器子进程一起退出。
-        // 修法：之前漏了这一步，batch/nl_test_goal 跑完后 daemon + chrome-headless-shell 永远挂在机器上。
-        try { await runCli({ cwd: bcwd, session: bsession, subcommand: 'close', args: [], timeoutMs: 20_000 }); } catch { /* 收尾尽力而为 */ }
+        // 注意：这里**不**关 session —— executePlan 的自愈门在 batch 返回后才逐条检视失败步，
+        // 会话提前关掉会让自愈永远拿到「browser not open」（NO_SNAPSHOT，r35 实测回归）。
+        // 收尾 close 在 nl_test_goal handler 的 finally 里：运行结束（含自愈）才关，
+        // daemon + 浏览器照样不留机器上（僵尸进程修复意图不变）。
         return results;
       };
 
-      const { steps: stepResults, stopped, reason, healLlm } = await executePlan({
-        steps: plan.steps, cwd, session,
-        headed: boolArg(args.headed, 'headed', false),
-        healLlmBudget: healBudget,
-        cliBatch,
-      });
+      // 收尾关 session：必须在 executePlan（含自愈门）**之后** —— finally 保底，
+      // 判定/异常都会关，daemon + 浏览器不留在机器上（僵尸修复意图不变）。
+      let exec;
+      try {
+        exec = await executePlan({
+          steps: plan.steps, cwd, session,
+          headed: boolArg(args.headed, 'headed', false),
+          healLlmBudget: healBudget,
+          cliBatch,
+        });
+      } finally {
+        try { await runCli({ cwd, session, subcommand: 'close', args: [], timeoutMs: 20_000 }); } catch { /* 收尾尽力而为 */ }
+      }
+      const { steps: stepResults, stopped, reason, healLlm } = exec;
       const report = buildReport({
         goal, url: args.url, source, plan, stepResults,
         problems: [...(plan.problems || []), ...(stopped ? [`执行在失败步骤后停止：${reason}`] : [])],

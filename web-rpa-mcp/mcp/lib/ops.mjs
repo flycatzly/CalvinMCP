@@ -298,11 +298,15 @@ export function statusReport(opts = {}) {
     // （收尾开销量级 ~200-300ms 不算，见 SKILL.md 五之二口径）。旧索引/旧报告无这些字段=不计，天然兼容。
     const recent = runs.slice(0, 5);
     const overrunHits = recent.filter((r) => r && (r.timedOut === true || (typeof r.budgetOverrunMs === 'number' && r.budgetOverrunMs >= 1000)));
+    // maxLaunchMs（R14）：命中项里的最大启动耗时（含 profile 锁等待与浏览器启动）——与 maxOverrunMs 对读
+    // 分「启动慢」（越线≈启动耗时）还是「步骤慢」；命中项全无该字段（旧摘要）=null，不假装有数据
+    const launchVals = overrunHits.map((r) => (typeof r.launchMs === 'number' ? r.launchMs : null)).filter((v) => v !== null);
     const recentOverruns = overrunHits.length ? {
       window: recent.length,
       hits: overrunHits.length,
       timedOut: overrunHits.filter((r) => r.timedOut === true).length,
       maxOverrunMs: Math.max(...overrunHits.map((r) => (typeof r.budgetOverrunMs === 'number' ? r.budgetOverrunMs : 0))),
+      maxLaunchMs: launchVals.length ? Math.max(...launchVals) : null,
     } : null;
     const item = {
       flowId: f.id,
@@ -317,7 +321,10 @@ export function statusReport(opts = {}) {
       totalRuns: total,
       healedTotal,
       stepCount: f.stepCount,
-      running: lock.held ? { pid: lock.pid, since: lock.at, trigger: lock.trigger } : (live ? { pid: live.pid, since: live.startedAt, trigger: live.trigger } : null),
+      // step 为 live 进度步骤级（纯增量：marker 里 step={index,total,op}，无则 null；旧报告/旧消费方不受影响）
+      running: lock.held
+        ? { pid: lock.pid, since: lock.at, trigger: lock.trigger, step: (live && live.step) || null }
+        : (live ? { pid: live.pid, since: live.startedAt, trigger: live.trigger, step: live.step || null } : null),
       waitingHuman: live && live.waitingHuman ? live.waitingHuman : null,
       interrupted: interrupted ? { stamp: interrupted.stamp, startedAt: interrupted.startedAt, pid: interrupted.pid } : null,
       scheduled: s ? s.spec : null,

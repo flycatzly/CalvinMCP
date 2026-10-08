@@ -85,11 +85,13 @@ const EXCLUDE_FILE_RES = [
   /^accounts\.json$/i,   // 凭据文件：绝不入库、绝不入包（项目红线）
 ];
 
-/* 测试残件流程：套件/实测往 flows/ 落的 t-/int-/e2e-/live- 前缀流程（运行数据面残件）。
+/* 测试残件流程：套件/实测往 flows/ 落的 t-/int-/e2e-/live-/ui-e2e-/未命名流程- 前缀流程（运行数据面残件）。
  * 发布包只带演示/真实流程——残件随包发等于把测试现场发给用户。
  * 只匹配 flows/ 直属条目（其它目录的同名文件不受影响）；排除动作在打包报告逐个列名，不静默丢。
+ * ui-e2e- 是「浏览器插件控制台 UI 全链路实测」的流程前缀（v1.6.0 实锤缺口：不命中会被当真实流程随包）；
+ * 未命名流程- 是 recorder.mjs 录制默认名（name 缺失时的兜底，v1.7.0 实锤缺口：外部会话的 splice 产物曾进包）。
  * 待确认：更严的白名单口径（只带 seed 演示流程）暂缓——前缀排除是保守面，真实流程名撞前缀才会误伤。 */
-const TEST_FLOW_RE = /^(?:t-|int-|e2e-|live-)/;
+const TEST_FLOW_RE = /^(?:t-|int-|e2e-|live-|ui-e2e-|未命名流程-)/;
 const isTestFlowResidue = (rel, name) => rel === 'flows' && TEST_FLOW_RE.test(name);
 
 function shouldSkip(name, isDir, rel = '') {
@@ -141,7 +143,7 @@ function copyTree(src, dst, rel = '', count = true) {
  */
 /* 判定面谓词（treeHash 与归因扫描共用同一份口径，永不漂移）：
  * 跳过 = 运行现场/装机生成物（shouldSkip 名单）与 flows/（运行时数据面，
- * MCP 工具随时增删、测试套件也会落 t-/int-/e2e-/live- 前缀残件）不参与「门禁把树跑脏」判定——
+ * MCP 工具随时增删、测试套件也会落 t-/int-/e2e-/live-/ui-e2e-/未命名流程- 前缀残件）不参与「门禁把树跑脏」判定——
  * 否则任何无关活动都让终查假红（--gate-only 源树实测踩过：并发 e2e 落残件致哈希漂移，
  * 家族验收 5/5 全过仍判不可交付）。源码/文档中途改动仍判红：交付面变了就是不该发版。 */
 const hashSkip = (name, isDir) => (isDir ? (name === 'flows' || shouldSkip(name, true)) : shouldSkip(name, false));
@@ -402,7 +404,7 @@ const lines = [
   `  排除的目录（${stats.skippedDirs.length} 类）:`,
   ...stats.skippedDirs.map((d) => `    - ${d}`),
   `  排除的散文件: ${stats.skippedFiles} 个（. 前缀 / *.log / 临时探查脚本 / 备份文件）`,
-  `  排除的测试残件流程: ${stats.skippedFlows.length} 个（t-/int-/e2e-/live- 前缀，flows/ 运行数据面残件不随包）` +
+  `  排除的测试残件流程: ${stats.skippedFlows.length} 个（t-/int-/e2e-/live-/ui-e2e-/未命名流程- 前缀，flows/ 运行数据面残件不随包）` +
     (stats.skippedFlows.length ? '：' + stats.skippedFlows.map((f) => f.replace(/^flows\//, '')).join('、') : ''),
   '',
   verifySkipped ? '  自校验: 跳过（--no-verify）'

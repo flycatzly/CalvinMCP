@@ -71,12 +71,36 @@ async function main() {
     const names = new Set(tools.map((t) => t.name));
     for (const n of need) if (!names.has(n)) throw new Error('缺少工具 ' + n);
   });
-  check('flow_run 预算口径写进契约：maxDurationMs 描述含锁等待夹取/启动不可中断/报告可观测字段', () => {
+  check('flow_run 预算口径写进契约：maxDurationMs 描述含锁等待夹取/启动不可中断/报告可观测字段（含 launchMs）', () => {
     const fr = tools.find((t) => t.name === 'flow_run');
     const desc = (fr && fr.inputSchema && fr.inputSchema.properties && fr.inputSchema.properties.maxDurationMs &&
       fr.inputSchema.properties.maxDurationMs.description) || '';
-    for (const token of ['锁等待', '浏览器启动', 'budgetOverrunMs', 'budgetSource']) {
+    for (const token of ['锁等待', '浏览器启动', 'budgetOverrunMs', 'budgetSource', 'launchMs']) {
       if (desc.indexOf(token) < 0) throw new Error('flow_run.maxDurationMs 描述缺「' + token + '」: ' + desc);
+    }
+  });
+
+  check('整数入参边界写进契约：序号/次数/间隔/超时/断言阈值全部声明 minimum（缺界=静默错误源）', () => {
+    const by = Object.fromEntries(tools.map((t) => [t.name, t]));
+    const prop = (n, k) => by[n] && by[n].inputSchema.properties[k];
+    const expect1 = [
+      ['flow_assertion_remove', 'index'], ['flow_step_delete', 'index'], ['flow_step_update', 'index'],
+      ['flow_step_move', 'from'], ['flow_step_move', 'to'],
+      ['record_splice_start', 'from'], ['record_splice_start', 'to'],
+      ['run_history', 'limit'], ['profile_login', 'timeoutMs'],
+      ['schedule_add', 'everyMinutes'], ['schedule_add', 'everyHours'],
+      ['flow_assertion_add', 'min'], ['flow_assertion_add', 'minBytes'],
+    ];
+    for (const [n, k] of expect1) {
+      const p = prop(n, k);
+      if (!p) throw new Error('缺少 ' + n + '.' + k);
+      if (p.minimum !== 1) throw new Error(n + '.' + k + ' 应声明 minimum:1，实际 ' + JSON.stringify(p));
+    }
+    const ml = prop('flow_assertion_add', 'minLines');
+    if (!ml || ml.minimum !== 0) throw new Error('flow_assertion_add.minLines 应声明 minimum:0（0=不检查行数），实际 ' + JSON.stringify(ml));
+    const vp = by.record_start && by.record_start.inputSchema.properties.viewport;
+    for (const k of ['width', 'height']) {
+      if (!vp || !vp.properties[k] || vp.properties[k].minimum !== 1) throw new Error('record_start.viewport.' + k + ' 应声明 minimum:1');
     }
   });
 
@@ -166,6 +190,45 @@ async function main() {
     if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
     if (text.indexOf('maxDurationMs') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
     if (text.indexOf('流程不存在') >= 0) throw new Error('应先于 handler 校验，不该走到流程查找');
+  });
+
+  const negLimit = await call('tools/call', { name: 'run_history', arguments: { flowId: '__不存在的流程__', limit: -1 } });
+  check('负数 limit 被入口拦下（不再假报「还没有执行记录」）', () => {
+    const r = negLimit.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('limit') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+    if (text.indexOf('还没有执行记录') >= 0) throw new Error('不该走到 handler 假报「还没有执行记录」');
+  });
+
+  const negTimeout = await call('tools/call', { name: 'profile_login', arguments: { url: 'https://example.invalid', successText: 'x', timeoutMs: 0 } });
+  check('0 毫秒超时被入口拦下（不再静默当 5 分钟、不弹浏览器）', () => {
+    const r = negTimeout.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('timeoutMs') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+  });
+
+  const negMin = await call('tools/call', { name: 'flow_assertion_add', arguments: { flowId: '__不存在的流程__', kind: 'listNotEmpty', min: 0 } });
+  check('min:0 被入口拦下（「结果非空」断言不再被静默废掉）', () => {
+    const r = negMin.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('min') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+    if (text.indexOf('流程不存在') >= 0) throw new Error('应先于 handler 校验，不该走到流程查找');
+  });
+
+  const negInterval = await call('tools/call', { name: 'schedule_add', arguments: { flowId: '__不存在的流程__', frequency: 'minute', everyMinutes: 0 } });
+  check('everyMinutes:0 被入口拦下（不再静默当 30 分钟注册定时）', () => {
+    const r = negInterval.result;
+    if (!r || !r.isError) throw new Error('应当 isError=true，实际: ' + JSON.stringify(r).slice(0, 300));
+    const text = r.content[0].text;
+    if (text.indexOf('INVALID_ARGUMENT') < 0) throw new Error('缺少错误码: ' + text.slice(0, 200));
+    if (text.indexOf('everyMinutes') < 0) throw new Error('未点名参数: ' + text.slice(0, 200));
+    if (text.indexOf('流程不存在') >= 0) throw new Error('应先于 handler 校验，不该走到 schtasks 注册');
   });
 
   const badItems = await call('tools/call', { name: 'chain_run', arguments: { items: [{ flow: 'a' }, {}] } });
