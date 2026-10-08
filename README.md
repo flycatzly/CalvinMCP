@@ -6,17 +6,17 @@ MCP 工具与技能集合仓库。纯净发布口径：零预装依赖（依赖�
 
 | 目录 | 说明 | 版本 |
 |---|---|---|
-| [calvin-db-mcp/](calvin-db-mcp/) | 多库数据操作 MCP（MySQL / PostgreSQL / OceanBase / SQLite，16 工具 + 分层安全守卫，内置完整 Skill 与《部署说明.md》） | v1.6.32 |
-| [sql-check-script/](sql-check-script/) | SQL 全链路质量检测 + 只读数据分析 Skill（依赖同级 calvin-db-mcp，仅只读，含 E2E 测试与《部署说明.md》） | v1.4.28 |
-| [web-rpa-mcp/](web-rpa-mcp/) | 网页 RPA 录制/回放 MCP（44 工具 + 418 项自检 + 《部署说明.md》；重复网页操作录一遍即生成技能，支持一键/定时复跑） | v1.5.19 |
-| [wechat-ai/](wechat-ai/) | 微信个人情报库 + 微信流（Windows 本地只读；MCP 服务器 + 73 个技能工具：索引/信号检测/商机管线/复联雷达/报告生成） | v1.1.4 |
-| [playwright-verify/](playwright-verify/) | Playwright 端到端测试「验收 / 门禁 / 执行」MCP + Skill（16 工具：用例验收、失败归因、门禁合入、自然语言测试目标、页面巡检、分页采集） | v1.8.17 |
+| [calvin-db-mcp/](calvin-db-mcp/) | 多库数据操作 MCP（MySQL / PostgreSQL / OceanBase / SQLite，**18 工具** + 分层安全守卫 + 凭据保护 + 配置热重载；内置完整 Skill 与《部署说明.md》，18 工具自然语言使用示例全覆盖） | **v1.6.56** |
+| [sql-check-script/](sql-check-script/) | SQL 全链路质量检测 + 只读数据分析 Skill（依赖同级 calvin-db-mcp v1.6.51+；仅只读，含 E2E 测试、一键验收、`巡检一键.mjs` 闭环、《部署说明.md》全量自然语言示例） | **v1.4.46** |
+| [web-rpa-mcp/](web-rpa-mcp/) | 网页 RPA 录制/回放 MCP（**44 工具** + **427 项自检全绿** + 《部署说明.md》；重复网页操作录一遍即生成技能，支持一键/定时复跑、自愈、告警、浏览器插件桥接） | **v1.8.3** |
+| [wechat-ai/](wechat-ai/) | 微信个人情报库 + 微信流（Windows 本地只读；MCP 服务器 + **73 个技能工具**：索引/信号检测/商机管线/复联雷达/报告生成/批量采集/隐私门禁） | v1.1.4 |
+| [playwright-verify/](playwright-verify/) | Playwright 端到端测试「验收 / 门禁 / 执行」MCP + Skill（**16 工具**：用例验收、失败归因、门禁合入、自然语言测试目标、页面巡检、分页采集、双期对比） | v1.8.17 |
 
-## 自检实测（2026-10-06）
+## 自检实测（2026-10-09）
 
-- **calvin-db-mcp**：selftest `349 passed, 0 failed`（未初始化口径 335）· sqlite-validate `83` · mysql-validate `37` · pg-validate `59` · e2e-validate `46` · protocol-validate `24` · realform-validate `43` —— 全部 0 failed（真实 MySQL 8.4.5 / PostgreSQL 17.5；16 工具真实库矩阵 68/0）
-- **sql-check-script**：一键验收 `node tests\run_all.mjs` 末行 `RUN_ALL selftest=… sqlite-val=… mysql-val=… docsync=… config-lint=… e2e=… => OK`（数字以当日实测为准）；2026-10-05 实测 docsync `7 passed, 0 failed`
-- **web-rpa-mcp**：自检 **418 项全绿**（112 单元 + 28 规则 + 26 协议 + 66 工具 + 35 端到端 + 138 集成 + 13 审计）+ 覆盖度自检（44 工具 / 21 步骤 / 11 断言 / 26 规则 / 10 CLI 全部有测试，40 配置键全部有接线）
+- **calvin-db-mcp**：selftest **`380 passed, 0 failed`**（未初始化口径 361，双口径已实测）· sqlite-validate `83` · mysql-validate `37` · pg-validate `62` · e2e-validate `46` · protocol-validate `24` · realform-validate `43` —— 全部 0 failed（真实 MySQL 8.4.5 / PostgreSQL 17.5；**18 工具**真实库矩阵）
+- **sql-check-script**：一键验收 `node tests\run_all.mjs` 末行 `RUN_ALL selftest=… sqlite-val=… mysql-val=… docsync=… config-lint=… inspect=… e2e=… => OK`（数字以当日实测为准；inspect-one 25 用例、config-lint 21 项、docsync 14 项）
+- **web-rpa-mcp**：自检 **427 项全绿**（121 单元 + 27 规则 + 30 协议 + 65 工具 + 34 端到端 + 138 集成 + 12 审计）+ 覆盖度自检（**44 工具 / 21 步骤 / 11 断言 / 26 规则 / 10 CLI / 113 工具参数** 全部有测试，40 配置键全部有接线）
 - **wechat-ai**：`node verify.mjs` **15 套件 / 587 断言**全绿（0 failed）· selftest `98 passed, 0 failed` · e2e 73/73 工具覆盖 · `scanPrivacy` 发布视角 0 findings
 - **playwright-verify**：`verify-all` **13 套件 / 698 断言**全绿（三态判据 mode 1/2/3 = 517/572/669）· hardened-check `98 passed, 0 failed` · 真实浏览器矩阵 4 签名
 
@@ -42,11 +42,11 @@ MCP 工具与技能集合仓库。纯净发布口径：零预装依赖（依赖�
 
 | 目录 | 内容 | 版本 |
 |------|------|------|
-| `calvin-db-mcp\` | MCP 服务本体（server + 安装器 + 自检套件 + README/SKILL/部署说明 三文档；**零预装依赖**，`install.mjs` 以 `npm ci` 命令生成） | v1.6.32 |
-| `sql-check-script\` | SQL 质量检测/只读分析 Skill（双模式 + 全链路 E2E + 一键验收 + 《部署说明.md》；**零 npm 依赖**，拷入即用） | v1.4.28 |
+| `calvin-db-mcp\` | MCP 服务本体（server + 安装器 + 自检套件 + README/SKILL/部署说明 三文档；**18 工具** + 分层安全守卫 + 凭据保护 + 配置热重载；**零预装依赖**，`install.mjs` 以 `npm ci` 命令生成） | **v1.6.56** |
+| `sql-check-script\` | SQL 质量检测/只读分析 Skill（双模式 + 全链路 E2E + 一键验收 + `巡检一键.mjs` 闭环 + 《部署说明.md》；**零 npm 依赖**，拷入即用） | **v1.4.46** |
 | `wechat-ai\` | 微信只读情报 MCP（73 工具 + 安装器 + 15 套件测试 + 《部署说明.md》；零 npm 依赖，拷入即用） | v1.1.4 |
 | `playwright-verify\` | Playwright 验收门禁 MCP（16 工具 + Skill + 13 套件全量回归 + 真实浏览器矩阵；**零 npm 依赖**，拷入即用；执行类工具由被测项目提供可选依赖后启用，《部署说明.md》随包） | v1.8.17 |
-| `web-rpa-mcp\` | 网页 RPA 录制/回放 MCP（44 工具 + 418 项自检 + 《部署说明.md》；**零预装依赖**，`install.mjs`/`npm ci` 命令生成） | v1.5.19 |
+| `web-rpa-mcp\` | 网页 RPA 录制/回放 MCP（44 工具 + 427 项自检 + 《部署说明.md》；**零预装依赖**，`install.mjs`/`npm ci` 命令生成） | **v1.8.3** |
 
 版本纪律（五包同口径）：每次发版把版本号与版本说明同步到全部对应文档（版本说明落 README「更新记录」/「版本记录」），
 缺一处即视为发版未完成；发版前自检全绿才可发布 / 重打包。规范见各包 README「版本与文档同步规范」。
@@ -318,7 +318,8 @@ unit 63 · rules 27 · mcp-protocol 13 · tools 63 · e2e 32 · integration 71 =
 
 ## 更新记录
 
-- **2026-10-09**：纯净口径全面收紧 + README 补全——按"严禁：保留 verify-all/selftest 入口"口径，剔除全部**演示/未命名/示例/运行残留/开发自检代码**：①`web-rpa-mcp/flows/` 整体清空（演示 flow `演示-订单日报导出.json`、未命名 flow `未命名流程-*.json`、测试瞬态 `e2e-*.json` / `int-*.json` 全部剔除）；②`web-rpa-mcp/verify/` 目录清空（10 个开发自检脚本 `all.mjs` / `autobot-site.mjs` / `button-sweep.mjs` / `fullchain.mjs` / `gate-preflight.mjs` / `journey.mjs` / `live-fulltest.mjs` / `splice-drop-probe.mjs` / `standalone.mjs` / `ui-ext.mjs`）；③`playwright-verify/mcp/py/` 清空（Python 测试脚本 `read_cases.py` / `validate_ci.py`）；④运行残留：`web-rpa-mcp/logs/` / `runs/` / `playwright-verify/Temp/` / `calvin-db-mcp/export/` 全部清；⑤演示目录：`web-rpa-mcp/demo/` / `wechat-ai/samples/` / `playwright-verify/demo/` / `playwright-verify/generated/` 全部清；⑥**发布入口脚本全部保留**：`selftest.mjs` / `verify.mjs` / `bench.mjs` / `e2e.mjs` / `verify-all.mjs` / `*-validate.mjs` / `*-check.mjs` / `*-test.mjs` / `fixtures/` 等部署说明里明引为"安装后自检/回归/验证"入口的脚本原样保留；⑦`sync-push.sh` 排除规则重写（演示/未命名/示例/运行残留目录 + 单文件模式 + 保留 vs 清空边界明确）；⑧calvin-db-mcp README 补全 18 工具自然语言使用示例（H·运维：`server_stats` + `reload_config` 两行新增；标题与覆盖清单 16→18 同步）。推送链：CalvinMCP `2e8b6b3 → 96b132a`、calvin-mcp `d3d6c21 → 809bf33`。
+- **2026-10-09（第 2 次推送）**：根 README 数据刷新至本轮实测——①MCP Skills 表版本号刷到本轮实测（calvin-db-mcp **v1.6.56** / sql-check-script **v1.4.46** / web-rpa-mcp **v1.8.3** / playwright-verify v1.8.17 / wechat-ai v1.1.4 不变）；②工具数刷新（calvin-db-mcp 16 → **18**，含新增 `server_stats` + `reload_config`；web-rpa-mcp 44 不变；playwright-verify 16 不变；wechat-ai 73 不变；sql-check-script 34 项能力不变）；③自检实测数字刷到本轮实测（calvin selftest **380/0**（未初始化口径 361）/ pg-validate **62**（旧 59）；web-rpa 自检 **427/0**（旧 418），单元 121 / 规则 27 / 协议 30 / 工具 65 / 端到端 34 / 集成 138 / 审计 12，覆盖度增加「113 工具参数」口径；sql-check-script 增加 `inspect=` 字段与 25 用例；其他包数字不变）；④目录表与 Skills 表同步；⑤`纯净版本推送-git提示词.md` 同步更新（保留 vs 清空边界明确、API 二次确认流程、「远端看起来仍是旧提交」排障）。
+- **2026-10-09（第 1 次推送）**：纯净口径全面收紧 + README 补全——按"严禁：保留 verify-all/selftest 入口"口径，剔除全部**演示/未命名/示例/运行残留/开发自检代码**：①`web-rpa-mcp/flows/` 整体清空（演示 flow `演示-订单日报导出.json`、未命名 flow `未命名流程-*.json`、测试瞬态 `e2e-*.json` / `int-*.json` 全部剔除）；②`web-rpa-mcp/verify/` 目录清空（10 个开发自检脚本 `all.mjs` / `autobot-site.mjs` / `button-sweep.mjs` / `fullchain.mjs` / `gate-preflight.mjs` / `journey.mjs` / `live-fulltest.mjs` / `splice-drop-probe.mjs` / `standalone.mjs` / `ui-ext.mjs`）；③`playwright-verify/mcp/py/` 清空（Python 测试脚本 `read_cases.py` / `validate_ci.py`）；④运行残留：`web-rpa-mcp/logs/` / `runs/` / `playwright-verify/Temp/` / `calvin-db-mcp/export/` 全部清；⑤演示目录：`web-rpa-mcp/demo/` / `wechat-ai/samples/` / `playwright-verify/demo/` / `playwright-verify/generated/` 全部清；⑥**发布入口脚本全部保留**：`selftest.mjs` / `verify.mjs` / `bench.mjs` / `e2e.mjs` / `verify-all.mjs` / `*-validate.mjs` / `*-check.mjs` / `*-test.mjs` / `fixtures/` 等部署说明里明引为"安装后自检/回归/验证"入口的脚本原样保留；⑦`sync-push.sh` 排除规则重写（演示/未命名/示例/运行残留目录 + 单文件模式 + 保留 vs 清空边界明确）；⑧calvin-db-mcp README 补全 18 工具自然语言使用示例（H·运维：`server_stats` + `reload_config` 两行新增；标题与覆盖清单 16→18 同步）。推送链：CalvinMCP `2e8b6b3 → 96b132a`、calvin-mcp `d3d6c21 → 809bf33`。
 - **2026-10-06**：版本与数字刷新 + 纯净口径补漏——①版本刷新：calvin-db-mcp v1.6.32 / web-rpa-mcp v1.5.19 / playwright-verify v1.8.17（sql-check-script v1.4.28、wechat-ai v1.1.4 不变）；②自检实测刷新至 2026-10-06：calvin selftest 349/0（未初始化口径 335）+ 六套件全绿（sqlite 83 / mysql 37 / pg 59 / e2e 46 / protocol 24 / realform 43）、web-rpa 自检 418 项全绿 + 覆盖度自检（44 工具 / 21 步骤 / 11 断言 / 26 规则 / 10 CLI 全部有测试，40 配置键全部有接线）、playwright verify-all 13 套件 698 断言（三态判据 517/572/669）+ hardened-check 98/0 + 真实浏览器矩阵 4 签名；③playwright-verify 第 16 个工具 `setup-browser-config` 同步链补齐（工具数 14/15 → 16：测试钉、EXPECTED 清单、README/部署说明/SKILL 工具表与覆盖清单、install 提示文案全对齐，断言数不变）；④**纯净口径补漏**：git 镜像补剔开发机运行残留（`.zcode\`/`.e2e-lab\`/`.github\`/`.playwright-cli\`/`test-results\`/`generated\`/`flows\int-*.json`）、凭据与机器配置（`mcp\dbmcp.config.json` 及其孤儿示例模板）与残留点前缀文件（`web-rpa-mcp\.gitignore`、calvin-mcp 仓初始 `.gitignore`/`.gitee\`）——仓库树全净（无 `.` 前缀文件、无凭据、无运行残留、无测试示例文件）。
 - **2026-10-05**：文档重构 + 两仓 README 随推送维护机制——①五包《部署说明.详细版.md》**全量合并进《部署说明.md》并删除详细版**（取最全内容，含全部自然语言使用示例与安装/配置/排障/卸载；完整示例紧随「快速命令索引（速查）」），全包引用（README / SKILL / 测试断言 / 安装器 / CI 注释）同步改指单文档，历史条目按纪律不回填；②五包 README 自然语言速查表重生成（calvin-db-mcp 16 工具 / sql-check-script 34 项能力 / web-rpa-mcp 44 工具 / wechat-ai 73 工具 9 模块 / playwright-verify 14 工具）；③版本刷新：calvin-db-mcp v1.6.25 / sql-check-script v1.4.28 / web-rpa-mcp v1.5.10 / wechat-ai v1.1.4 / playwright-verify v1.8.15；④**本 README 纳入推送流程**：每次纯净版本推送按当轮更新内容刷新两仓根 README（本文件），与代码同提交推送。
 - **2026-10-03**：首个发布版本（五包）打包与一次性副本验收全绿——各包实测记录见上文「发布包自验收」各节（文档口径为当日：部署说明双文档、playwright 包旧目录名 `mcp\`）。
