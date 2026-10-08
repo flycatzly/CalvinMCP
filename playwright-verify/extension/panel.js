@@ -137,6 +137,43 @@ function pvRenderModelInto(container, model) {
 globalThis.pvStructuredModel = pvStructuredModel;
 globalThis.pvCellText = pvCellText;
 
+/* ---------------- 结果预览一行（r50：历史区富渲染） ----------------
+ * pvFactsLine 与悬浮球 floating.js 的 r42 实现**同口径**（键序前 4 席：顶层标量 +
+ * 一层嵌套标量 + 数组计数含 0 如实；verdict 不剔除进 facts（预览单独前置）；值保真；
+ * 非对象 → ''）。两份实现无共享模块（无构建链），口径由 bridge-check 双面钉
+ * （同一组输入两边产同一行输出）防漂移 —— 复制实现的代价就是这枚钉。
+ */
+function pvFactsLine(sc, max) {
+  if (!sc || typeof sc !== 'object' || Array.isArray(sc)) return '';
+  const cap = max > 0 ? max : 4;
+  const facts = [];
+  const push = (k, v) => {
+    if (facts.length >= cap) return;
+    if (v === null || v === undefined || typeof v === 'object') return;
+    if (k === 'verdict') return;
+    facts.push(`${k} ${String(v)}`);
+  };
+  Object.keys(sc).forEach((k) => {
+    const v = sc[k];
+    if (Array.isArray(v)) { push(`${k} count`, v.length); return; }
+    if (v && typeof v === 'object') {
+      Object.keys(v).forEach((k2) => push(`${k}.${k2}`, v[k2]));
+      return;
+    }
+    push(k, v);
+  });
+  return facts.join(' · ');
+}
+/** 历史行预览：【verdict】前置 + facts 一行；两者皆无 → ''（不硬凑不伪造）。 */
+function pvResultPreview(result) {
+  const sc = result && result.structuredContent;
+  const verdict = (sc && typeof sc.verdict === 'string' && sc.verdict) ? `【${sc.verdict}】` : '';
+  const facts = pvFactsLine(sc);
+  return (verdict && facts) ? `${verdict} ${facts}` : (verdict || facts);
+}
+globalThis.pvFactsLine = pvFactsLine;
+globalThis.pvResultPreview = pvResultPreview;
+
 /* ---------------- 配置存取（本地，不出机） ----------------
  * 键统一为 pv_base/pv_token（r49）：旧版面板写 base/token、背景/悬浮球读
  * pv_base/pv_token —— 面板里改了桥地址，悬浮球中转永远看不见（配置键分裂 bug）。
@@ -442,6 +479,8 @@ function pushHistory(name, args, result, ms) {
     name, args, ms,
     ok: !result.isError,
     at: new Date().toLocaleTimeString(),
+    // r50：历史行富渲染预览（【verdict】+ 关键事实一行），推入时算好、渲染只搬字符串
+    preview: pvResultPreview(result),
   });
   state.history = state.history.slice(0, HISTORY_MAX);
   renderHistory();
@@ -449,15 +488,19 @@ function pushHistory(name, args, result, ms) {
 
 function renderHistory() {
   const ul = $('historyList');
-  ul.innerHTML = '';
+  ul.textContent = ''; // 真 DOM 语义：清空子节点；全程零 innerHTML（XSS 面为零，r40 纪律）
   for (const h of state.history) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="h-name"></span><span class="h-status"></span><span class="h-meta"></span>`;
-    li.querySelector('.h-name').textContent = h.name;
-    const st = li.querySelector('.h-status');
+    // 全 createElement + textContent（r50）：模板 innerHTML 退场 —— 历史行零 innerHTML，
+    // 工具数据（含 preview）只经 textContent，XSS 面为零；每行四段：名/态/时/预览
+    const mk = (cls) => { const s = document.createElement('span'); s.className = cls; return s; };
+    const nameEl = mk('h-name'); nameEl.textContent = h.name; li.appendChild(nameEl);
+    const st = mk('h-status');
     st.textContent = h.ok ? '成功' : '失败';
     st.className = `h-status ${h.ok ? 'ok' : 'err'}`;
-    li.querySelector('.h-meta').textContent = `${h.at} · ${h.ms} ms`;
+    li.appendChild(st);
+    const metaEl = mk('h-meta'); metaEl.textContent = `${h.at} · ${h.ms} ms`; li.appendChild(metaEl);
+    const pvEl = mk('h-preview'); pvEl.textContent = h.preview || ''; li.appendChild(pvEl);
     li.addEventListener('click', () => {
       selectTool(h.name);
       // 回填上次参数，改一改就能重跑
@@ -495,7 +538,8 @@ async function reconnect() {
     renderToolList();
     if (!state.selected && state.tools.length) selectTool(state.tools[0].name);
   } catch (e) {
-    setStatus('err', `连接失败：${e.message}`);
+    // 失败要给可执行的下一步（r51）：裸 "Failed to fetch" 分不清「桥没起/口令错/地址错」
+    setStatus('err', `连接失败：${e.message} —— 桥未运行？在项目目录执行 node mcp/bridge.mjs 起桥后点「保存并重连」（独立模式可不依赖桥）`);
   }
 }
 

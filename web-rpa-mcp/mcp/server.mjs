@@ -30,7 +30,7 @@ import {
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.8.2';
+const VERSION = '1.8.3';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';

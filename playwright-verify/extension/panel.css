@@ -179,3 +179,13 @@ body {
 .history .h-meta { color: var(--dim); font-size: 12px; }
 .history .h-status.ok { color: var(--ok); }
 .history .h-status.err { color: var(--err); }
+/* r50 历史行富渲染预览：单行省略防撑爆行布局（title 悬浮见全串由 JS 侧决定，这里只管截断） */
+.history .h-preview {
+  display: block;
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}

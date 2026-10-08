@@ -85,19 +85,17 @@ const EXCLUDE_FILE_RES = [
   /^accounts\.json$/i,   // 凭据文件：绝不入库、绝不入包（项目红线）
 ];
 
-/* 测试残件流程：套件/实测往 flows/ 落的 t-/int-/e2e-/live-/ui-e2e-/未命名流程- 前缀流程（运行数据面残件）。
- * 发布包只带演示/真实流程——残件随包发等于把测试现场发给用户。
- * 只匹配 flows/ 直属条目（其它目录的同名文件不受影响）；排除动作在打包报告逐个列名，不静默丢。
- * ui-e2e- 是「浏览器插件控制台 UI 全链路实测」的流程前缀（v1.6.0 实锤缺口：不命中会被当真实流程随包）；
- * 未命名流程- 是 recorder.mjs 录制默认名（name 缺失时的兜底，v1.7.0 实锤缺口：外部会话的 splice 产物曾进包）。
- * 待确认：更严的白名单口径（只带 seed 演示流程）暂缓——前缀排除是保守面，真实流程名撞前缀才会误伤。 */
-const TEST_FLOW_RE = /^(?:t-|int-|e2e-|live-|ui-e2e-|未命名流程-)/;
-const isTestFlowResidue = (rel, name) => rel === 'flows' && TEST_FLOW_RE.test(name);
+/* flows/ 白名单口径（用户定案 2026-10-09：真实流程永不随包）：
+ * 发布包的 flows/ 只带 seed 演示流程，其余 flows/ 直属条目——测试残件（t-/int-/e2e- 等前缀）、
+ * 用户真实录制流程、外部会话文件——一律不随包（此前前缀黑名单是保守面，真实流程撞不上前缀就会随包）。
+ * 只匹配 flows/ 直属条目（其它目录的同名文件不受影响）；排除动作在打包报告逐个列名，不静默丢。 */
+const SEED_FLOWS = new Set(['演示-订单日报导出.json']);
+const isFlowExcluded = (rel, name) => rel === 'flows' && !SEED_FLOWS.has(name);
 
 function shouldSkip(name, isDir, rel = '') {
   // 发布规范：纯净包不含**任何** . 前缀内容 —— 开发机基础设施，不随包走。
   if (name.startsWith('.')) return true;
-  if (isTestFlowResidue(rel, name)) return true;
+  if (isFlowExcluded(rel, name)) return true;
   if (isDir) return EXCLUDE_DIRS.has(name);
   return EXCLUDE_FILE_RES.some((re) => re.test(name));
 }
@@ -113,8 +111,8 @@ function copyTree(src, dst, rel = '', count = true) {
     const r = rel ? `${rel}/${e.name}` : e.name;
     if (shouldSkip(e.name, e.isDirectory(), rel)) {
       if (count) {
-        // 测试残件流程单列计数（逐个列名）：排除必须可见，不混进「散文件」一笔糊涂账
-        if (isTestFlowResidue(rel, e.name)) skippedFlowSet.add(r);
+        // 非 seed 的 flows 单列计数（逐个列名）：排除必须可见，不混进「散文件」一笔糊涂账
+        if (isFlowExcluded(rel, e.name)) skippedFlowSet.add(r);
         else if (e.isDirectory()) skippedDirSet.add(r);
         else stats.skippedFiles++;
       }
@@ -404,7 +402,7 @@ const lines = [
   `  排除的目录（${stats.skippedDirs.length} 类）:`,
   ...stats.skippedDirs.map((d) => `    - ${d}`),
   `  排除的散文件: ${stats.skippedFiles} 个（. 前缀 / *.log / 临时探查脚本 / 备份文件）`,
-  `  排除的测试残件流程: ${stats.skippedFlows.length} 个（t-/int-/e2e-/live-/ui-e2e-/未命名流程- 前缀，flows/ 运行数据面残件不随包）` +
+  `  排除的非 seed 流程: ${stats.skippedFlows.length} 个（flows/ 白名单口径：真实流程永不随包，仅带 seed 演示流程）` +
     (stats.skippedFlows.length ? '：' + stats.skippedFlows.map((f) => f.replace(/^flows\//, '')).join('、') : ''),
   '',
   verifySkipped ? '  自校验: 跳过（--no-verify）'

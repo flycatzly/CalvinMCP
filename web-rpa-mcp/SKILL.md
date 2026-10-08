@@ -147,8 +147,8 @@ node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317�
 - **安全**：桥接只绑 127.0.0.1 + Host/Origin 校验，零 CORS 放行头；可选 token 鉴权（启动 `WEBRPA_BRIDGE_TOKEN=令牌 node mcp/bridge.mjs`，插件设置页或 `/console?token=令牌` 配对）。**不要把 8317 转发到公网**。
 - **录制器单例**：全局同时只允许一个录制会话；被其他会话占用时，悬浮球与 /console 录制页**只显示只读提示、不提供结束/取消**（防误结束他人录制）。
 - 完整功能与工具对照见仓库 `extension/README.md`（装机副本可能不含 extension/，以仓库为准）。
-- **改扩展后回归**：仓库 `verify/ui-ext.mjs`（`node verify/ui-ext.mjs`，约 3-4 分钟；`--quick` 约 2 分钟）覆盖插件 UI 全链路（/console 全页签 + 悬浮球录制/重播/查看/管理/重录表单/右键菜单/拖拽/隐藏/live 进度），需桥接运行中、自动用隔离实例避开录制器占用。
-- **全量验证总入口**：`node verify/all.mjs`（`--quick` 跳过 selftest 与 live-fulltest 且 ui-ext 用 --quick）一条命令顺序跑完六套电池——自检 427 项 / MCP 44 工具 68 链路（live-fulltest）/ /console 全按钮清扫（button-sweep，32 用例含安全分级跳过清单与 splice 执行闭环）/ 扩展 UI 回归（**默认完整版 17 含 live 长流程**）/ 双模（standalone 15 用例）/ 点名链条（fullchain 8 用例）；失败自动重试一次（时序竞态类兜底）；**收尾电池残件自密封**（自动清理测试前缀 runs/backups/live-report.json——绝不碰用户与外部流程，防门禁哈希污染）+ 残件自检行；末尾汇总表 + 非零退出码可接告警；顺序执行防跑批互踩。另有 **verify/journey.mjs**（新用户插拔旅程 8 环：开箱独立→本地录制/👁/回放→插桥升级→依赖重播→拔桥回落）单独跑。
+- **改扩展后回归**：仓库 `verify/ui-ext.mjs`（`node verify/ui-ext.mjs`，约 3-4 分钟；`--quick` 约 2 分钟）覆盖插件 UI 全链路（/console 全页签 + 悬浮球录制/重播/查看/管理/重录表单/右键菜单/拖拽/隐藏/live 进度），自动用隔离实例避开录制器占用；**8317 桥接缺失时自动自起临时桥接并在退出时回收**（有主桥接直接用不误杀——ui-ext 与 all.mjs 均有此前置自检）。
+- **全量验证总入口**：`node verify/all.mjs`（`--quick` 跳过 selftest 与 live-fulltest 且 ui-ext 用 --quick）一条命令顺序跑完**七套电池**——自检 427 项 / MCP 44 工具 68 链路（live-fulltest）/ /console 全按钮清扫（button-sweep，40 用例含安全分级跳过清单、splice 三审计与断言边界组）/ 扩展 UI 回归（**默认完整版 17 含 live 长流程**）/ 双模（standalone 18 用例，含 MCP 格式导入/导入负向/跨源诚实停止）/ 新用户插拔旅程（journey 8 用例：开箱独立→本地录制/👁/回放→插桥升级→依赖重播→拔桥回落）/ 点名链条（fullchain 8 用例）；失败自动重试一次（时序竞态类兜底）；**收尾电池残件自密封**（自动清理测试前缀 runs/backups/live-report.json——绝不碰用户与外部流程，防门禁哈希污染）+ 残件自检行（零误报口径）；末尾汇总表 + 非零退出码可接告警；顺序执行防跑批互踩。
 
 ## 五之四、外部真实网站回放规范（实测教训）
 

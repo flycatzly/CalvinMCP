@@ -410,6 +410,166 @@ check('面板口令只走本机请求头且存本地（不外发）',
     JSON.stringify({ pv_base: el2.storageData.pv_base, fetches: el2.fetchLog.length }));
 }
 
+/* ================= r50：面板历史区富渲染（pvFactsLine 双面同口径 + 历史行预览） ================= */
+{
+  const vm = await import('node:vm');
+  // 双面钉的悬浮球侧：pvFactsLine 是 floating.js IIFE 内部函数 —— 切片取出纯函数体在微型沙箱求值
+  const floatSrc2 = fs.readFileSync(path.join(ROOT, 'extension', 'floating.js'), 'utf8');
+  const flSlice = floatSrc2.slice(floatSrc2.indexOf('function pvFactsLine'), floatSrc2.indexOf('function resultTextOf'));
+  const flSb = {};
+  vm.createContext(flSb);
+  vm.runInContext(`${flSlice}\nthis.__floatingFacts = pvFactsLine;`, flSb);
+  const floatFacts = flSb.__floatingFacts;
+
+  const mkHistEnv = (opts) => {
+    const o = opts || {};
+    const els = {};
+    const makeEl = (id) => {
+      const el = {
+        _id: id, style: {}, value: '', textContent: '', innerHTML: '', hidden: false,
+        disabled: false, className: '', children: [], _on: {}, dataset: {},
+        classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+        addEventListener(type, fn) { (this._on[type] = this._on[type] || []).push(fn); },
+        removeEventListener() {},
+        appendChild(c) { c.parent = this; this.children.push(c); return c; },
+        setAttribute() {}, getAttribute() { return null; },
+        querySelector(sel) { // 允忍模板/子节点查找：按 className 找子树（历史行四段读取面）
+          let found = null;
+          const walk = (n) => { if (found) return; (n.children || []).forEach((c) => { if (!found && c.className && String(c.className).split(' ').includes(String(sel).slice(1))) found = c; walk(c); }); };
+          walk(this);
+          return found || makeEl(id + '.q');
+        },
+        querySelectorAll() { return []; },
+        dispatch(type) { (this._on[type] || []).forEach((fn) => fn({ type, target: this })); },
+      };
+      return el;
+    };
+    const storageData = { pv_base: 'http://127.0.0.1:7395', pv_token: '' };
+    const sandbox = {
+      document: {
+        getElementById(id) { if (!els[id]) els[id] = makeEl(id); return els[id]; },
+        createElement() { return makeEl('dyn'); },
+        createTextNode(t) { return { textContent: t }; },
+        addEventListener() {},
+      },
+      fetch: async (url, opts2) => {
+        if (o.fetchReject) throw new Error('Failed to fetch'); // r51：桥未起的真实失败形态（网络层拒绝）
+        let body = { result: {} };
+        if (String(url).endsWith('/health')) { return { ok: true, json: async () => ({ ok: true, version: '0', tools: 1 }) }; }
+        try {
+          const req = JSON.parse(String(opts2 && opts2.body || '{}'));
+          if (req.method === 'initialize') body = { result: { serverInfo: { name: 'stub', version: '0' } } };
+          else if (req.method === 'tools/list') body = { result: { tools: [{ name: 't1', title: 'T1', inputSchema: { properties: {} } }], serverInfo: { name: 'stub', version: '0' } } };
+          else if (req.method === 'tools/call') body = { result: { content: [{ type: 'text', text: 'ok' }], ...(o.sc !== undefined ? { structuredContent: o.sc } : {}) } };
+        } catch { /* 按空请求处理 */ }
+        return { ok: true, json: async () => body };
+      },
+      chrome: {
+        storage: { local: {
+          async get(keys) { const x = {}; [].concat(keys).forEach((k) => { if (storageData[k] !== undefined) x[k] = storageData[k]; }); return x; },
+          async set(obj) { Object.assign(storageData, obj); },
+        } },
+        runtime: { getManifest: () => ({ version: '9.9.9-test' }) },
+      },
+      console,
+    };
+    vm.createContext(sandbox);
+    let loaded = true;
+    try { vm.runInContext(panelJs, sandbox, { filename: 'panel.js' }); } catch (e) { loaded = false; sandbox._err = e.message; }
+    return { els, sandbox, loaded };
+  };
+  const settle2 = () => new Promise((r) => setTimeout(r, 40));
+
+  // 1) 双面同口径：同一组输入，面板复刻版与悬浮球原版产出同一行（防复制实现静默漂移）
+  const battery = [
+    undefined, null, 'str', [],
+    { verdict: 'Pass', total: 3 },
+    { verdict: 'Fail', nested: { a: 1, b: 'x' }, rows: [], title: 't', zero: 0, nul: null, skip: { deep: 1 } },
+    { k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6 },
+  ];
+  {
+    const e1 = mkHistEnv({});
+    await settle2();
+    const pfB = vm.runInContext('typeof pvFactsLine === "function" ? pvFactsLine : null', e1.sandbox);
+    check('pvFactsLine 双面同口径：面板复刻版与悬浮球 r42 原版逐输入同输出（复制实现的防漂移钉）',
+      typeof floatFacts === 'function' && typeof pfB === 'function'
+      && battery.every((x) => pfB(x === undefined ? null : x) === floatFacts(x === undefined ? null : x)),
+      `float=${typeof floatFacts} panel=${typeof pfB}`);
+  }
+  {
+    const e = mkHistEnv({});
+    await settle2();
+    const pf = vm.runInContext('typeof pvFactsLine === "function" ? pvFactsLine : null', e.sandbox);
+    const pv = vm.runInContext('typeof pvResultPreview === "function" ? pvResultPreview : null', e.sandbox);
+    check('面板 vm：pvFactsLine/pvResultPreview 暴露且口径边界（非对象空串/verdict 剔除/数组 0 计数/cap 4）',
+      !!pf && !!pv
+      && pf('not-object') === '' && pf([1, 2]) === ''
+      && pf({ verdict: 'X', a: 1 }) === 'a 1'
+      && pf({ arr: [] }) === 'arr count 0'
+      && pf({ a: 1, b: 2, c: 3, d: 4, e: 5 }) === 'a 1 · b 2 · c 3 · d 4'
+      && pv({ structuredContent: { verdict: 'Pass', total: 3 } }) === '【Pass】 total 3'
+      && pv({ content: [{ type: 'text', text: 'x' }] }) === ''
+      && pv(null) === '',
+      JSON.stringify({ facts: pf ? pf({ verdict: 'X', a: 1 }) : null, pv: pv ? pv({ structuredContent: { verdict: 'Pass', total: 3 } }) : null }));
+  }
+  // 2) 行为：runTool 完成 → 历史首行预览含 【verdict】+facts（textContent only）
+  {
+    const e = mkHistEnv({ sc: { verdict: 'Pass', total: 3, broken: [] } });
+    await settle2();
+    e.els.runBtn.dispatch('click');
+    await settle2();
+    const li = e.els.historyList.children[0];
+    const pv = li && li.children.find((c) => String(c.className).includes('h-preview'));
+    check('历史行富渲染：runTool 完成后首行 .h-preview = 【verdict】+关键事实一行（textContent）',
+      !!li && !!pv && pv.textContent === '【Pass】 total 3 · broken count 0',
+      pv ? pv.textContent : '(无 h-preview)');
+  }
+  // 3) 行为 XSS：恶意 structuredContent 原样保真进预览；renderHistory 函数体零 innerHTML
+  {
+    const e = mkHistEnv({ sc: { verdict: '<img src=x onerror=alert(1)>', note: '"><svg onload=1>' } });
+    await settle2();
+    e.els.runBtn.dispatch('click');
+    await settle2();
+    const li = e.els.historyList.children[0];
+    const pv = li && li.children.find((c) => String(c.className).includes('h-preview'));
+    const rhBody = panelJs.slice(panelJs.indexOf('function renderHistory'), panelJs.indexOf('/* ---------------- 连接与初始化'));
+    check('历史行保真：恶意载荷原样进 .h-preview（textContent，XSS 面为零），renderHistory 零 innerHTML',
+      !!pv && pv.textContent.includes('<img src=x onerror=alert(1)>') && pv.textContent.includes('"><svg onload=1>')
+      && !rhBody.replace(/\/\/[^\n]*/g, '').includes('innerHTML'), // 注释写「零 innerHTML」不算红——去注释后匹配（r41 口径）
+      pv ? pv.textContent.slice(0, 80) : '(无 h-preview)');
+  }
+  // 4) 行为：无 structuredContent → 预览空串，行四段结构不塌
+  {
+    const e = mkHistEnv({});
+    await settle2();
+    e.els.runBtn.dispatch('click');
+    await settle2();
+    const li = e.els.historyList.children[0];
+    const cls = li ? li.children.map((c) => String(c.className).split(' ')[0]) : [];
+    check('历史行空态：无 structuredContent → 预览空串、四段结构（名/态/时/预览）在位不塌',
+      !!li && cls.includes('h-name') && cls.includes('h-status') && cls.includes('h-meta') && cls.includes('h-preview')
+      && li.children.find((c) => c.className === 'h-preview').textContent === '',
+      JSON.stringify(cls));
+  }
+  // r51：连接失败要给可执行指引（裸 "Failed to fetch" 不再是终点）
+  {
+    const e = mkHistEnv({ fetchReject: true });
+    await settle2();
+    check('连接失败指引：fetch 拒绝 → 状态行含「桥未运行」与 bridge.mjs 启动命令（可执行下一步）',
+      /连接失败：.*桥未运行？.*node mcp\/bridge\.mjs.*保存并重连/s.test(String(e.els.serverInfo.textContent || '')),
+      String(e.els.serverInfo.textContent).slice(0, 120));
+  }
+  // r51：安装输出的插件加载引导（安装及可使用：装完知道去哪加载扩展、怎么起桥）
+  {
+    const installSrc = fs.readFileSync(path.join(ROOT, 'skill', 'playwright-verify', 'install.mjs'), 'utf8');
+    check('install 输出含插件加载引导：加载已解压 + extension 目录 + 起桥命令 + 独立模式提示',
+      installSrc.includes('加载已解压的扩展程序')
+      && installSrc.includes("path.join(INSTALL_ROOT, 'extension')")
+      && installSrc.includes('bridge.mjs')
+      && installSrc.includes('独立模式'));
+  }
+}
+
 /* ================= 收尾 ================= */
 await bridge.close();
 

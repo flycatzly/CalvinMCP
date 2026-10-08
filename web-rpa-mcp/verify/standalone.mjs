@@ -178,6 +178,12 @@ try {
     }));
     if (!LOCAL_ACTUAL_ID) throw new Error('捕获本地流程 id 失败');
     console.log('       本地流程 id=' + LOCAL_ACTUAL_ID);
+    // 降噪断言（v1.21.3）：P1 的真实操作是 fill+click——录出步骤应恰为 [fill, click]（hover 被 click 吸收、change 同值丢弃）
+    const ops = await popup.evaluate(() => new Promise((res) => {
+      chrome.storage.local.get('rpaLocalFlows', (st) => res(((st.rpaLocalFlows || [])[0] || { steps: [] }).steps.map((s) => s.op)));
+    }));
+    if (ops.length > 2 || ops.join(',') !== 'fill,click') throw new Error('降噪失败，录制步骤=' + ops.join(',') + '（应为 fill,click）');
+    console.log('       降噪后步骤: ' + ops.join(','));
     const dl = popup.waitForEvent('download', { timeout: 10000 });
     await popup.evaluate(() => {
       const rows = [...document.querySelectorAll('.local-flow-row')];
@@ -384,6 +390,94 @@ try {
     } finally { try { demo.server.close(); } catch { /* ignore */ } }
   });
   function locationSafe(u) { return String(u).slice(0, 60); }
+
+  /* ---- P11 MCP 格式导入（toLocalFromMcp 反向映射——此前零测试覆盖的盲区路径）---- */
+  await T('P11 导入 MCP 流程 JSON → 反向映射 → 本地回放生效', async () => {
+    const tmp = path.join(os.tmpdir(), 'rpa-import-mcp-' + Date.now() + '.json');
+    fs.writeFileSync(tmp, JSON.stringify({
+      id: 't-mcpfmt', name: 'MCP格式导入探针', version: 1, startUrl: stub.url + '/', params: [],
+      steps: [
+        { op: 'goto', seq: 1, url: stub.url + '/' },
+        { op: 'fill', seq: 2, locators: [{ strategy: 'testid', value: 'num' }], value: '777' },
+        { op: 'click', seq: 3, locators: [{ strategy: 'testid', value: 'go' }] },
+      ], assertions: [],
+    }));
+    await popup.evaluate(() => { document.querySelector('#tabs button[data-tab="flows"]').click(); });
+    await popup.waitForSelector('#btn-local-import', { state: 'visible', timeout: 10000 });
+    const [fc] = await Promise.all([popup.waitForEvent('filechooser', { timeout: 10000 }), popup.locator('#btn-local-import').click()]);
+    await fc.setFiles(tmp);
+    await popup.waitForFunction(() => { const b = document.getElementById('local-flows-body'); return b && b.textContent.indexOf('MCP格式导入探针') >= 0; }, undefined, { timeout: 10000 });
+    fs.rmSync(tmp, { force: true });
+    // 反向映射形状核对 + 本地回放生效
+    const steps = await popup.evaluate(() => new Promise((res) => {
+      chrome.storage.local.get('rpaLocalFlows', (st) => {
+        const f = (st.rpaLocalFlows || []).find((x) => x.name === 'MCP格式导入探针');
+        res(f ? f.steps.map((s) => s.op) : null);
+      });
+    }));
+    if (!steps || steps.join(',') !== 'goto,fill,click') throw new Error('反向映射步骤异常: ' + (steps && steps.join(',')));
+    await page.goto(stub.url + '/');
+    await page.waitForSelector('#__rpa-ball-host', { state: 'attached', timeout: 15000 });
+    await page.click('#__rpa-ball-host .ball');
+    await page.waitForFunction(() => { const r = document.getElementById('__rpa-ball-host').shadowRoot; return r && [...r.querySelectorAll('.locsect .frow')].some((x) => x.textContent.indexOf('MCP格式导入探针') >= 0); }, undefined, { timeout: 10000 });
+    await page.evaluate(() => { document.getElementById('out').textContent = ''; });
+    await page.evaluate(() => {
+      const r = document.getElementById('__rpa-ball-host').shadowRoot;
+      const row = [...r.querySelectorAll('.locsect .frow')].find((x) => x.textContent.indexOf('MCP格式导入探针') >= 0);
+      row.querySelectorAll('button')[0].click();
+    });
+    // goto 首步走跨页续播：新页消息为「跨页续播完成」（与独立回放完成并列接受）
+    await page.waitForFunction(() => { const r = document.getElementById('__rpa-ball-host') && document.getElementById('__rpa-ball-host').shadowRoot; const m = r && r.querySelector('.msg') ? r.querySelector('.msg').textContent : ''; return m.indexOf('独立回放完成') >= 0 || m.indexOf('跨页续播完成') >= 0 || m.indexOf('❌') >= 0; }, undefined, { timeout: 20000 });
+    const m11 = await page.evaluate(() => { const r = document.getElementById('__rpa-ball-host') && document.getElementById('__rpa-ball-host').shadowRoot; return r && r.querySelector('.msg') ? r.querySelector('.msg').textContent : ''; });
+    if (m11.indexOf('❌') >= 0) throw new Error('导入的 MCP 流程回放失败: ' + m11.slice(0, 120));
+    if (await page.evaluate(() => document.getElementById('out').textContent) !== 'OK') throw new Error('导入的 MCP 流程回放未生效');
+  });
+
+  /* ---- P12 导入负向：坏 JSON / 无步骤 → 错误提示且不落库 ---- */
+  await T('P12 导入坏 JSON/无步骤 → 错误提示不落库', async () => {
+    const before = await popup.evaluate(() => new Promise((res) => chrome.storage.local.get('rpaLocalFlows', (st) => res((st.rpaLocalFlows || []).length))));
+    // 坏 JSON
+    const bad1 = path.join(os.tmpdir(), 'rpa-bad1-' + Date.now() + '.json');
+    fs.writeFileSync(bad1, '{not json!!');
+    let [fc1] = await Promise.all([popup.waitForEvent('filechooser', { timeout: 10000 }), popup.locator('#btn-local-import').click()]);
+    await fc1.setFiles(bad1);
+    await popup.waitForFunction(() => { const t = document.getElementById('toast'); return t && !t.classList.contains('hide') && t.textContent.indexOf('导入失败') >= 0; }, undefined, { timeout: 10000 });
+    fs.rmSync(bad1, { force: true });
+    // 无步骤 JSON
+    const bad2 = path.join(os.tmpdir(), 'rpa-bad2-' + Date.now() + '.json');
+    fs.writeFileSync(bad2, JSON.stringify({ id: 'x', name: '无步骤', steps: [] }));
+    let [fc2] = await Promise.all([popup.waitForEvent('filechooser', { timeout: 10000 }), popup.locator('#btn-local-import').click()]);
+    await fc2.setFiles(bad2);
+    await popup.waitForFunction(() => { const t = document.getElementById('toast'); return t && !t.classList.contains('hide') && t.textContent.indexOf('没有可导入的步骤') >= 0; }, undefined, { timeout: 10000 });
+    fs.rmSync(bad2, { force: true });
+    const after = await popup.evaluate(() => new Promise((res) => chrome.storage.local.get('rpaLocalFlows', (st) => res((st.rpaLocalFlows || []).length))));
+    if (after !== before) throw new Error('负向导入落库了: ' + before + ' -> ' + after);
+  });
+
+  /* ---- P13 跨源 goto 诚实停止分支 ---- */
+  await T('P13 跨源 goto → 诚实停止并明示原因', async () => {
+    // 用独立 demo 站（随机端口=另一 origin）作跨源目标
+    const demo2 = await (await import('../demo/app.mjs')).startDemoServer(0);
+    try {
+      await popup.evaluate((u) => new Promise((res) => {
+        const flow = { id: 'local-crossorigin', name: '跨源探针', startUrl: location.href, steps: [{ op: 'goto', url: u }] };
+        chrome.storage.local.get('rpaLocalFlows', (st) => { const arr = (st.rpaLocalFlows || []).filter((f) => f.id !== 'local-crossorigin'); arr.unshift(flow); chrome.storage.local.set({ rpaLocalFlows: arr }, () => res(true)); });
+      }), demo2.url + '/');
+      await page.goto(stub.url + '/');
+      await page.waitForSelector('#__rpa-ball-host', { state: 'attached', timeout: 15000 });
+      await page.click('#__rpa-ball-host .ball');
+      await page.waitForFunction(() => { const r = document.getElementById('__rpa-ball-host').shadowRoot; return r && [...r.querySelectorAll('.locsect .frow')].some((x) => x.textContent.indexOf('跨源探针') >= 0); }, undefined, { timeout: 10000 });
+      await page.evaluate(() => {
+        const r = document.getElementById('__rpa-ball-host').shadowRoot;
+        const row = [...r.querySelectorAll('.locsect .frow')].find((x) => x.textContent.indexOf('跨源探针') >= 0);
+        row.querySelectorAll('button')[0].click();
+      });
+      await page.waitForFunction(() => { const m = document.getElementById('__rpa-ball-host').shadowRoot.querySelector('.msg').textContent; return m.indexOf('跨源') >= 0 || m.indexOf('❌') >= 0; }, undefined, { timeout: 15000 });
+      const m = await page.evaluate(() => document.getElementById('__rpa-ball-host').shadowRoot.querySelector('.msg').textContent);
+      if (m.indexOf('跨源') < 0 || m.indexOf('已回放到此') < 0) throw new Error('未诚实停止: ' + m.slice(0, 120));
+      if (await page.evaluate(() => location.pathname) !== '/') throw new Error('页面不应跳转');
+    } finally { try { demo2.server.close(); } catch { /* ignore */ } }
+  });
 } catch (e) {
   fail++; failures.push('setup -> ' + (e && e.message ? e : e));
   console.log('  FAIL setup: ' + (e && e.message ? e : e));

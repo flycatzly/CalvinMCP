@@ -108,6 +108,19 @@ export function mergeRows(acc, pageRows, keyIndex = 0) {
 }
 
 /**
+ * 页内容推进检测（纯函数，r53）：两页行集是否逐行同内容（顺序敏感）。
+ * 用途：把「页面没推进」（F7 守门：止损 no-new-rows）与「页面推进了但本页无新键」
+ * （纯重复中间页，r52 实测会丢后续页数据）解耦——只有本页与上一页逐行相同才算未推进。
+ * 空/非数组按不相同处理：首页无基准不误判（配合 server 循环的 prevRows=undefined 语义）。
+ */
+export function sameRows(a, b) {
+  const ra = Array.isArray(a) ? a : null;
+  const rb = Array.isArray(b) ? b : null;
+  if (!ra || !rb || ra.length !== rb.length) return false;
+  return ra.every((row, i) => JSON.stringify(Array.isArray(row) ? row : []) === JSON.stringify(Array.isArray(rb[i]) ? rb[i] : []));
+}
+
+/**
  * 两期对比（纯函数）：按 key 列比 rows 的 新增/删除/变化/未变。
  * 语义是「数据归并的对照表」，不是测试判定 —— 新增与变化不是失败。
  */
@@ -143,7 +156,11 @@ export function diffRows(prevRows = [], currRows = [], keyIndex = 0) {
 /** CSV 编码（RFC4180 引号转义；带 BOM —— Excel 直接双击打开不乱码）。 */
 export function formatCsv(headers, rows) {
   const cell = (v) => {
-    const s = v === undefined || v === null ? '' : String(v);
+    let s = v === undefined || v === null ? '' : String(v);
+    // CSV 公式注入中和（r52，与 db export_data 同口径）：采集数据源是任意网页=攻击者可控，
+    // 本产物注释自述「Excel 双击开」—— =+-@ TAB CR 开头的单元格加 ' 前缀，Excel 按文本处理。
+    // 代价（与 export_data 一致并如实承担）：以这些符号开头的**合法文本**也被转文本展示。
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [];

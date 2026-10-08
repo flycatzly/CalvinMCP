@@ -210,6 +210,10 @@ playwright-verify/
 
 ## 版本记录
 
+- **v1.25.0（2026-10-08）**：collect_table 推进检测与去重新增解耦（两击制）——added===0 时内容有变继续翻、逐行相同计一击、连续两击才停 no-new-rows（F7 守门原语义保留）；新纯函数 sameRows；r52 纯重复中间页丢数案例修复（realtest-r52 探针 4/4 页账 [[1,2,2],[2,2,0],[3,1,1]]）。nl-agent-check 147→149、flow-check 44→45（browser 套件 +1 只进 mode 3）。CORE 740/795/934，全量 965。
+- **v1.24.0（2026-10-08）**：探索性实测轮 —— 真 stdio+回环靶站（Temp/realtest-r52.mjs 4/4）补齐 collect_table next 翻页与 keyIndex 跨页去重两条零真跑链路；挖出并修复 CSV 公式注入（formatCsv 对 =+-@ TAB CR 开头单元格与 db export_data 同口径加 ' 前缀，真链路 =HYPERLINK 验证不执行）；纯重复中间页保守停边界如实记录（不猜测性修）。nl-agent-check 145→147。CORE 738/793/931，全量 962。
+- **v1.23.0（2026-10-08）**：控制台整页真浏览器全流程验证 + 双修复面 —— floating-e2e 新增控台段 7 钉（桥未起可执行指引/重连 16 工具/lint_spec 真调用+历史预览+回填/面板双模往返/模式钮视口可达性）；修复 A：reconnect 失败带 `node mcp/bridge.mjs` 启动指引；修复 B：install.mjs 下一步新增插件加载引导（加载已解压+extension 目录+起桥命令）。bridge-check 54→56、floating-e2e 30→37。CORE 736/791/929，全量 960。
+- **v1.22.0（2026-10-08）**：面板历史区富渲染 —— pushHistory 存【verdict】+facts 预览行（pvResultPreview 纯函数），历史行第四段 textContent 渲染（CSS 单行省略）；pvFactsLine 面板复刻悬浮球 r42 同口径 + bridge-check 双面钉锁死防复制漂移；renderHistory 全 createElement（渲染路径零 innerHTML）。bridge-check 49 → 54。CORE 734/789/920，全量 951。
 - **v1.21.0（2026-10-08）**：浏览器插件插拔式双模 —— 面板/悬浮球「⚡ 依赖 MCP / 🔋 独立模式」按钮切换（pv_mode 同键持久化）；独立模式本地能力保留（录制/回放/导出/console），桥依赖面停用+守卫诚实提示零发出。全链路排查修 2 真 bug：配置键分裂（面板 base/token vs 背景 pv_base/pv_token → 统一+旧键迁移）、clientInfo 硬编码 1.9.0 → 读 manifest。bridge-check 42→49、floating-check 100→105、floating-e2e 27→30。CORE 728/783/914，全量 945。
 - **v1.20.0（2026-10-08）**：悬浮球导出录制 JSON —— 面板「📤 导出录制」把当前录制转成 generate_scripts 输入载荷（write:false 恒 false）Blob 下载带走（纯本地不走桥），文件名 exportFileName 清洗（保留字符/60 帽/空名与全符号糊回落 recording），整链 try/catch 不掀翻面板。floating-check 92 → 100、floating-e2e 26 → 27。CORE 716/771/899，全量 930。
 - **v1.19.0（2026-10-08）**：PW006 修饰断言形态扫尾 —— 正则扩 expect.soft/expect.poll（不 await 同样假通过，与 PW007 认知面恢复对称），requireAsyncSource 闸门头剥离抽 EXPECT_HEAD_RE 单一源，闸门语义不变；对抗语料 +5 钉，lint-check 53 → 58。CORE 708/763/890，全量 921。

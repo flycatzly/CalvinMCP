@@ -361,4 +361,6 @@ console.log('\n下一步：');
 console.log('  1) 重启 MCP 客户端 / 重新加载 DSH 配置');
 console.log('  2) 跑自检：node skill/playwright-verify/scripts/selfcheck.mjs');
 console.log('  3) 在客户端确认出现 16 个 mcp__playwright_verify__* 工具');
+console.log(`  4) 浏览器插件：chrome://extensions → 打开「开发者模式」→「加载已解压的扩展程序」→ 选目录 ${path.join(INSTALL_ROOT, 'extension')}`);
+console.log(`  5) 起本地桥（插件/控制台的通道）：node ${path.join(INSTALL_ROOT, 'mcp', 'bridge.mjs')}（插件「独立模式」可不起桥：录制/回放/导出本地可用，点面板 ⚡ 按钮切换）`);
 process.exit(failed.length ? 1 : 0);

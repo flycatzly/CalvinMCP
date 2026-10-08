@@ -403,6 +403,59 @@ async function main() {
     }, 8000, 400);
     check('录制管理：真浏览器行内重命名 → storage 名字更新', !!renamedOk, await logText());
 
+    /* ---- r51：控制台整页全流程（真浏览器首次驱动面板；r49 教训：可达性必须真浏览器验） ---- */
+    const extId = new URL(sw.url()).host;
+    // 失败面：桥地址指到死端口 → 诚实报错 + 可执行启动指引（r51 修复面）
+    await safe(() => sw.evaluate(() => chrome.storage.local.set({ pv_base: 'http://127.0.0.1:1', pv_mode: 'mcp' })));
+    const pPanel = await ctx.newPage();
+    await safe(() => pPanel.goto(`chrome-extension://${extId}/panel.html`, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+    await safe(() => pPanel.click('#saveCfg', { timeout: 8000 }));
+    const downHint = await poll(() => pPanel.locator('#serverInfo').textContent()
+      .then((t) => t.includes('连接失败') && t.includes('桥未运行') && t.includes('bridge.mjs')), 10000, 400);
+    check('控制台：桥未起 → 诚实报错且给可执行启动指引（裸 Failed to fetch 不再是终点）',
+      !!downHint, await safe(() => pPanel.locator('#serverInfo').textContent(), 'err'));
+    // 修回真桥 → 16 工具 + 状态点绿
+    let fillErr = '';
+    try { await pPanel.fill('#baseUrl', bridge.base); } catch (e) { fillErr = String(e && e.message || e).split('\n')[0].slice(0, 80); }
+    try { await pPanel.click('#saveCfg', { timeout: 8000 }); } catch { /* 下面 detail 会带出状态 */ }
+    const toolsLoaded = await poll(() => pPanel.locator('#serverInfo').textContent().then((t) => t.includes('16 个工具')), 20000, 500);
+    const dotGreen = await poll(() => pPanel.locator('#statusDot').getAttribute('class').then((c) => /ok/.test(c || '')), 8000);
+    check('控制台：重连真桥 → tools/list 16 个工具、状态点绿', !!toolsLoaded && !!dotGreen,
+      JSON.stringify({ fillErr, inputVal: await safe(() => pPanel.inputValue('#baseUrl'), 'err'),
+        info: String(await safe(() => pPanel.locator('#serverInfo').textContent(), 'err')).slice(0, 70) }));
+    // 全流程：选 lint_spec → 填 target → 调用 → 状态/结构化区/历史行预览（r50 面活体）
+    await safe(() => pPanel.locator('#toolList button').filter({ hasText: 'lint_spec' }).click({ timeout: 8000 }));
+    await safe(() => pPanel.fill('[data-field="target"]', 'demo/tests/clean.spec.ts'));
+    await safe(() => pPanel.click('#runBtn', { timeout: 8000 }));
+    const runDone = await poll(() => pPanel.locator('#runStatus').textContent().then((t) => t.includes('完成，用时')), 30000, 400);
+    const structVisible = await poll(() => pPanel.locator('#structuredBox').isVisible(), 5000);
+    const histPreview = await poll(() => pPanel.locator('#historyList li').first().locator('.h-preview').textContent()
+      .then((t) => ((t || '').length > 0 ? t : null)), 8000, 300);
+    check('控制台全流程：lint_spec 真调用 → 「完成，用时」+ 结构化区显形 + 历史行预览非空（r50 面活体）',
+      !!runDone && !!structVisible && !!histPreview,
+      JSON.stringify({ runDone: !!runDone, structVisible: !!structVisible, preview: String(histPreview || '').slice(0, 50) }));
+    // 历史点击回填
+    await safe(() => pPanel.locator('#historyList li').first().click());
+    const refilled = await poll(() => pPanel.locator('[data-field="target"]').inputValue().then((v) => v === 'demo/tests/clean.spec.ts'), 5000);
+    check('控制台：历史行点击回填参数（改一改就能重跑）', !!refilled);
+    // 双模真浏览器（面板侧 r49 面活体）
+    await safe(() => pPanel.click('#modeBtn', { timeout: 8000 }));
+    const localForm = await poll(() => pPanel.locator('#runBtn').isDisabled().then((d) => d === true), 5000);
+    const noticeShown = await poll(() => pPanel.locator('#localNotice').isVisible(), 5000);
+    const dotLocal = await poll(() => pPanel.locator('#statusDot').getAttribute('class').then((c) => /local/.test(c || '')), 5000);
+    check('控制台双模（真浏览器）：切独立 → runBtn 停用 + 说明显形 + 橙点', !!localForm && !!noticeShown && !!dotLocal);
+    await safe(() => pPanel.click('#modeBtn', { timeout: 8000 }));
+    const backTools = await poll(() => pPanel.locator('#serverInfo').textContent().then((t) => t.includes('16 个工具')), 20000, 500);
+    check('控制台双模：切回依赖 → 重新拉起 16 工具（模式往返真浏览器闭环）', !!backTools);
+    // 可达性显式钉（r49 面板溢出教训：能点到=可达的最强证据，这里再补边界断言）
+    const modeBox = await safe(() => pPanel.locator('#modeBtn').boundingBox(), null);
+    const vp = pPanel.viewportSize() || { width: 1280, height: 720 };
+    check('控制台可达性：模式钮完全落在视口内（r49 面板溢出教训的显式回潮钉）',
+      !!modeBox && modeBox.y >= 0 && modeBox.y + modeBox.height <= vp.height && modeBox.x + modeBox.width <= vp.width,
+      JSON.stringify({ modeBox, vp }));
+    await safe(() => pPanel.close());
+    await safe(() => sw.evaluate((u) => chrome.storage.local.set({ pv_base: u }), bridge.base)); // 环境还原
+
     check('扩展侧全程零 console/page error', extErrors.length === 0, extErrors.slice(0, 3).join(' | '));
   } finally {
     await safe(() => ctx.close());

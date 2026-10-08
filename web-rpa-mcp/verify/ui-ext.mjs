@@ -37,6 +37,32 @@ const api1 = async (n, a) => {
 
 const { chromium } = await import(PW_URL);
 
+/* 8317 桥接前置自检（环境事件教训：缺桥接=ERR_CONNECTION_REFUSED 堆栈 ≠ 回归失败）：
+ * 有主桥接直接用；没有则自起临时桥接并在退出时 kill（自密封） */
+let ownedBridge = null;
+async function ensureBridge8317() {
+  try { const r = await fetch(B1 + '/health', { signal: AbortSignal.timeout(2000) }); if (r.ok) { console.log('（使用既有 8317 桥接）'); return; } } catch { /* down */ }
+  console.log('8317 桥接未启动——自起临时桥接…');
+  ownedBridge = spawn('node', [path.join(ROOT, 'mcp', 'bridge.mjs'), '8317'], { cwd: ROOT, stdio: 'ignore' });
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try { const r2 = await fetch(B1 + '/health'); if (r2.ok) { console.log('临时桥接就绪'); return; } } catch { /* retry */ }
+  }
+  throw new Error('临时桥接启动失败（8317）');
+}
+process.on('exit', () => { if (ownedBridge) { try { ownedBridge.kill(); } catch { /* ignore */ } } });
+/* 收尾自清（微观察轮定案）：Part B 重播产生的「悬浮-」「ui-ext-」前缀 runs 目录是 flow_delete 清不到的孤儿——
+ * exit 钩子同步删（只删本脚本族前缀，绝不碰用户 runs） */
+process.on('exit', () => {
+  try {
+    const runsDir = path.join(ROOT, 'runs');
+    for (const name of fs.readdirSync(runsDir)) {
+      if (/^(悬浮-|ui-ext-)/.test(name)) { try { fs.rmSync(path.join(runsDir, name), { recursive: true, force: true }); } catch { /* ignore */ } }
+    }
+  } catch { /* ignore */ }
+});
+await ensureBridge8317();
+
 /* ============ Part A: /console@8317（无扩展） ============ */
 console.log('—— Part A: /console 全页签（8317） ——');
 {

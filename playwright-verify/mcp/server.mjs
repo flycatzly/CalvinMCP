@@ -49,7 +49,7 @@ import { findRefByNeedle, DEFAULT_HEAL_LLM_BUDGET, HEAL_LLM_BUDGET_MAX } from '.
 import { planFingerprint, createPlanCache, PLAN_CACHE_STATES } from './lib/plancache.js';
 import {
   buildTableEvalFn, collectDir, parseTableFile, mergeRows, diffRows, formatCsv,
-  judgeCollect, planResume, dateStamp, MAX_PAGES_HARD,
+  judgeCollect, planResume, dateStamp, MAX_PAGES_HARD, sameRows,
 } from './lib/collect.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -974,6 +974,7 @@ const TOOLS = [
       }
 
       let pageNo = resume ? resume.startPage : 1;
+      let dupStreak = 0; // r53 两击制：连续两页与上一页逐行相同才判真未推进（一次同内容=放行）
       for (let scanned = 0; scanned < maxPages; scanned++, pageNo++) {
         const evFile = path.join(dir, `page-${pageNo}-facts.json`);
         await runCli({
@@ -987,12 +988,25 @@ const TOOLS = [
           pages.push({ page: pageNo, rowCount: 0, added: 0, note: '本页取数未产出可解析结果' });
           break;
         }
+        const prevRows = lastTable.rows; // r53 推进检测基准（上一页行内容；首页 undefined 不误判）
         lastTable = table;
         const added = mergeRows(acc, table.rows, keyIndex);
         addedThisRun += added;
         pages.push({ page: pageNo, rowCount: (table.rows || []).length, added });
         if (!(table.rows || []).length) { stopReason = 'empty'; break; }
-        if (added === 0) { stopReason = 'no-new-rows'; break; }
+        if (added === 0) {
+          // r53：推进检测与去重新增解耦（两击制）——
+          //  本页与上一页逐行相同 → 计一击；**连续两击**才判「真未推进」停 no-new-rows（F7 守门原语义）。
+          //  内容有变但无新键（键重复值更新）不计击继续翻；纯重复中间页只中一击也放行（r52 丢数案例）。
+          //  已知边界如实：内容逐字相同且持续推进的站点与「翻页坏了」在表内容面不可分辨——两击即停，
+          //  多花一跳换 r52 案例可采全；maxPages 硬上限兜底防任何形态死循环。
+          if (sameRows(table.rows, prevRows)) {
+            dupStreak += 1;
+            if (dupStreak >= 2) { stopReason = 'no-new-rows'; break; }
+          } else {
+            dupStreak = 0;
+          }
+        }
         if (mode === 'none') { stopReason = 'single-page'; break; }
 
         // 翻页：找控件 ref → 动作。找不到就停（如实报，不猜相近控件）

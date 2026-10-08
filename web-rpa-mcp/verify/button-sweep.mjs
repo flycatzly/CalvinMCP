@@ -33,6 +33,7 @@ try {
       const auto = u.search.indexOf('auto=1') >= 0;
       r.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       r.end('<!doctype html><html><head><meta charset="utf-8"><title>sweep页</title></head><body><h1>sweep页</h1><input id="num" data-testid="num"><button id="go" data-testid="go" onclick="document.getElementById(\'out\').textContent=\'OK\'">go</button><div id="out"></div>' +
+        '<table id="tbl"><tbody><tr><td>a</td></tr><tr><td>b</td></tr></tbody></table>' +
         (auto ? '<script>setTimeout(function(){var n=document.getElementById("num");n.value="7";n.dispatchEvent(new Event("input",{bubbles:true}));document.getElementById("go").click();},1200);</script>' : '') +
         '</body></html>');
     });
@@ -273,6 +274,120 @@ try {
     const n = steps2.length;
     if (n < 4) throw new Error('拼接后步骤数应≥4（前缀2+新片段），实为 ' + n + '；步骤=' + steps2.map((s) => s.op).join(',') + '；录制会话步骤=' + JSON.stringify((rsLast && rsLast.steps) || []).slice(0, 200));
     log('  splice 后步骤数=' + n);
+  });
+
+  /* ---- S33-S35：recorder 分支三问审计（盲区狩猎续：空段/keepSuffix/params 前置）---- */
+  await T('S33 splice 空段拒绝且原流程不改', async () => {
+    // 无 auto 的静态页做前缀终点：录制窗口无合成事件 → 新片段必空 → finalizeSplice 拒绝保存
+    const rs0 = await bridgeCall('record_status');
+    if (rs0.data && rs0.data.recording) await bridgeCall('record_cancel');
+    await bridgeCall('flow_import', { flow: mkFlow('t-sweep-d', stub.url + '/', null), overwrite: true });
+    const sh0 = await bridgeCall('flow_show', { flowId: 't-sweep-d', format: 'json' });
+    sh0.data.steps = [
+      { op: 'goto', seq: 1, url: stub.url + '/' },
+      { op: 'click', seq: 2, locators: [{ strategy: 'testid', value: 'go' }] },
+      { op: 'fill', seq: 3, locators: [{ strategy: 'testid', value: 'num' }], value: '1' },
+    ];
+    await bridgeCall('flow_import', { flow: sh0.data, overwrite: true });
+    flowsCreated.push('t-sweep-d');
+    const sp = await bridgeCall('record_splice_start', { flowId: 't-sweep-d', from: 3, to: 3, keepSuffix: true });
+    if (!sp.ok) throw new Error('splice 启动失败: ' + String(sp.summary).slice(0, 80));
+    await new Promise((r) => setTimeout(r, 2500)); // 录制窗口开在静态页：不操作
+    const st = await bridgeCall('record_stop', {});
+    if (st.ok) throw new Error('空片段应被拒绝保存，却返回成功');
+    if (String(st.summary || '').indexOf('没有录到任何步骤') < 0) throw new Error('拒绝文案不符: ' + String(st.summary).slice(0, 120));
+    const sh1 = await bridgeCall('flow_show', { flowId: 't-sweep-d', format: 'json' });
+    if (((sh1.data && sh1.data.steps) || []).length !== 3) throw new Error('原流程被修改了');
+    const rs2 = await bridgeCall('record_status');
+    if (rs2.data && rs2.data.recording) throw new Error('拒绝后会话未释放');
+  });
+
+  await T('S34 keepSuffix=false 后缀丢弃 + auto 新片段替换', async () => {
+    const rs0 = await bridgeCall('record_status');
+    if (rs0.data && rs0.data.recording) await bridgeCall('record_cancel');
+    await bridgeCall('flow_import', { flow: mkFlow('t-sweep-e', stub.url + '/?auto=1', null), overwrite: true });
+    const sh0 = await bridgeCall('flow_show', { flowId: 't-sweep-e', format: 'json' });
+    sh0.data.steps = [
+      { op: 'goto', seq: 1, url: stub.url + '/?auto=1' },
+      { op: 'click', seq: 2, locators: [{ strategy: 'testid', value: 'go' }] },
+      { op: 'fill', seq: 3, locators: [{ strategy: 'testid', value: 'num' }], value: '1' },
+    ];
+    await bridgeCall('flow_import', { flow: sh0.data, overwrite: true });
+    flowsCreated.push('t-sweep-e');
+    const sp = await bridgeCall('record_splice_start', { flowId: 't-sweep-e', from: 2, to: 2, keepSuffix: false });
+    if (!sp.ok) throw new Error('splice 启动失败: ' + String(sp.summary).slice(0, 80));
+    let stepped = false;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const rs = await bridgeCall('record_status');
+      if (rs.data && rs.data.recording && (rs.data.stepCount || 0) >= 2) { stepped = true; break; }
+      if (rs.data && !rs.data.recording) break;
+    }
+    if (!stepped) { await bridgeCall('record_cancel'); throw new Error('auto 新片段未录到步骤'); }
+    await new Promise((r) => setTimeout(r, 2000));
+    const st = await bridgeCall('record_stop', {});
+    if (!st.ok) throw new Error('splice 失败: ' + String(st.summary).slice(0, 100));
+    const sh1 = await bridgeCall('flow_show', { flowId: 't-sweep-e', format: 'json' });
+    const steps = (sh1.data && sh1.data.steps) || [];
+    const ops = steps.map((s) => s.op).join(',');
+    if (ops !== 'goto,fill,click') throw new Error('keepSuffix=false 终态应为 goto,fill,click（后缀原 fill 已弃），实为 ' + ops);
+    const fillStep = steps.find((s) => s.op === 'fill');
+    if (!fillStep || String(fillStep.value) !== '7') throw new Error('新片段未替换（fill 值应为 auto 的 7）: ' + JSON.stringify(fillStep));
+  });
+
+  await T('S35 splice params 前置拒绝（缺参数点名）', async () => {
+    const rs0 = await bridgeCall('record_status');
+    if (rs0.data && rs0.data.recording) await bridgeCall('record_cancel');
+    const pf = mkFlow('t-sweep-p', stub.url + '/q/${查询日}', null);
+    pf.params = [{ name: '查询日', required: true }]; // missing 只收 required:true 的声明（resolveParams 实读定案）
+    await bridgeCall('flow_import', { flow: pf, overwrite: true });
+    flowsCreated.push('t-sweep-p');
+    const sp = await bridgeCall('record_splice_start', { flowId: 't-sweep-p', from: 1, to: 1, keepSuffix: true });
+    if (sp.ok) throw new Error('缺 params 应被前置拒绝');
+    if (String(sp.summary || '').indexOf('重放前缀需要这些参数') < 0) throw new Error('拒绝文案不符: ' + String(sp.summary).slice(0, 120));
+    if (String(sp.summary || '').indexOf('查询日') < 0) throw new Error('未点名缺失参数: ' + String(sp.summary).slice(0, 120));
+    const rs2 = await bridgeCall('record_status');
+    if (rs2.data && rs2.data.recording) throw new Error('拒绝后不应有会话');
+  });
+
+  /* ---- S36-S38：player 断言边界组（checkAssertion 语义实读后的负向/边界落点）---- */
+  const runAsserts = async (id, url, asserts) => {
+    const fl = mkFlow(id, url, null);
+    fl.assertions = asserts;
+    await bridgeCall('flow_import', { flow: fl, overwrite: true });
+    flowsCreated.push(id);
+    const r = await bridgeCall('flow_run', { flowId: id });
+    return r.data || {};
+  };
+  await T('S36a url contains 正向 + title equals 精确匹配 → pass', async () => {
+    const d = await runAsserts('t-sweep-a1', stub.url + '/', [
+      { kind: 'url', contains: '127.0.0.1', message: 'u' },
+      { kind: 'title', equals: 'sweep页', message: 't' },
+    ]);
+    if (d.status !== 'pass') throw new Error('应 pass: ' + JSON.stringify((d.assertions || []).map((a) => a.pass)));
+  });
+  await T('S36b title contains 大小写敏感 → fail（SKILL 五之四第 2 条的 stub 回归）', async () => {
+    const d = await runAsserts('t-sweep-a2', stub.url + '/', [{ kind: 'title', contains: 'SWEEP页', message: '大小写' }]);
+    if (d.status !== 'fail') throw new Error('大小写不敏感会误判 pass——contains 应区分大小写');
+  });
+  await T('S36c textAbsent 命中文本 → fail', async () => {
+    const d = await runAsserts('t-sweep-a3', stub.url + '/', [{ kind: 'textAbsent', text: 'sweep页', message: '文本实际存在' }]);
+    if (d.status !== 'fail') throw new Error('textAbsent 命中应 fail');
+  });
+  await T('S37 tableNotEmpty min 边界：min=2 过 / min=3 败（有效行数语义）', async () => {
+    const d1 = await runAsserts('t-sweep-a4', stub.url + '/', [{ kind: 'tableNotEmpty', selector: '#tbl tbody tr', min: 2, message: '2 行达标' }]);
+    if (d1.status !== 'pass') throw new Error('min=2 应 pass（表 2 行）: ' + JSON.stringify(d1.assertions));
+    const d2 = await runAsserts('t-sweep-a5', stub.url + '/', [{ kind: 'tableNotEmpty', selector: '#tbl tbody tr', min: 3, message: '3 行不达标' }]);
+    if (d2.status !== 'fail') throw new Error('min=3 应 fail（表仅 2 行）');
+  });
+  await T('S38 elementVisible/elementAbsent 正负边界', async () => {
+    const d1 = await runAsserts('t-sweep-a6', stub.url + '/', [
+      { kind: 'elementVisible', selector: '#go', message: '存在' },
+      { kind: 'elementAbsent', selector: '#nope-x', message: '不存在' },
+    ]);
+    if (d1.status !== 'pass') throw new Error('visible+absent(不存在) 应 pass: ' + JSON.stringify(d1.assertions));
+    const d2 = await runAsserts('t-sweep-a7', stub.url + '/', [{ kind: 'elementAbsent', selector: '#go', message: '存在却期望缺席' }]);
+    if (d2.status !== 'fail') throw new Error('elementAbsent 命中现存元素应 fail');
   });
 
   /* ---- 清理卡片流程 ---- */

@@ -97,6 +97,19 @@
       if (!sel) return;
       var v = (el.type === 'checkbox' || el.type === 'radio') ? String(el.checked) : String(el.value || '');
       var last = steps[steps.length - 1];
+      // change 与 input 同元素同值：不产生新信息，直接丢弃（降噪 v1.21.3——实测 Playwright fill 的
+      // blur 触发 change 会在 hover/click 间隔后逃出 800ms 合并窗，且 hover 常插在两次 fill 之间打断
+      // 「看 last」的合并判断：回溯跳过 hover/press 噪声找最近同元素 fill 再判同值）
+      var prevFill = last;
+      for (var bi = steps.length - 1; bi >= 0 && steps.length - bi <= 4; bi--) {
+        var cand = steps[bi];
+        if (cand.op === 'fill') { prevFill = cand; break; }
+        if (cand.op !== 'hover' && cand.op !== 'press') break;
+      }
+      if (prevFill && prevFill.op === 'fill' && prevFill.locator.strategy === sel.strategy && prevFill.locator.value === sel.value && String(prevFill.value) === v && (Date.now() - prevFill.ts) < 2000) {
+        if (e.type === 'change') return; // change 同值：丢弃
+        if (e.type === 'input') return;  // input 同值且近窗：同样丢弃（重复事件）
+      }
       if (last && last.op === 'fill' && last.locator.strategy === sel.strategy && last.locator.value === sel.value && (Date.now() - last.ts) < 800) {
         last.value = v; last.ts = Date.now();
         if (onStep) onStep(steps);
@@ -144,7 +157,22 @@
         document.removeEventListener('change', valH, true);
         document.removeEventListener('mouseover', hoverH, true);
         document.removeEventListener('keydown', pressH, true);
-        return steps.slice();
+        // 降噪（v1.21.3）：hover 若在 1.5s 内被同元素 click 跟随——点击自带「指针已到达」语义，抑制该 hover
+        var out = [];
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i];
+          if (s.op === 'hover') {
+            var absorbed = false;
+            for (var j = i + 1; j < steps.length; j++) {
+              var x = steps[j];
+              if ((x.ts - s.ts) > 1500) break;
+              if (x.op === 'click' && x.locator.strategy === s.locator.strategy && x.locator.value === s.locator.value) { absorbed = true; break; }
+            }
+            if (absorbed) continue;
+          }
+          out.push(s);
+        }
+        return out;
       },
       count: function () { return steps.length; },
       isOn: function () { return on; },

@@ -35,7 +35,7 @@ import {
   parseSnapshotInventory, parseHealPick, buildHealMessages, tryHealStep,
   createHealLlmBudget, DEFAULT_HEAL_LLM_BUDGET, HEAL_LLM_BUDGET_MAX,
 } from '../lib/heal.js';
-import { mergeRows, diffRows, formatCsv, judgeCollect, planResume } from '../lib/collect.js';
+import { mergeRows, diffRows, formatCsv, judgeCollect, planResume, sameRows } from '../lib/collect.js';
 import { planFingerprint, createPlanCache, PLAN_CACHE_TTL_MS, PLAN_CACHE_CAPACITY } from '../lib/plancache.js';
 import { runCli } from '../lib/cli.js';
 import { handleMessage } from '../server.mjs';
@@ -712,6 +712,28 @@ log('=== F) heal/collect：语义提取、选择题边界、翻页归并与两�
     return csv.startsWith('﻿') && csv.includes('\r\n')
       && csv.includes('"含,逗号"') && csv.includes('"含""引号"');
   })());
+
+  // r52：CSV 公式注入中和（数据源=任意网页=攻击者可控；产物自述 Excel 双击开；与 db export_data 同口径）
+  check('F formatCsv 公式注入四形态中和：=/+/-/@ 开头单元格加 \' 前缀（Excel 按文本不执行）', (() => {
+    const csv = formatCsv(['c'], [['=HYPERLINK("http://evil","点我")'], ['+8613800000000'], ['-2+3+cmd|calc'], ['@SUM(A1)']]);
+    return csv.includes('"\'=HYPERLINK(""http://evil"",""点我"")"') && csv.includes("'+8613800000000")
+      && csv.includes("'-2+3+cmd|calc") && csv.includes("'@SUM(A1)");
+  })());
+  check('F formatCsv TAB/CR 开头同样中和；普通与数字开头不受影响', (() => {
+    const csv = formatCsv(['c'], [['\t=TAB首'], ['\r=CR首'], ['2024-01-01 正常日期'], ['正常文本'], ['123 数字开头']]);
+    return csv.includes("'\t=TAB首") && csv.includes("'\r=CR首".replace(/'/g, "'"))
+      && csv.includes('2024-01-01 正常日期') && !csv.includes("'2024") && csv.includes('123 数字开头');
+  })());
+
+  // r53：推进检测纯函数（页内容逐行同才判真未推进；首页无基准不误判）
+  check('F sameRows 逐行同内容才 true（顺序敏感/行值变化即 false/长度不同即 false）',
+    sameRows([['A', '1']], [['A', '1']]) === true
+    && sameRows([['A', '1']], [['A', '2']]) === false
+    && sameRows([['A'], ['B']], [['B'], ['A']]) === false
+    && sameRows([['A']], [['A'], ['B']]) === false);
+  check('F sameRows 空/非数组基准按不相同（首页 prevRows=undefined 不误判未推进）',
+    sameRows([['A']], undefined) === false && sameRows(undefined, [['A']]) === false
+    && sameRows(null, null) === false);
 
   check('F judgeCollect 只判采集本身（零行 Fail，行数多不是失败）',
     judgeCollect({ rowCount: 0, stopReason: 'empty' }).verdict === 'Fail'

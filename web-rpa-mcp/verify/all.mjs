@@ -1,7 +1,7 @@
 /* verify/all.mjs — 一条命令全量验证总入口（顺序执行防跑批互踩）
  * 覆盖：自检 427 项（7 套）/ MCP 44 工具 68 链路 / 扩 UI 全按钮清扫 /
- *       扩展 UI 回归（默认完整版含 live 长流程）/ 双模 / 全链路点名链条
- * 用法：node verify/all.mjs [--quick]（--quick：跳过 selftest/live-fulltest，ui-ext 用 --quick）
+ *       扩展 UI 回归（默认完整版含 live 长流程）/ 双模 / 新用户插拔旅程 / 全链路点名链条
+ * 用法：node verify/all.mjs [--quick]（--quick：跳过 selftest 与 live-fulltest，ui-ext 用 --quick）
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -33,11 +33,29 @@ function cleanResidue() {
   return removed;
 }
 function residueReport() {
+  // flows 自检用不含「演示-」的口径——种子流程「演示-订单日报导出」是随包资产不是残件
+  // （此前 ⚠ 瞬态之谜的真身：自检正则把种子流程数成了残件）
+  const FLOW_RESIDUE_RE = /^(t-|悬浮-|int-|e2e-|ui-ext-|local-|__probe)/;
   let runs = 0, flows = 0;
   try { runs = fs.readdirSync(ROOT + 'runs').length; } catch { /* ignore */ }
-  try { flows = fs.readdirSync(ROOT + 'flows').filter((f) => RESIDUE_RE.test(f)).length; } catch { /* ignore */ }
+  try { flows = fs.readdirSync(ROOT + 'flows').filter((f) => FLOW_RESIDUE_RE.test(f)).length; } catch { /* ignore */ }
   return { runs, flowResidue: flows };
 }
+
+/* 8317 桥接前置自检：有主直接用；没有则自起临时桥接（收尾 kill，自密封）——
+ * 环境事件教训：缺桥接时 ui-ext 以 ERR_CONNECTION_REFUSED 堆栈失败 ≠ 回归失败 */
+let ownedBridge = null;
+async function ensureBridge8317() {
+  try { const r = await fetch('http://127.0.0.1:8317/health', { signal: AbortSignal.timeout(2000) }); if (r.ok) { log('（使用既有 8317 桥接）'); return; } } catch { /* down */ }
+  log('8317 桥接未启动——自起临时桥接…');
+  ownedBridge = spawn('node', [ROOT + 'mcp/bridge.mjs', '8317'], { cwd: ROOT, stdio: 'ignore' });
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try { const r2 = await fetch('http://127.0.0.1:8317/health'); if (r2.ok) { log('临时桥接就绪'); return; } } catch { /* retry */ }
+  }
+  throw new Error('临时桥接启动失败（8317）');
+}
+function killOwnedBridge() { if (ownedBridge) { try { ownedBridge.kill(); log('临时桥接已回收'); } catch { /* ignore */ } ownedBridge = null; } }
 
 function run(cmd, args, cwd) {
   return new Promise((resolve) => {
@@ -55,10 +73,12 @@ const batteries = [
   { name: 'button-sweep（/console 全按钮清扫）', cmd: 'node', args: ['button-sweep.mjs'], cwd: ROOT + 'verify', tail: /button-sweep:[^\n]*/g },
   { name: QUICK ? 'ui-ext（扩展 UI 回归 --quick 16）' : 'ui-ext（扩展 UI 回归完整版 17 含 live）', cmd: 'node', args: QUICK ? ['ui-ext.mjs', '--quick'] : ['ui-ext.mjs'], cwd: ROOT + 'verify', tail: /ui-ext 回归[^\n]*/g },
   { name: 'standalone（双模 10 用例）', cmd: 'node', args: ['standalone.mjs'], cwd: ROOT + 'verify', tail: /standalone 验证[^\n]*/g },
+  { name: 'journey（新用户插拔旅程 8 用例）', cmd: 'node', args: ['journey.mjs'], cwd: ROOT + 'verify', tail: /journey: [^\n]*/g },
   { name: 'fullchain（点名链条 8 用例）', cmd: 'node', args: ['fullchain.mjs'], cwd: ROOT + 'verify', tail: /done exit[^\n]*/g },
 ];
 
 const results = [];
+await ensureBridge8317();
 for (const b of batteries) {
   if (b.skip) { results.push({ name: b.name, code: 'SKIP', note: '--quick 跳过' }); log('SKIP ' + b.name); continue; }
   let r = null, secs = '0', tails = '', attempts = 0;
@@ -86,6 +106,9 @@ for (const r of results) {
 console.log(failed ? '\n存在失败套件：' + failed : '\n全部通过 ✅');
 // 电池残件自密封（无论成败都清，防残件堆积与门禁哈希污染）
 const removed = cleanResidue();
+// 快照时点后挪：末套电池退出后其子进程/桥接回收尚有异步尾巴——1s 沉降让快照读到终态（⚠ 瞬态打磨）
+await new Promise((r) => setTimeout(r, 1000));
 const rr = residueReport();
 console.log('残件自检：清理 ' + removed.length + ' 项' + (removed.length ? '（' + removed.slice(0, 8).join('、') + (removed.length > 8 ? '…' : '') + '）' : '') + '；runs/=' + rr.runs + '，flows/ 测试残件=' + rr.flowResidue + (rr.flowResidue ? ' ⚠' : ' ✅'));
+killOwnedBridge();
 process.exit(failed ? 1 : 0);

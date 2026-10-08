@@ -83,6 +83,12 @@ function infPage(n) {
   return page(`<table><tbody>${rows}</tbody></table>
     <form action="/inf" method="get"><label for="page">页码</label><input id="page" name="page" value="${n}"><button type="submit">跳转</button></form>`);
 }
+// /pure：中间页纯重复（page2 与 page1 逐行相同但页面在推进）→ r53：不误停，续采到尾页
+function purePage(n) {
+  const rows = n === 3 ? '<tr><td>P3</td><td>新三</td></tr>' : '<tr><td>P1</td><td>甲</td></tr><tr><td>P2</td><td>乙</td></tr>';
+  return page(`<table><tbody>${rows}</tbody></table>
+    ${n < 3 ? `<a id="next" href="/pure?page=${n + 1}">下一页</a>` : '<span>没有更多了</span>'}`);
+}
 
 const site = http.createServer((req, res) => {
   // 不用 URL 的路径属性（H15 禁的反模式：路径段百分号编码会静默指错位置）——
@@ -95,6 +101,7 @@ const site = http.createServer((req, res) => {
   if (p === '/paged') return res.end(paged(pageNo));
   if (p === '/static') return res.end(staticPage(pageNo));
   if (p === '/inf') return res.end(infPage(pageNo));
+  if (p === '/pure') return res.end(purePage(pageNo));
   if (p === '/empty') return res.end(page('<table><thead><tr><th>编号</th></tr></thead><tbody></tbody></table>'));
   return res.end(page('<h1>404</h1>'));
 });
@@ -303,6 +310,16 @@ try {
     pagination: { mode: 'pageInput', needle: '页码' }, maxPages: 3,
   });
   check('F7 新行无穷 → 到 max-pages 上限停', c4.result.structuredContent?.stopReason === 'max-pages');
+
+  // r53：推进检测与去重新增解耦——纯重复中间页（页面推进但本页无新键）不误停，续采到尾页
+  const cPure = await call('collect_table', {
+    url: `${base}/pure?page=1`, cwd: ROOT, session: 'flowC9',
+    pagination: { mode: 'next', needle: '下一页' }, maxPages: 10, keyIndex: 0,
+  });
+  check('r53 纯重复中间页 → 不误停 no-new-rows，续采到尾页（rowCount 3/pagesScanned 3/尾页无下一页诚实停）',
+    cPure.result.structuredContent?.rowCount === 3 && cPure.result.structuredContent?.pagesScanned === 3
+    && cPure.result.structuredContent?.stopReason === 'no-paging-control',
+    JSON.stringify({ rowCount: cPure.result.structuredContent?.rowCount, scanned: cPure.result.structuredContent?.pagesScanned, stop: cPure.result.structuredContent?.stopReason }));
 
   /* ---- F7b 断点续采：max-pages 断点 → 带基准续扫到全量（v1.8.2） ---- */
   const cRun1 = await call('collect_table', {

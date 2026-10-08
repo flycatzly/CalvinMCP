@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "playwright-verify 控制台",
-  "version": "1.21.0",
+  "version": "1.25.0",
   "description": "本地调用 playwright-verify MCP 全部工具：配置体检、用例扫描、失败归因、执行、声明式测试、页面巡检、分页采集；猫耳悬浮球快速录制/回放。只连本机 127.0.0.1 桥。",
   "action": {
     "default_title": "打开 playwright-verify 控制台"
