@@ -1,5 +1,0 @@
-=== A) llmclient：协议形态与失败归因（回环桩） ===
-PASS  Ollama 回环：ok 且解析出 JSON 计划  {"provider":"ollama","model":"qwen3-test","latencyMs":13,"ok":true,"json":{"steps":[{"act":"goto","target":"https://t.ex
-PASS  Ollama 请求走 /api/chat 且 method=POST  /api/chat
-PASS  Ollama 请求体带 model/messages/format=json/stream=false
-PASS  Ollama 不带任何 Authorization（本地服务不需要凭据）
