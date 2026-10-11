@@ -5,7 +5,7 @@ description: 当需要对项目 SQL 做质量检测或对测试库做只读数�
 
 # SQL 检测与分析 Skill（全链路质量检测 + 只读数据分析）
 
-> 版本 v1.4.46 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.51) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
+> 版本 v1.4.47 · 仅只读 · 依赖本地 MCP `calvin-db-mcp` (v1.6.56) · 安装验证见 `README.md` · 更新记录见 `README.md`「更新记录」
 
 ## 角色设定
 
@@ -106,7 +106,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 
 ## 前置条件
 
-依赖本地 MCP `calvin-db-mcp`（v1.6.37，同级目录部署；安装见《部署说明.md》）：
+依赖本地 MCP `calvin-db-mcp`（v1.6.56，同级目录部署；安装见《部署说明.md》）：
 
 - **安装与验证步骤见 `README.md`**（复制技能 → `node install.mjs` 导入 `.dbp` → 重启客户端）
 - 依赖已装、自检通过（本机当前：依赖 ✓，`node mcp\selftest.mjs` 0 failed ✓；用例数随版本增长，勿以 passed 数为验收线）
@@ -114,7 +114,7 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 - **数据库账号须最小权限**：只读场景用 SELECT-only 账号，且只授权测试库/影子库（MCP 层防护不是最终权限边界）
 - 未就绪时退化为静态分析，结论一律标「待验证」
 
-## MCP 工具速查（calvin-db-mcp v1.6.37 共 16 个）
+## MCP 工具速查（calvin-db-mcp v1.6.56 共 18 个）
 
 | 工具 | 模式 | 用途 |
 |------|------|------|
@@ -127,6 +127,8 @@ Mapper 里这几个查询都说很慢，帮我按风险等级排个巡检清单
 | `sample_data` | A+B | 数据质量抽查 / 数据形态 |
 | `distinct_values` / `column_stats` | A+B | 取值分布 + distinct 总数 / 单列画像（区分度取证） |
 | `export_data` | 按需 | 只读结果导出 CSV/JSON（需服务端 DBMCP_EXPORT_DIR） |
+| `server_stats` | 排障 | 服务端观测快照（逐源计数/慢查询/错误码分布；观测面 fail-open） |
+| `reload_config` | 排障 | 热载 `dbmcp.config.json`（校验失败自动回滚旧配置，无需重启） |
 | `execute` / `create_table` / `import_data` | 禁用 | ❌ 永不调用（写类，MCP 默认双层拒绝） |
 
 ## 安全规则（合并版，逐条执行）
@@ -155,10 +157,10 @@ sql-check-script/
 ├── distribute.mjs                     # 发布打包：纯净化副本生成
 ├── 巡检一键.mjs                        # 巡检自动化：SQL 清单→只读预审→EXPLAIN/行数/样例取证→报告骨架（六节对齐模板）
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（108 用例，live 段自动门控）
+│   ├── fullchain_test.mjs             # 全链路 E2E：技能→MCP→demo.db/MySQL/PG（120 用例，live 段自动门控）
 │   ├── config_lint_test.mjs           # 护栏配置门禁：references/ 两配置（解析/结构/白名单红线/跨文件一致性）
 │   ├── docsync_test.mjs               # 文档一致性门禁（15 检查项：版本标记/口径数字/汇总行引文/树与引用完整性/示例结构/格式模板骨架/工作流口径/巡检示例对齐/产物防混入）
-│   ├── inspect_one_test.mjs           # 巡检一键 CLI 门禁（免 DB 25 用例：预审四门/落盘守门/manifest 门/consistency 门/jobs 门/增量门/基线门/参数面）
+│   ├── inspect_one_test.mjs           # 巡检一键 CLI 门禁（免 DB 33 用例：预审四门/落盘守门/manifest 门/consistency 门/jobs 门/增量门/基线门/参数面）
 │   └── run_all.mjs                    # 一键验收：selftest + sqlite-validate + mysql-validate(门控) + docsync + config-lint + inspect + E2E 合并裁决
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链

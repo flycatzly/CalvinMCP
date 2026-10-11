@@ -1,4 +1,4 @@
-// web-rpa-mcp — 流程与运行的持久化 + 步骤人类可读渲染
+// pagepilot-mcp — 流程与运行的持久化 + 步骤人类可读渲染
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, readJson, writeJson, slugify, shortId, stampId, nowIso, logger, assertSafeId, pidAlive } from './core.mjs';

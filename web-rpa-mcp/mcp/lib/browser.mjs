@@ -1,4 +1,4 @@
-// web-rpa-mcp — Playwright 解析 / 浏览器候选探测 / 启动自愈与生命周期
+// pagepilot-mcp — Playwright 解析 / 浏览器候选探测 / 启动自愈与生命周期
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -374,7 +374,7 @@ export async function launchContext({ headed = false, viewport, slowMo, download
     const e = new Error(
       '未找到可用浏览器。请任选其一：\n' +
       '  1) npx playwright install chromium\n' +
-      '  2) 在 web-rpa.config.json 设置 browser.channel = "msedge"\n' +
+      '  2) 在 pagepilot.config.json 设置 browser.channel = "msedge"\n' +
       '  3) 设置 browser.mode="custom" 且 browser.executablePath="<浏览器 exe 路径>"'
     );
     e.code = 'BROWSER_NOT_FOUND';
@@ -430,6 +430,8 @@ export async function launchContext({ headed = false, viewport, slowMo, download
           timezoneId: cfg.browser.timezoneId,
           acceptDownloads: true,
           userAgent: cfg.browser.userAgent || undefined,
+          // browser.debugPort > 0 时开 CDP 远程调试（默认 0 不影响任何现有行为）
+          ...(cfg.browser.debugPort > 0 ? { args: ['--remote-debugging-port=' + cfg.browser.debugPort] } : {}),
           ...cand.launchOptions,
           ...extra,
         });
@@ -464,6 +466,8 @@ export async function launchContext({ headed = false, viewport, slowMo, download
         headless: !headed,
         slowMo: slowMo === undefined ? (cfg.browser.slowMo || 0) : slowMo,
         timeout: 45000,
+        // browser.debugPort > 0 时开 CDP 远程调试（默认 0 不影响任何现有行为）
+        ...(cfg.browser.debugPort > 0 ? { args: ['--remote-debugging-port=' + cfg.browser.debugPort] } : {}),
         ...cand.launchOptions,
       });
       plan = cand;

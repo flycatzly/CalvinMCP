@@ -1,0 +1,72 @@
+{
+  "browser": {
+    "mode": "auto",
+    "channel": null,
+    "executablePath": null,
+    "headless": true,
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "persistProfile": false,
+    "profileDir": null,
+    "slowMo": 0,
+    "debugPort": 0,
+    "locale": "zh-CN",
+    "timezoneId": "Asia/Shanghai",
+    "recordViewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "userAgent": null,
+    "profileWaitMs": 3000
+  },
+  "run": {
+    "stepTimeoutMs": 15000,
+    "navTimeoutMs": 45000,
+    "retries": 1,
+    "retryDelayMs": 800,
+    "maxDurationMs": 0,
+    "unattendedMaxDurationMs": 7200000,
+    "saveVideo": false,
+    "videoOn": "failure",
+    "keepVideosPerFlow": 20,
+    "saveEvidence": true,
+    "evidenceOn": "always",
+    "humanHandoffTimeoutMs": 180000,
+    "emptyResultGuard": true,
+    "healMinScore": 0.72,
+    "strictDialogs": true,
+    "keepRunsPerFlow": 50,
+    "keepRunDays": 30
+  },
+  "notify": {
+    "enabled": false,
+    "type": "generic",
+    "webhook": "http://127.0.0.1:50301/sink",
+    "on": [
+      "failure"
+    ],
+    "timeoutMs": 8000,
+    "mention": "@calvin 请关注"
+  },
+  "schedule": {
+    "taskPrefix": "PagePilot"
+  },
+  "security": {
+    "maskSecrets": true,
+    "maskFieldsInScreenshots": true,
+    "redactKeys": [
+      "password",
+      "passwd",
+      "pwd",
+      "token",
+      "secret",
+      "otp",
+      "captcha",
+      "code",
+      "signature",
+      "authorization"
+    ]
+  }
+}

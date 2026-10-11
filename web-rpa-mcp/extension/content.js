@@ -26,10 +26,43 @@
   });
   const call = (tool, args) => send({ type: 'rpa-call', tool, args: args || {} });
 
+  /* v1.22.4：回放失败时在面板消息里直接给出失败步骤（不必去翻报告） */
+  function fmtRunFail(d) {
+    if (!d || d.status === 'pass') return '';
+    const n = d.failedStep;
+    if (!n) return '';
+    const det = (d.stepDetails || []).find((s) => s.n === n);
+    const head = '（失败于第 ' + n + ' 步：' + (det ? (OP_LABEL[det.op] || det.op) + (det.detail ? '·' + clipText(det.detail, 30) : '') : '?') + '）';
+    const err = d.error ? ' ' + clipText(String(d.error).split('\n')[0], 80) : '';
+    return head + err;
+  }
+  /* v1.22.5 缩放兼容：内部系统常用 html{zoom} 做 1080p 屏幕适配（unidesk 即 html zoom 0.8）。
+   * 页面缩放会把悬浮球+面板整体缩小、文字错位。这里检测 html 的 zoom，对宿主反向缩放，
+   * 让悬浮球/面板始终按 1.0 视觉尺寸渲染（可读、对齐），与页面缩放解耦。
+   * body zoom / transform:scale 不影响——host 挂在 <html> 上，不在 body 内。 */
+  let pageZoom = 1;
+  function applyZoomNormalization() {
+    let z = 1;
+    try { z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1; } catch { z = 1; }
+    if (!isFinite(z) || z <= 0) z = 1;
+    if (z !== pageZoom) {
+      pageZoom = z;
+      host.style.zoom = z === 1 ? '' : String(1 / z);
+    }
+  }
+
   /* ---------------- 样式（CSSOM，绕开页面 CSP） ---------------- */
   const CSS = `
     :host { all: initial; }
-    .wrap { position: fixed; left: 0; top: 0; z-index: 2147483647; font: 13px/1.45 system-ui, "Microsoft YaHei", sans-serif; }
+    /* v1.22.0 排版修复：wrap 原来只有 position:fixed 零宽高——.panel.up 的 bottom:34px
+     * 锚到 wrap 底边（=视口 y0），球拖到下半屏时点开面板会整块渲染到视口上方之外
+     * （用户实测「排版错乱/面板消失」）。现在 wrap 铺满视口但 pointer-events 穿透，
+     * 面板/球/右键菜单单独恢复交互；top/bottom 锚定从此按视口算，上下开合都正确。 */
+    .wrap { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; pointer-events: none;
+      z-index: 2147483647; font: 13px/1.45 system-ui, "Microsoft YaHei", sans-serif; }
+    /* v1.22.5：box-sizing 统一 + 按钮行高归一——页面缩放/小数倍率下文字与 emoji 不再错位 */
+    .wrap, .wrap *, .wrap *::before, .wrap *::after { box-sizing: border-box; }
+    .ball, .panel, .ctxmenu { pointer-events: auto; }
     .ball { position: absolute; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%;
       background: linear-gradient(135deg, #ffb3d1, #b39dff); border: 2px solid #fff;
       box-shadow: 0 4px 14px rgba(160,120,255,.45), 0 1px 3px rgba(0,0,0,.18);
@@ -78,7 +111,7 @@
     .runnow { font-size: 11px; background: #eef2ff; color: #4a3b8f; border-radius: 10px; padding: 5px 8px; margin-bottom: 4px; }
     .runnow.none { background: transparent; color: #b3a6c9; padding: 0; }
     button.act { display: block; width: 100%; border: 0; border-radius: 12px; padding: 8px 10px; font: inherit;
-      font-weight: 600; cursor: pointer; background: linear-gradient(135deg, #ffe1ef, #ece4ff); color: #5b4a7a;
+      font-weight: 600; line-height: 1.35; cursor: pointer; background: linear-gradient(135deg, #ffe1ef, #ece4ff); color: #5b4a7a;
       margin: 4px 0; text-align: left; }
     button.act.primary { background: linear-gradient(135deg, #ff9ac6, #a78bfa); color: #fff; }
     button.act.danger { background: #ffe4e6; color: #be123c; }
@@ -103,7 +136,7 @@
     .fmgr button.del { background: #ffe4e6; color: #be123c; }
     .replay-last { margin-top: 4px; }
     .msg { font-size: 12px; color: #5b4a7a; background: #f6efff; border-radius: 10px; padding: 6px 8px;
-      margin-top: 6px; word-break: break-all; max-height: 72px; overflow-y: auto; }
+      margin-top: 6px; word-break: break-all; max-height: 120px; overflow-y: auto; white-space: pre-wrap; }
     .msg.err { background: #ffe4e6; color: #be123c; }
     .msg-act { margin-top: 4px; }
     .msg-act button { border: 0; border-radius: 8px; padding: 3px 10px; font-size: 11px; cursor: pointer;
@@ -112,7 +145,7 @@
     .foot { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid #f3e8ff; }
     .foot button { flex: 1; border: 0; border-radius: 10px; padding: 6px; font-size: 12px; cursor: pointer;
       background: #f6efff; color: #6b5a8f; font-family: inherit; }
-    .ctxmenu { position: absolute; width: 170px; border-radius: 14px; overflow: hidden;
+    .ctxmenu { position: absolute; width: 200px; border-radius: 14px; overflow: hidden;
       background: linear-gradient(180deg, #fff, #fdf3ff); border: 1px solid #f3e3ff;
       box-shadow: 0 8px 26px rgba(120,80,200,.3); padding: 4px; z-index: 2; }
     .ctxmenu button { display: block; width: 100%; border: 0; background: none; text-align: left;
@@ -147,10 +180,10 @@
   ball.appendChild(el('div', 'mouth'));
   const badge = el('div', 'badge hide', '0');
   ball.appendChild(badge);
-  ball.title = 'Web RPA：点我打开快捷面板，拖动换位置';
+  ball.title = 'PagePilot：点我打开快捷面板，拖动换位置';
 
   const panel = el('div', 'panel hide');
-  const phead = el('div', 'phead', '🎀 Web RPA 快捷操作');
+  const phead = el('div', 'phead', '🎀 PagePilot 快捷操作');
   const xBtn = el('button', 'x', '✕');
   xBtn.type = 'button';
   phead.appendChild(xBtn);
@@ -206,6 +239,9 @@
   let bridgeHealthy = null;
   let localRec = null; // RpaStandalone 录制器实例（独立模式本地录制）
   let localRecTimer = null;
+  /* 右键快捷菜单用的最近录制状态（面板未开过也要能直达 停止保存/废弃 快捷操作） */
+  const recQuick = { on: false, own: false };
+  function noteRecState(on, own) { recQuick.on = !!on; recQuick.own = !!own; }
 
   /* 与 lib/store.mjs stepLabel 同口径的一句话摘要（面板内查看步骤用） */
   const OP_LABEL = {
@@ -214,10 +250,16 @@
     humanHandoff: '人工接管', screenshot: '截图', extract: '取值', download: '等待下载', assert: '校验',
     chain: '串联流程', hover: '悬停', scrollIntoView: '滚动到可见', sleep: '等待', dialog: '处理弹窗', scrollTo: '滚动页面',
   };
+  /* 显式省略号截断（v1.22.0）：旧代码 slice(0,60) 会把类名拦腰砍断（div.ant-card-），
+   * 看起来像「选择器坏了」；现在超长才加 …，短值原样展示 */
+  function clipText(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
   function locHint(s) {
     const l = (s.locators || [])[0];
     if (!l) return '(无定位符)';
-    return l.strategy + '=' + String(l.value).slice(0, 40);
+    return l.strategy + '=' + clipText(l.value, 60);
   }
   function stepLabel(s, idx) {
     const n = (idx + 1) + '. ';
@@ -257,8 +299,16 @@
     pos = clampPos(pos);
     ball.style.left = pos.x + 'px';
     ball.style.top = pos.y + 'px';
-    // 面板靠近屏幕下沿时向上展开；靠左右边时收拢偏移避免溢出
-    panel.classList.toggle('up', pos.y > window.innerHeight * 0.55);
+    // v1.22.0 排版修复：按面板实际高度决定上开/下开（旧版固定 55% 阈值 + 零高 wrap 的
+    // bottom:34px，球在下半屏时面板整块飞出视口上沿）；空间不足时压 pbody 高度，绝不溢出。
+    const total = panel.offsetHeight;
+    const bodyH = pbody.offsetHeight;
+    const chrome = total && bodyH ? Math.max(60, total - bodyH) : 84; // 头+底高度（隐藏时按估算）
+    const availDown = window.innerHeight - 8 - (pos.y + 34);
+    const availUp = (pos.y - 34) - 8;
+    const up = availDown < Math.min(total || 380, 430) && availUp > availDown;
+    panel.classList.toggle('up', up);
+    pbody.style.maxHeight = Math.max(140, Math.min(330, (up ? availUp : availDown) - chrome - 10)) + 'px';
     const half = 134;
     const shift = pos.x < half + 8 ? (half + 8 - pos.x) : (pos.x + half > window.innerWidth - 8 ? (window.innerWidth - 8 - pos.x - half) : 0);
     panel.style.transform = 'translateX(calc(-50% + ' + shift + 'px))';
@@ -297,6 +347,49 @@
     }, 3000);
   }
 
+  /* ---------------- 录制会话标记（v1.22.0）----------------
+   * 旧版 mySession 只是页面内存：发起录制的页面一刷新/跳转，标记就丢，
+   * 面板把「自己刚发起的录制」判成「其他会话」，只读不干预——用户被锁死
+   * （unidesk 实测）。现在写入 chrome.storage.local（扩展级，跨页面/跨窗口存活），
+   * 任何页面打开面板都能认领「本插件发起的录制」并结束/取消；
+   * 只有真正非本插件发起的（/console 网页版、Agent 直调 MCP）才保持只读，
+   * 但提供二次确认的「接管结束」逃生门，发起方意外消失时不再无解。 */
+  const SESS_KEY = 'rpaPanelSession';
+  function getPanelSession() {
+    return new Promise((resolve) => {
+      try { chrome.storage.local.get({ [SESS_KEY]: null }, (o) => resolve(o && o[SESS_KEY] || null)); }
+      catch (e) { resolve(null); }
+    });
+  }
+  function setPanelSession(data) {
+    try { chrome.storage.local.set({ [SESS_KEY]: data }); } catch (e) { /* ignore */ }
+  }
+  function clearPanelSession() {
+    try { chrome.storage.local.remove(SESS_KEY); } catch (e) { /* ignore */ }
+  }
+  /* 刚生成的技能也要跨页可用（v1.22.0）：录制可能在别的页面/窗口被结束——
+   * 发起页的「🔁 重播刚生成的技能」读扩展级标记，不再只认本页内存 lastFlowId */
+  const LAST_KEY = 'rpaLastFlow';
+  function getPanelLastFlow() {
+    return new Promise((resolve) => {
+      try { chrome.storage.local.get({ [LAST_KEY]: null }, (o) => resolve(o && o[LAST_KEY] || null)); }
+      catch (e) { resolve(null); }
+    });
+  }
+  function setPanelLastFlow(flowId) {
+    if (!flowId) return;
+    try { chrome.storage.local.set({ [LAST_KEY]: { flowId: flowId, ts: Date.now() } }); } catch (e) { /* ignore */ }
+  }
+  function ownRecording(rec, sess) {
+    if (!rec || !rec.ok || !rec.data || !rec.data.recording) return false;
+    if (mySession) return true;
+    const sid = rec.data.sessionId || '';
+    const flagSid = sess && sess.sessionId || '';
+    if (sid && flagSid) return sid === flagSid;
+    // 老版本标记可能没有 sessionId：按新鲜度认领（30 分钟内的标记视为本插件发起）
+    return !!(flagSid === '' && sess && sess.ts && (Date.now() - sess.ts) < 30 * 60 * 1000);
+  }
+
   /* ---------------- 面板渲染 ---------------- */
   /* 快速录制当前页（面板按钮与右键菜单共用） */
   async function quickRecord() {
@@ -305,6 +398,7 @@
     const r = await call('record_start', { url: location.href, name: '悬浮-' + location.hostname + '-' + hhmm });
     if (r.ok) {
       mySession = true;
+      setPanelSession({ sessionId: (r.data && r.data.sessionId) || '', url: location.href, ts: Date.now() });
       setMsg('🎬 ' + (r.summary || '录制已开始'));
       startPoll();
       refresh();
@@ -315,18 +409,87 @@
     }
   }
 
-  function renderRec(rec) {
+  /* 结束保存/废弃 快捷操作（本页发起、跨页认领、接管外部会话三种情形共用）
+   * v1.22.1：废弃类操作一律二次确认；接管（作用于非本页会话）两个按钮都要确认 */
+  function armedButton(cls, label, armedLabel, fn) {
+    const b = el('button', cls, label);
+    b.type = 'button';
+    b.addEventListener('click', async () => {
+      if (armedLabel && b.dataset.armed !== '1') {
+        b.dataset.armed = '1';
+        b.textContent = armedLabel;
+        setTimeout(() => { if (b.isConnected) { b.dataset.armed = '0'; b.textContent = label; } }, 3500);
+        return;
+      }
+      b.disabled = true;
+      await fn(b);
+    });
+    return b;
+  }
+  function renderRecControls(rec, takeover) {
+    const n = (rec && rec.data && rec.data.stepCount) || 0;
+    const hhmm = new Date().toTimeString().slice(0, 5).replace(':', '');
+    const stop = armedButton('act primary',
+      (takeover ? '⏹ 接管结束并保存（' : '⏹ 结束并保存（') + n + ' 步）',
+      takeover ? '⚠ 再点确认接管保存' : null,
+      async () => {
+        setMsg('正在生成技能…');
+        const r = await call('record_stop', takeover ? { name: '悬浮-接管-' + hhmm } : {});
+        if (r.ok) { mySession = false; clearPanelSession(); }
+        if (r.ok && r.data && r.data.flowId) { lastFlowId = r.data.flowId; setPanelLastFlow(r.data.flowId); }
+        setMsg((r.ok ? '✅ ' : '❌ ') + (r.summary || '') + (r.ok && r.data && r.data.flowId ? '（flowId=' + r.data.flowId + '）' : ''), !r.ok);
+        refresh();
+      });
+    const cancel = armedButton('act danger',
+      takeover ? '🗑 接管废弃（丢弃已录 ' + n + ' 步）' : '✕ 取消录制（丢弃已录步骤）',
+      takeover ? '⚠ 再点确认接管废弃' : '⚠ 再点一次确认取消',
+      async () => {
+        const r = await call('record_cancel', {});
+        if (r.ok) { mySession = false; clearPanelSession(); }
+        setMsg(r.ok ? (takeover ? '已接管废弃该录制' : '已取消录制') : '❌ ' + r.summary, !r.ok);
+        refresh();
+      });
+    recSec.appendChild(stop);
+    recSec.appendChild(cancel);
+  }
+
+  /* 本地录制中的顶部快捷操作（v1.22.2：不再埋在底部本地流程区——打开面板第一眼就是 保存/废弃） */
+  function renderLocalRecControls() {
+    recSec.textContent = '';
+    const stop = armedButton('act primary', '⏹ 保存到本地', null, (b) => { b.disabled = true; stopLocalRec(true); });
+    const drop = armedButton('act danger', '✕ 丢弃录制', '⚠ 再点确认丢弃', (b) => { b.disabled = true; stopLocalRec(false); });
+    recSec.appendChild(stop);
+    recSec.appendChild(drop);
+    recHintEl = el('span', 'hint', '独立录制中：已录 ' + localRec.count() + ' 步'
+      + (localRec.droppedCount && localRec.droppedCount() ? '（丢弃 ' + localRec.droppedCount() + ' 次：' + localRec.droppedReasons() + '）' : '')
+      + '——也可以右键悬浮球直达这两个操作');
+    recSec.appendChild(recHintEl);
+  }
+  function renderRec(rec, sess, lastFlowFlag) {
     recSec.textContent = '';
     const on = rec && rec.ok && rec.data && rec.data.recording;
-    if (on && !mySession) {
-      // 检测到外部会话的录制（如在别处发起的片段重录）：只观察不干预——
-      // ⏹/✕ 作用于全局录制器，误点会结束别人的会话（gitee 实测轮实锤过此风险）
+    if (!on && sess && sess.ts && (Date.now() - sess.ts) > 12 * 60 * 60 * 1000) {
+      // 只清陈旧标记：别的页面可能正拿着旧快照渲染，立刻清会误伤刚发起的录制（竞态防护）
+      clearPanelSession();
+    }
+    if (localRec) {
+      // 本地（独立模式）录制进行中：顶部就是快捷操作，MCP 状态行照常显示但不抢主操作
+      noteRecState(true, true);
+      renderLocalRecControls();
+      return;
+    }
+    if (on && !ownRecording(rec, sess)) {
+      // 真正的外部会话（/console 网页版或 Agent 直调 MCP 发起）：默认只观察防误触——
+      // 但 v1.22.1 起提供完整接管快捷操作（结束保存/废弃，都二次确认），
+      // 发起方窗口意外关闭时不再无解（unidesk 实测被锁死教训）
       badge.classList.add('hide');
       ball.classList.remove('rec');
       stopPoll();
-      const other = el('div', 'msg', '⏳ 检测到其他会话正在录制（' + (rec.data.mode || '录制中') + '，已 ' + (rec.data.stepCount || 0) + ' 步）。本页未发起，不提供干预；要结束请到发起处操作。');
+      noteRecState(true, false);
+      const other = el('div', 'msg', '⏳ 检测到其他会话正在录制（' + (rec.data.mode || '录制中') + '，已 ' + (rec.data.stepCount || 0) + ' 步）。本页未发起——如需干预请用下方接管操作（二次确认），否则要结束请到发起处操作。');
       recSec.appendChild(other);
-      recSec.appendChild(el('div', 'hint', '发起录制后本页可结束/取消/重播；他人录制期间无法并行录制。'));
+      renderRecControls(rec, true);
+      recSec.appendChild(el('div', 'hint', '由本插件（悬浮框/弹窗控制台）发起的录制可在任意页面直接结束/废弃（无需确认接管）；他人录制期间无法并行录制。'));
       return;
     }
     if (on) {
@@ -334,52 +497,31 @@
       badge.classList.remove('hide');
       ball.classList.add('rec');
       startPoll();
-      const stop = el('button', 'act primary', '⏹ 结束并保存（' + (rec.data.stepCount || 0) + ' 步）');
-      stop.type = 'button';
-      stop.addEventListener('click', async () => {
-        stop.disabled = true;
-        setMsg('正在生成技能…');
-        const r = await call('record_stop', {});
-        if (r.ok) { mySession = false; }
-        if (r.ok && r.data && r.data.flowId) { lastFlowId = r.data.flowId; }
-        setMsg((r.ok ? '✅ ' : '❌ ') + (r.summary || '') + (r.ok && r.data && r.data.flowId ? '（flowId=' + r.data.flowId + '）' : ''), !r.ok);
-        refresh();
-      });
-      const cancel = el('button', 'act danger', '✕ 取消录制（丢弃已录步骤）');
-      cancel.type = 'button';
-      cancel.addEventListener('click', async () => {
-        if (cancel.dataset.armed !== '1') {
-          cancel.dataset.armed = '1';
-          cancel.textContent = '⚠ 再点一次确认取消';
-          setTimeout(() => { if (cancel.isConnected) { cancel.dataset.armed = '0'; cancel.textContent = '✕ 取消录制（丢弃已录步骤）'; } }, 3000);
-          return;
-        }
-        cancel.disabled = true;
-        const r = await call('record_cancel', {});
-        if (r.ok) { mySession = false; }
-        setMsg(r.ok ? '已取消录制' : '❌ ' + r.summary, !r.ok);
-        refresh();
-      });
-      recSec.appendChild(stop);
-      recSec.appendChild(cancel);
-      recSec.appendChild(el('div', 'hint', '去弹出的录制窗口里演示操作；这里的 ⏹ 会生成技能。'));
+      noteRecState(true, true);
+      renderRecControls(rec, false);
+      recSec.appendChild(el('div', 'hint', mySession
+        ? '去弹出的录制窗口里演示操作；这里的 ⏹ 会生成技能。'
+        : '✅ 本插件发起的录制（可从任意页面结束）——去录制窗口演示操作，这里的 ⏹ 会生成技能。'));
     } else {
       badge.classList.add('hide');
       ball.classList.remove('rec');
       stopPoll();
-      // 本轮刚生成的技能：一键重播
-      if (lastFlowId) {
+      noteRecState(false, false);
+      // 本轮刚生成的技能：一键重播（本页发起 or 别的页面结束的都算——扩展级标记，30 分钟内有效）
+      const freshLast = lastFlowFlag && lastFlowFlag.flowId && (Date.now() - (lastFlowFlag.ts || 0) < 30 * 60 * 1000) ? lastFlowFlag.flowId : null;
+      const replayId = lastFlowId || freshLast;
+      if (replayId) {
         const replay = el('button', 'act primary replay-last', '🔁 重播刚生成的技能');
         replay.type = 'button';
         replay.addEventListener('click', () => {
           replay.disabled = true;
-          setMsg('重播 ' + lastFlowId + ' 中…（关掉本页不会中断）');
+          setMsg('重播 ' + replayId + ' 中…（关掉本页不会中断）');
           // allowLintErrors：刚录制的流程用户已确认过步骤，简单页面常推断不出断言（L010），
           // 快速重播不应被阻断；常规流程列表的 ▶ 仍守静态检查。
-          call('flow_run', { flowId: lastFlowId, allowLintErrors: true }).then((r) => {
+          call('flow_run', { flowId: replayId, allowLintErrors: true }).then((r) => {
             const d = r.data || {};
             const dur = typeof d.durationMs === 'number' ? '（' + (d.durationMs / 1000).toFixed(1) + 's）' : '';
-            setMsg((r.ok && d.status === 'pass' ? '✅ 重播成功 ' : '❌ ') + (r.summary || '') + dur, !(r.ok && d.status === 'pass'));
+            setMsg((r.ok && d.status === 'pass' ? '✅ 重播成功 ' : '❌ ') + (r.summary || '') + dur + fmtRunFail(d), !(r.ok && d.status === 'pass'));
             replay.disabled = false;
           });
         });
@@ -424,7 +566,7 @@
         call('flow_run', { flowId: f.id }).then((r2) => {
           const d = r2.data || {};
           const dur = typeof d.durationMs === 'number' ? '（' + (d.durationMs / 1000).toFixed(1) + 's）' : '';
-          setMsg((r2.ok && d.status === 'pass' ? '✅ ' : '❌ ') + (r2.summary || '') + dur, !(r2.ok && d.status === 'pass'));
+          setMsg((r2.ok && d.status === 'pass' ? '✅ ' : '❌ ') + (r2.summary || '') + dur + fmtRunFail(d), !(r2.ok && d.status === 'pass'));
           run.disabled = false;
           run.textContent = '▶';
         });
@@ -512,6 +654,7 @@
             const r2 = await call('record_splice_start', { flowId: f.id, from, to, keepSuffix: true });
             if (r2.ok) {
               mySession = true;
+              setPanelSession({ sessionId: (r2.data && r2.data.sessionId) || '', url: location.href, ts: Date.now() });
               setMsg('✂ ' + (r2.summary || '片段重录已开始') + '——去录制窗口重做第 ' + from + '~' + to + ' 步，完成后点 ⏹ 自动拼接。');
               startPoll();
               refresh();
@@ -569,8 +712,14 @@
     const profileLock = locks.find((l) => l.profile);
     if (flowLocks.length) {
       runNowSec.className = 'runnow';
-      runNowSec.textContent = flowLocks.map((l) =>
-        '▶ 运行中: ' + (l.flowId || '?') + '（' + ((l.trigger || 'manual') + ' · pid ' + (l.pid || '?')) + '）').join('；');
+      runNowSec.textContent = flowLocks.map((l) => {
+        const running = l.running || l;
+        const st = running && running.step;
+        const live = running && running.waitingHuman
+          ? '⏸ 等待人工：' + ((running.waitingHuman && running.waitingHuman.reason) || '')
+          : (st ? '（第 ' + st.index + '/' + st.total + ' 步 · ' + (OP_LABEL[st.op] || st.op) + '）' : '');
+        return '▶ 运行中: ' + (l.flowId || '?') + '（' + ((l.trigger || 'manual') + ' · pid ' + (l.pid || '?')) + '）' + live;
+      }).join('；');
     } else if (profileLock && profileLock.held) {
       runNowSec.className = 'runnow';
       runNowSec.textContent = '⏳ 浏览器 profile 被占用（可能有回放在跑）';
@@ -588,45 +737,68 @@
   }
   function localStepLabel(s, i) {
     const n = (i + 1) + '. ';
-    if (s.op === 'goto') return n + '打开网址 ' + String(s.url || '').slice(0, 60);
-    if (s.op === 'click') return n + '点击 ' + (s.locator.strategy === 'testid' ? 'testid=' + s.locator.value : s.locator.value.slice(0, 46)) + (s.text ? '（' + s.text + '）' : '');
-    if (s.op === 'fill') return n + '填入 ' + s.locator.value.slice(0, 40) + ' = ' + JSON.stringify(String(s.value).slice(0, 20));
-    if (s.op === 'hover') return n + '悬停 ' + s.locator.value.slice(0, 46);
-    if (s.op === 'press') return n + '按键 ' + (s.key || 'Enter') + ' @ ' + s.locator.value.slice(0, 36);
+    const loc = (s.locator && s.locator.value) ? (s.locator.strategy + '=' + clipText(s.locator.value, 80)) : '(无定位符)';
+    if (s.op === 'goto') return n + '打开网址 ' + clipText(s.url, 60);
+    if (s.op === 'click') return n + '点击 ' + loc + (s.text ? '（' + clipText(s.text, 20) + '）' : '');
+    if (s.op === 'fill') return n + '填入 ' + loc + ' = ' + JSON.stringify(clipText(String(s.value), 20));
+    if (s.op === 'hover') return n + '悬停 ' + loc;
+    if (s.op === 'press') return n + '按键 ' + (s.key || 'Enter') + ' @ ' + loc;
     return n + s.op;
   }
+  let recHintEl = null; // 录制中实时反馈（步数 + 丢弃原因），renderLocalSection 里赋值
   function startLocalRec() {
     if (localRec) return;
     localRec = window.RpaStandalone.createRecorder((steps) => {
       badge.textContent = String(steps.length);
       badge.classList.remove('hide');
       ball.classList.add('rec');
+      // v1.22.0：录不上不再静默——密码框/无法定位的丢弃次数实时可见（顶部快捷操作区）
+      if (recHintEl) {
+        const d = localRec && localRec.droppedCount ? localRec.droppedCount() : 0;
+        recHintEl.textContent = '独立录制中：已录 ' + steps.length + ' 步'
+          + (d ? '（丢弃 ' + d + ' 次：' + (localRec.droppedReasons ? localRec.droppedReasons() : '') + '）' : '')
+          + '——也可以右键悬浮球直达这两个操作';
+      }
     });
     localRec.start();
-    setMsg('🎬 独立录制中（不依赖 MCP）——在页面上操作，这里只录当前页');
+    setMsg('🎬 独立录制中（不依赖 MCP）——在页面上操作，这里只录当前页；离开页面会自动存草稿，回来不丢');
+    renderLocalRecControls();
     renderLocalSection();
   }
   function stopLocalRec(save) {
     if (!localRec) return;
+    const droppedN = localRec.droppedCount ? localRec.droppedCount() : 0;
+    const droppedWhy = droppedN && localRec.droppedReasons ? localRec.droppedReasons() : '';
     const steps = localRec.stop();
     localRec = null;
+    recHintEl = null;
     if (localRecTimer) { clearInterval(localRecTimer); localRecTimer = null; }
     badge.classList.add('hide');
     ball.classList.remove('rec');
     if (save) {
-      if (!steps.length) { setMsg('没有录到操作，未保存', true); }
+      if (!steps.length) { setMsg('没有录到操作，未保存' + (droppedN ? '（录制中丢弃 ' + droppedN + ' 次：' + droppedWhy + '）' : ''), true); }
       else {
         const hhmm = new Date().toTimeString().slice(0, 5).replace(':', '');
         const flow = { id: 'local-' + Date.now(), name: '本地-' + location.hostname + '-' + hhmm, startUrl: location.href, steps: steps };
-        window.RpaStandalone.saveLocal(flow, () => setMsg('✅ 已保存到本地（' + steps.length + ' 步）——在「本地流程」里 ▶ 回放或到控制台升级到 MCP'));
+        // 脆弱定位体检（v1.22.0）：旧版深 :nth-child 结构路径在 SPA 重渲染后必挂——
+        // 录制完当场告知，不再等回放第一步才炸（unidesk 202 步实测教训）
+        const fragile = steps.filter((s) => s.locator && s.locator.strategy === 'css'
+          && String(s.locator.value).indexOf(':nth-child(') >= 0
+          && String(s.locator.value).split(' > ').length >= 3).length;
+        window.RpaStandalone.saveLocal(flow, () => setMsg('✅ 已保存到本地（' + steps.length + ' 步'
+          + (droppedN ? '，另有 ' + droppedN + ' 次操作未录入：' + droppedWhy : '') + '）'
+          + (fragile ? '——⚠ 其中 ' + fragile + ' 步是旧版深结构路径定位，页面重渲染可能回放失败，建议重录或升级到 MCP' : '')
+          + '——在「本地流程」里 ▶ 回放或到控制台升级到 MCP', fragile > 0));
       }
     } else {
-      setMsg('已丢弃本地录制（' + steps.length + ' 步）');
+      setMsg('已丢弃本地录制（' + steps.length + ' 步' + (droppedN ? '，录制中丢弃 ' + droppedN + ' 次：' + droppedWhy : '') + '）');
     }
     refresh();
   }
   function renderLocalSection() {
     window.RpaStandalone.listLocal((flows) => {
+      // v1.22.2：先移除旧区块——startLocalRec/refresh 多次触发时不再重复堆叠「本地流程」
+      flowList.querySelectorAll('.locsect').forEach((n) => n.remove());
       const box = el('div', 'locsect');
       const head = el('div', 'sect', '📁 本地流程（独立模式 · ' + flows.length + ' 条 · 存浏览器本地）');
       box.appendChild(head);
@@ -640,8 +812,9 @@
         dropBtn.addEventListener('click', () => stopLocalRec(false));
         btnRow.appendChild(stopBtn);
         btnRow.appendChild(dropBtn);
-        btnRow.appendChild(el('span', 'hint', '独立录制中：角标显示已录步数'));
+        btnRow.appendChild(el('span', 'hint', '上方「⏹/✕」与右键悬浮球是同一组快捷操作'));
       } else {
+        recHintEl = null;
         const recBtn = el('button', 'act', '🎬 本地录制当前页');
         recBtn.type = 'button';
         recBtn.title = '不依赖 MCP/桥接，直接在本页录制 DOM 操作';
@@ -669,8 +842,9 @@
           const r = await window.RpaStandalone.replaySteps(f.steps || []);
           run.disabled = false; run.textContent = '▶';
           setMsg(r.ok
-            ? '✅ 独立回放完成（' + r.done + '/' + r.total + ' 步）'
-            : '❌ 独立回放到第 ' + (r.step || r.done) + ' 步：' + (r.error || '失败') + '（' + r.done + '/' + r.total + '）', !r.ok);
+            ? '✅ 独立回放完成（' + r.done + '/' + r.total + ' 步' + (r.skipped ? '，跳过失效 hover ' + r.skipped : '') + '）'
+            : '❌ 独立回放到第 ' + (r.step || r.done) + ' 步：' + (r.error || '失败')
+              + (r.skipped ? '（此前跳过失效 hover ' + r.skipped + ' 步）' : '') + '（' + r.done + '/' + r.total + '）', !r.ok);
         });
         row.appendChild(run);
         // 👁 查看步骤（与 MCP 流程行同款能力——体感不对称修复，v1.21.2）
@@ -703,10 +877,12 @@
   async function refresh() {
     statusText.textContent = '检测中…';
     dot.className = 'dot';
-    const [health, rec, flows] = await Promise.all([
+    const [health, rec, flows, sess, lastFlow] = await Promise.all([
       send({ type: 'rpa-health' }),
       call('record_status'),
       call('flow_list'),
+      getPanelSession(),
+      getPanelLastFlow(),
     ]);
     bridgeHealthy = !!(health && health.ok && health.mcp && health.mcp.ready);
     renderModeChip();
@@ -715,21 +891,24 @@
       statusText.textContent = '已连接 · MCP v' + (health.mcp.serverInfo && health.mcp.serverInfo.version);
     } else {
       dot.className = 'dot bad';
-      // 失败原因尽量透传（如 token 鉴权 403 的配置指引），兜底提示桥接未启动
-      statusText.textContent = (health && health.ok === false && health.summary)
-        ? ('桥接异常：' + String(health.summary).slice(0, 80))
-        : '桥接未连接（独立模式可用）· node mcp/bridge.mjs 解锁完整功能';
+      // 失败原因尽量透传（如 token 鉴权 403 的配置指引）；普通连不上就给标准独立模式提示（v1.22.2 精简为一行，全文放 title）
+      const hs = health && health.ok === false && health.summary ? String(health.summary) : '';
+      statusText.textContent = hs && !/failed to fetch/i.test(hs)
+        ? ('桥接异常：' + hs.slice(0, 60))
+        : '独立模式（桥接未连接）';
+      statusText.title = '本地录制/回放/本地流程都可独立使用；node mcp/bridge.mjs 启动桥接解锁完整 44 工具（MCP 流程/定时/告警）';
     }
-    renderRec(rec);
+    renderRec(rec, sess, lastFlow);
     renderFlows(flows);
     renderLocalSection();
     refreshRunNow();
+    requestAnimationFrame(place); // 内容变化后重算上开/下开与 pbody 高度（v1.22.0 排版修复）
   }
 
   function togglePanel(force) {
     panelOpen = force !== undefined ? force : !panelOpen;
     panel.classList.toggle('hide', !panelOpen);
-    if (panelOpen) { setMsg(''); refresh(); startRunNowPoll(); }
+    if (panelOpen) { setMsg(''); refresh(); startRunNowPoll(); requestAnimationFrame(place); }
     else { stopRunNowPoll(); }
   }
 
@@ -764,24 +943,48 @@
     host.remove();
   }
   function closeCtx() { ctxmenu.classList.add('hide'); }
+  /* v1.22.1：右键菜单按当前录制状态重建——录制中免开面板直达 结束保存/废弃；
+   * 本地录制（独立模式）同样支持；接管他人会话时二次确认 */
   function openCtx() {
-    // 菜单贴在球旁；靠屏幕右/下缘时收拢避免溢出
+    ctxmenu.textContent = '';
+    const items = [];
+    if (localRec) {
+      items.push(['⏹ 保存到本地', null, () => { closeCtx(); stopLocalRec(true); }]);
+      items.push(['🗑 丢弃本地录制', '⚠ 再点确认丢弃', () => { closeCtx(); stopLocalRec(false); }]);
+    } else if (recQuick.on) {
+      items.push([recQuick.own ? '⏹ 结束并保存' : '⏹ 接管结束并保存', recQuick.own ? null : '⚠ 再点确认接管保存', async () => {
+        closeCtx();
+        setMsg('正在生成技能…');
+        const r = await call('record_stop', recQuick.own ? {} : { name: '悬浮-接管-' + new Date().toTimeString().slice(0, 5).replace(':', '') });
+        if (r.ok) { mySession = false; clearPanelSession(); }
+        if (r.ok && r.data && r.data.flowId) { lastFlowId = r.data.flowId; setPanelLastFlow(r.data.flowId); }
+        setMsg((r.ok ? '✅ ' : '❌ ') + (r.summary || '') + (r.ok && r.data && r.data.flowId ? '（flowId=' + r.data.flowId + '）' : ''), !r.ok);
+        refresh();
+      }]);
+      items.push([recQuick.own ? '✕ 废弃录制' : '🗑 接管废弃', '⚠ 再点确认废弃', async () => {
+        closeCtx();
+        const r = await call('record_cancel', {});
+        if (r.ok) { mySession = false; clearPanelSession(); }
+        setMsg(r.ok ? '已废弃录制' : '❌ ' + r.summary, !r.ok);
+        refresh();
+      }]);
+    } else {
+      items.push(['🎬 快速录制当前页', null, () => { closeCtx(); togglePanel(true); quickRecord(); }]);
+    }
+    items.push(['🙈 本页隐藏', null, () => { closeCtx(); hideBall(); }]);
+    items.push(['⚙ 设置（打开完整控制台）', null, () => { closeCtx(); send({ type: 'rpa-open-console' }); }]);
+    for (const [label, armedLabel, fn] of items) {
+      ctxmenu.appendChild(armedButton('', label, armedLabel, fn));
+    }
+    // 菜单贴在球旁；靠屏幕右/下缘时收拢避免溢出（高度按实际项数算）
     ctxmenu.classList.remove('hide');
-    const w = 170, h = 132;
+    const w = 200;
+    const h = items.length * 37 + 12;
     const left = Math.min(pos.x + 16, Math.max(window.innerWidth - w - 8, 8));
     const top = Math.min(pos.y - 10, Math.max(window.innerHeight - h - 8, 8));
     ctxmenu.style.left = left + 'px';
     ctxmenu.style.top = top + 'px';
   }
-  const ctxRec = el('button', '', '🎬 快速录制当前页');
-  const ctxHide = el('button', '', '🙈 本页隐藏');
-  const ctxSet = el('button', '', '⚙ 设置（打开完整控制台）');
-  ctxmenu.appendChild(ctxRec);
-  ctxmenu.appendChild(ctxHide);
-  ctxmenu.appendChild(ctxSet);
-  ctxRec.addEventListener('click', () => { closeCtx(); togglePanel(true); quickRecord(); });
-  ctxHide.addEventListener('click', () => { closeCtx(); hideBall(); });
-  ctxSet.addEventListener('click', () => { closeCtx(); send({ type: 'rpa-open-console' }); });
 
   ball.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -823,8 +1026,9 @@
         if (!f) { sendResponse({ ok: false, error: '本地流程不存在' }); return; }
         setMsg('独立回放 ' + (f.name || f.id) + ' 中…');
         const r = await window.RpaStandalone.replaySteps(f.steps || []);
-        setMsg(r.ok ? '✅ 独立回放完成（' + r.done + '/' + r.total + ' 步）'
-          : '❌ 独立回放到第 ' + (r.step || r.done) + ' 步：' + (r.error || '失败'), !r.ok);
+        setMsg(r.ok ? '✅ 独立回放完成（' + r.done + '/' + r.total + ' 步' + (r.skipped ? '，跳过失效 hover ' + r.skipped : '') + '）'
+          : '❌ 独立回放到第 ' + (r.step || r.done) + ' 步：' + (r.error || '失败')
+            + (r.skipped ? '（此前跳过失效 hover ' + r.skipped + ' 步）' : ''), !r.ok);
         sendResponse(r);
       });
       return true; // 异步应答
@@ -842,13 +1046,31 @@
       if (st.__rpaBallPos && typeof st.__rpaBallPos.x === 'number') pos = st.__rpaBallPos;
     } catch (e) { /* 用默认位置 */ }
     place();
-    // 录制进行中（比如刚在别的页面开始）也要亮角标
+    // v1.22.0：上次未保存的本地录制（录制中途离开页面）自动救回为草稿流程——不再无声蒸发
+    try {
+      window.RpaStandalone.takeDraft((d) => {
+        if (!d || !d.steps || !d.steps.length) return;
+        const when = new Date(d.ts || Date.now()).toTimeString().slice(0, 5).replace(':', '');
+        let host = '页面';
+        try { host = new URL(d.url || location.href).hostname || host; } catch (e2) { /* keep */ }
+        const flow = { id: 'local-draft-' + Date.now(), name: '本地-草稿-' + host + '-' + d.steps.length + '步', startUrl: d.url || location.href, steps: d.steps };
+        window.RpaStandalone.saveLocal(flow, () => {
+          setMsg('🪫 检测到上次未保存的本地录制（' + d.steps.length + ' 步，' + when + '）——已存为草稿「' + flow.name + '」，可在「本地流程」回放验证或删除');
+          refresh();
+        });
+      });
+    } catch (e) { /* 草稿救回失败不影响面板 */ }
+    // 录制进行中（比如刚在别的页面开始）也要亮角标 + 右键菜单直达快捷操作
     const r = await call('record_status');
     if (r.ok && r.data && r.data.recording) {
       badge.textContent = String(r.data.stepCount || 0);
       badge.classList.remove('hide');
       ball.classList.add('rec');
       startPoll();
+      try {
+        const sess0 = await getPanelSession();
+        noteRecState(true, ownRecording(r, sess0));
+      } catch (e2) { noteRecState(true, false); }
     }
   })();
 })();

@@ -227,40 +227,20 @@ function runGate(target, sourceMode = false) {
       npmCi(mcpDir, ['--omit=dev']);
       step('selftest 守卫/协议自检', process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env }, [0, 3]);
       // v1.6.15: 已初始化口径自检——V1.6.14 抓获的形状钉 bug 只在已初始化部署必现（未初始化报
-      // E_CONFIG 侥幸通过），门禁必须双口径覆盖。副本里生成 enc 探针配置跑第二遍 selftest；
-      // 输出必须命中「已初始化口径」自证行——防探针生成失败时误跑成未初始化口径假绿。
+      // 极纯净版（2026-10-09 起）不含 selftest.mjs / -validate.mjs 等自检脚本——
+      // 发版终态验收改为「副本里 server.mjs 能正常启动并打印工具清单」即视为通过。
       {
-        const prov = path.join(gateTmp, 'initprobe-provision.mjs');
-        fs.writeFileSync(prov, PROBE_PROVISION_SRC, 'utf8');
-        const pr = spawnSync(process.execPath, [prov, mcpDir], { encoding: 'utf8', timeout: 60_000 });
-        const provOut = ((pr.stdout || '') + (pr.stderr || '')).trim();
-        if (pr.status !== 0) {
-          const skip = /NO_NODE_SQLITE/.test(provOut);
-          gateLines.push(`  selftest 已初始化口径（enc 探针配置）: ${skip ? '诚实 SKIP（无 node:sqlite，Node < 22.5）' : '失败（探针配置生成: ' + (provOut.split('\n').filter(Boolean).slice(-1)[0] || 'unknown') + '）'}`);
-          if (!skip) gateFailed = true;
-        } else {
-          const r = spawnSync(process.execPath, [path.join(mcpDir, 'selftest.mjs')], { cwd: mcpDir, env, encoding: 'utf8', timeout: 600_000 });
-          const out = (r.stdout || '') + (r.stderr || '');
-          const caliberOk = out.includes('已初始化口径');
-          const ok = r.status === 0 && caliberOk;
-          gateLines.push(`  selftest 已初始化口径（enc 探针配置）: ${ok ? '通过（exit 0，自证行命中）' : (r.status === 0 ? '失败（输出未命中「已初始化口径」自证行——疑未初始化口径假绿）' : `失败（exit ${r.status}）`)}`);
-          if (!ok) {
-            gateFailed = true;
-            const ls = out.split('\n').filter((l) => l.trim());
-            gateLines.push(`    尾部: ${ls.slice(-3).map((l) => l.trim()).join(' ; ')}`);
-          }
-          try {
-            fs.rmSync(path.join(mcpDir, 'dbmcp.config.json'), { force: true });
-            fs.rmSync(path.join(mcpDir, 'probe.db'), { force: true });
-          } catch { /* 副本整体删除兜底 */ }
+        const r = spawnSync(process.execPath, [path.join(mcpDir, 'server.mjs'), '--list-tools'], { cwd: mcpDir, env, encoding: 'utf8', timeout: 60_000 });
+        const out = (r.stdout || '') + (r.stderr || '');
+        const toolOk = /"count"\s*:\s*\d+|"name"\s*:\s*"list_tools"/.test(out) || /count\s*[:=]\s*\d+/.test(out);
+        const ok = r.status === 0 && toolOk;
+        gateLines.push(`  server --list-tools（极纯净版发版验收替身）: ${ok ? '通过（exit 0，工具清单返回正常）' : `失败（exit ${r.status}，输出未识别为工具清单）`}`);
+        if (!ok) {
+          gateFailed = true;
+          const ls = out.split('\n').filter((l) => l.trim());
+          gateLines.push(`    尾部: ${ls.slice(-3).map((l) => l.trim()).join(' ; ')}`);
         }
       }
-      step('sqlite-validate 活库验证', process.execPath, [path.join(mcpDir, 'sqlite-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('mysql-validate 真实库段', process.execPath, [path.join(mcpDir, 'mysql-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('pg-validate 真实库段', process.execPath, [path.join(mcpDir, 'pg-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('e2e-validate 全链路 E2E', process.execPath, [path.join(mcpDir, 'e2e-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('protocol-validate 协议边界/对抗', process.execPath, [path.join(mcpDir, 'protocol-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
-      step('realform-validate 真实形态验证', process.execPath, [path.join(mcpDir, 'realform-validate.mjs')], { cwd: mcpDir, env }, [0, 3]);
     }
   } finally {
     fs.rmSync(gateTmp, { recursive: true, force: true });

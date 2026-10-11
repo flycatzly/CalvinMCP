@@ -1,4 +1,4 @@
-// web-rpa-mcp — 无人值守运维：并发锁 / 中断检测 / 运行留存清理 / 跨流程总览
+// pagepilot-mcp — 无人值守运维：并发锁 / 中断检测 / 运行留存清理 / 跨流程总览
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, readConfig, readJson, writeJson, logger, nowIso, assertSafeId, pidAlive } from './core.mjs';
@@ -28,7 +28,19 @@ export function lockInfo(flowId) {
   const ageMs = Date.now() - new Date(rec.at || 0).getTime();
   const alive = pidAlive(rec.pid);
   const stale = !alive || ageMs > STALE_MS;
-  return { held: !stale, stale, flowId, pid: rec.pid, at: rec.at, stamp: rec.stamp, trigger: rec.trigger, ageMs };
+  // v1.22.4：合并运行标记的实时步骤（{index,total,op}）与「等待人工」状态——
+  // 悬浮球面板 3s 轮询 lock_status 即可显示「第 N/M 步 · 操作」与扫码等待，不必等报告落盘
+  const info = { held: !stale, stale, flowId, pid: rec.pid, at: rec.at, stamp: rec.stamp, trigger: rec.trigger, ageMs };
+  if (info.held && rec.stamp) {
+    try {
+      const m = readJson(runningMarkerPath(flowId, rec.stamp), null);
+      if (m) {
+        if (m.step) info.step = m.step;
+        if (m.waitingHuman) info.waitingHuman = m.waitingHuman;
+      }
+    } catch { /* 可观测性增强不阻断执行 */ }
+  }
+  return info;
 }
 
 export function acquireLock(flowId, meta = {}) {

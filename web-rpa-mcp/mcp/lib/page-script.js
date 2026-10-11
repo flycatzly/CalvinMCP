@@ -1,4 +1,4 @@
-/* web-rpa-mcp — 注入到页面的录制/定位辅助脚本（浏览器侧，非模块）
+/* pagepilot-mcp — 注入到页面的录制/定位辅助脚本（浏览器侧，非模块）
  * 提供 window.__rpa：多策略定位符生成、元素指纹、敏感元素识别
  * 以及在 window.__rpaRecordActive === true 时启用的录制事件监听
  */
@@ -376,11 +376,13 @@
 
   var pendingFill = null;
   var pendingTimer = null;
+  var pendingFillEl = null;
 
   function flushFill() {
     if (!pendingFill) return;
     var p = pendingFill;
     pendingFill = null;
+    pendingFillEl = null;
     if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
     emit(p);
   }
@@ -446,6 +448,12 @@
     if (tag !== 'input' && tag !== 'textarea') return;
     if (type === 'checkbox' || type === 'radio' || type === 'file' || type === 'range' || type === 'color') return;
     var sensitive = window.__rpa.sensitivityReason(el);
+    // v1.0.5：换字段先提交上一个挂起输入——自动填充/密码管理器/合成事件会在 700ms 防抖窗内
+    // 连续填多个字段（无失焦切换），旧逻辑共享一个 pendingFill 直接覆盖，前面的字段被静默丢弃
+    // （实测：同一 tick 填 A、B 两框只录到 B）。键盘 Tab 切换有 blur 兜底，这里补无 blur 的路径；
+    // 同一元素连续输入仍走防抖合并（打字合一步骤的既有语义不变）。
+    if (pendingFill && pendingFillEl !== el) flushFill();
+    pendingFillEl = el;
     pendingFill = {
       kind: 'fill',
       url: location.href,

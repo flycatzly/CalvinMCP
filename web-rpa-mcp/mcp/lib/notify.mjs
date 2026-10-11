@@ -1,4 +1,4 @@
-// web-rpa-mcp — 异常告警：企业微信/钉钉/飞书/Slack/通用 Webhook + 本地告警日志
+// pagepilot-mcp — 异常告警：企业微信/钉钉/飞书/Slack/通用 Webhook + 本地告警日志
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, readConfig, logger, maskSecret } from './core.mjs';
@@ -194,9 +194,9 @@ const ICON = { pass: '[OK]', fail: '[FAIL]', warning: '[WARN]' };
 export function composeRunMessage(report, cfg = readConfig()) {
   const icon = report.status === 'pass' ? ICON.pass : report.status === 'fail' ? ICON.fail : ICON.warning;
   const okWord = report.status === 'pass' ? '执行成功' : '执行失败';
-  const title = icon + ' Web RPA ' + okWord + '：' + (report.name || report.flowId);
+  const title = icon + ' PagePilot ' + okWord + '：' + (report.name || report.flowId);
   const lines = [];
-  lines.push('**Web RPA ' + okWord + '**  ' + icon);
+  lines.push('**PagePilot ' + okWord + '**  ' + icon);
   lines.push('> 流程：' + (report.name || report.flowId) + '  (id: ' + report.flowId + ')');
   lines.push('> 触发：' + (report.trigger || 'manual') + '  耗时：' + Math.round((report.durationMs || 0) / 1000) + 's');
   if (report.failedStep) lines.push('> 失败步骤：第 ' + report.failedStep + ' 步');

@@ -1,11 +1,11 @@
 ---
-name: web-rpa-mcp
-description: 当需要把每天重复的一串网页操作（点菜单、填日期、导出报表、粘贴单号、提交）变成可一键或定时复跑的自动化技能时使用——覆盖「演示一遍即生成技能」的录制、可审阅步骤清单、日期与 Excel 单号等变量化、无头回放、结果非空校验与截图留证、页面改版后的定位自愈、Windows 定时与失败告警、多流程串联。也适用于排查已录制技能的回放失败（元素找不到、生成空报表、验证码卡死、重复提交）。不适用于：需要人工验证码/短信码且无人接管的场景，以及任何绕过目标系统权限控制的用途。
+name: pagepilot-mcp
+description: 天璇驭页。当需要把每天重复的一串网页操作（点菜单、填日期、导出报表、粘贴单号、提交）变成可一键或定时复跑的自动化技能时使用——覆盖「演示一遍即生成技能」的录制、可审阅步骤清单、日期与 Excel 单号等变量化、无头回放、结果非空校验与截图留证、页面改版后的定位自愈、Windows 定时与失败告警、多流程串联。也适用于排查已录制技能的回放失败（元素找不到、生成空报表、验证码卡死、重复提交）。不适用于：需要人工验证码/短信码且无人接管的场景，以及任何绕过目标系统权限控制的用途。
 ---
 
-# web-rpa-mcp — 网页操作录制与回放技能（内置 MCP）
+# pagepilot-mcp — 网页操作录制与回放技能（内置 MCP）
 
-> 内置 MCP 服务器（stdio / JSON-RPC 2.0，44 工具）· 自检 7 套全链路（单元 / 规则 / 协议 / 工具 / 端到端 / 集成 / 覆盖度审计，项数以当日实测为准）· 版本以 `mcp/package.json` 与握手 serverInfo 为准 · 安装见 《README.md》
+> 天璇驭页 · PagePilot · 版本 **v1.0.6** · 内置 MCP `1.0.6`（stdio / JSON-RPC 2.0，45 工具，含 flow_step_insert）· 纯净零依赖分发 · 安装见《README.md》
 
 ## 一、它解决什么问题
 
@@ -60,8 +60,8 @@ description: 当需要把每天重复的一串网页操作（点菜单、填日�
 - **登录态持久化**：`profile_login` 打开可见浏览器让人工登录一次，登录态写入持久化 profile；之后所有执行（含定时任务）复用同一用户目录，**需要登录的内部系统终于能无人值守**。profile 同一时间只允许一个执行使用（内部自带全局锁），`profile_reset` 可随时清空。
 - **配置可撤销**：`config_set` 里把某项设为 `null` 即"恢复默认"，不会再出现"设过一次就再也改不回去"。
 - **无表头格式正确处理**：`.txt` 逐行文本、标量 JSON 数组不再被当成"有表头"而吞掉第一个值（`excel:/csv:/table:` 取值同样受益）。
-- **覆盖度自检**：`node test/audit.mjs` 会检查每个工具/步骤/断言/规则/命令是否都有测试，任何"没人用过的能力"都会让它失败（曾借此发现 L061 是永远触发不了的死代码）。
-- **浏览器插件控制台**（可选，零 MCP 改动）：悬浮球 + /console 网页版通过本地桥接（`node mcp/bridge.mjs`，默认 127.0.0.1:8317）调用同一批 44 工具；带 token 鉴权（`WEBRPA_BRIDGE_TOKEN`）、录制器被其他会话占用时只观察不干预的防护、回放 live 进度面板。详见「五之三」。
+- **纯净分发**：无测试套件、无 node_modules、无 `.` 前缀文件/目录；`doctor` 一键自检环境（playwright / 浏览器 / 目录 / 定时与告警状态）。
+- **浏览器插件控制台**（可选，零 MCP 改动）：悬浮球 + /console 网页版通过本地桥接（`node mcp/bridge.mjs`，默认 127.0.0.1:8317）调用同一批 44 工具；带 token 鉴权（`PAGEPILOT_BRIDGE_TOKEN`）、录制器被其他会话占用时只观察不干预的防护、回放 live 进度面板。详见「五之三」。
 
 ## 三、快速开始（三步）
 
@@ -76,7 +76,7 @@ record_start  record_status  record_stop  record_splice_start  record_cancel
 flow_list  flow_show  flow_lint  flow_rename  flow_delete
 flow_param_add  flow_param_remove
 flow_assertion_add  flow_assertion_remove
-flow_step_delete  flow_step_update  flow_step_move
+flow_step_delete  flow_step_update  flow_step_move  flow_step_insert
 flow_export  flow_import  flow_restore
 flow_run  flow_preflight  run_history  run_report  chain_run
 status_report  runs_prune  lock_status  lock_release
@@ -133,7 +133,7 @@ node mcp\runner.mjs prune --apply --logs  # 真正清理运行记录与日志
 
 ## 五之三、浏览器插件控制台（可选控制面，零 MCP 改动）
 
-不想敲命令/等 Agent 时，用浏览器控制全部 44 个工具：本地零依赖桥接把 MCP 暴露成 HTTP，`extension/` 目录的 MV3 插件（或不装插件直接开 `/console` 网页版）通过它操作。
+不想敲命令/等 Agent 时，用浏览器控制全部 45 个工具：本地零依赖桥接把 MCP 暴露成 HTTP，`extension/` 目录的 MV3 插件（或不装插件直接开 `/console` 网页版）通过它操作。
 
 ```powershell
 node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317，只监听本机）
@@ -142,13 +142,12 @@ node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317�
 ```
 
 - **网页悬浮球**：所有 http/https 页面常驻可拖拽猫耳球——🎬 一键录制当前页 / ⏹ 结束保存 / 🔁 重播刚生成的技能 / 👁 查看步骤（行内 stepLabel 清单）/ ⚙ 管理（重命名/删除）/ ▶ 快速回放最近流程；录制中球体脉冲 + 步数角标。
-- **插拔式双模（v1.20.0 起，v1.21.1 增强）**：桥接未连接时自动落**独立模式**（面板模式徽章 + 控制台「运行模式」横幅）——本地录制（content 直接捕获当前页 click/input/change/hover/press，密码框不录；a[href] 跨页点击识别为 goto 步）/ 本地回放（**同源跨页自动续播**：goto 与**表单提交类点击**均预存续播、新页面 content script 接续，submit 场景 1.5s 未导航自清防误触发；跨源诚实停止）/ 本地流程管理、导出与**导入**（本地/MCP 格式均可）；本地流程可一键「升级到 MCP」（映射 goto+click/fill DSL → flow_import）与「从 MCP 导入」（反向映射）形成双向闭环。下载/弹窗/iframe/定时告警仍需桥接。验证：`node verify/standalone.mjs`（15 用例）+ `node verify/ui-ext.mjs --quick`（16 用例）+ 总入口 `node verify/all.mjs --quick`。
+- **插拔式双模**：桥接未连接时自动落**独立模式**（面板模式徽章 + 控制台「运行模式」横幅）——本地录制（content 直接捕获当前页 click/input/change/hover/press，密码框不录；a[href] 跨页点击识别为 goto 步）/ 本地回放（**同源跨页自动续播**：goto 与**表单提交类点击**均预存续播、新页面 content script 接续，submit 场景 1.5s 未导航自清防误触发；跨源诚实停止）/ 本地流程管理、导出与**导入**（本地/MCP 格式均可）；本地流程可一键「升级到 MCP」。
 - **/console 六页签**：状态（doctor/status_report + **▶ 运行中回放 live 进度**：进行中流程的触发方式/pid/已运行时长/等待人工接管，3s 轮询）/ 录制 / 流程（含结构化编辑器）/ 定时 / 系统 / 控制台（任意工具原始调用）。
-- **安全**：桥接只绑 127.0.0.1 + Host/Origin 校验，零 CORS 放行头；可选 token 鉴权（启动 `WEBRPA_BRIDGE_TOKEN=令牌 node mcp/bridge.mjs`，插件设置页或 `/console?token=令牌` 配对）。**不要把 8317 转发到公网**。
+- **安全**：桥接只绑 127.0.0.1 + Host/Origin 校验，零 CORS 放行头；可选 token 鉴权（启动 `PAGEPILOT_BRIDGE_TOKEN=令牌 node mcp/bridge.mjs`，插件设置页或 `/console?token=令牌` 配对）。**不要把 8317 转发到公网**。
 - **录制器单例**：全局同时只允许一个录制会话；被其他会话占用时，悬浮球与 /console 录制页**只显示只读提示、不提供结束/取消**（防误结束他人录制）。
-- 完整功能与工具对照见仓库 `extension/README.md`（装机副本可能不含 extension/，以仓库为准）。
-- **改扩展后回归**：仓库 `verify/ui-ext.mjs`（`node verify/ui-ext.mjs`，约 3-4 分钟；`--quick` 约 2 分钟）覆盖插件 UI 全链路（/console 全页签 + 悬浮球录制/重播/查看/管理/重录表单/右键菜单/拖拽/隐藏/live 进度），自动用隔离实例避开录制器占用；**8317 桥接缺失时自动自起临时桥接并在退出时回收**（有主桥接直接用不误杀——ui-ext 与 all.mjs 均有此前置自检）。
-- **全量验证总入口**：`node verify/all.mjs`（`--quick` 跳过 selftest 与 live-fulltest 且 ui-ext 用 --quick）一条命令顺序跑完**七套电池**——自检 427 项 / MCP 44 工具 68 链路（live-fulltest）/ /console 全按钮清扫（button-sweep，40 用例含安全分级跳过清单、splice 三审计与断言边界组）/ 扩展 UI 回归（**默认完整版 17 含 live 长流程**）/ 双模（standalone 18 用例，含 MCP 格式导入/导入负向/跨源诚实停止）/ 新用户插拔旅程（journey 8 用例：开箱独立→本地录制/👁/回放→插桥升级→依赖重播→拔桥回落）/ 点名链条（fullchain 8 用例）；失败自动重试一次（时序竞态类兜底）；**收尾电池残件自密封**（自动清理测试前缀 runs/backups/live-report.json——绝不碰用户与外部流程，防门禁哈希污染）+ 残件自检行（零误报口径）；末尾汇总表 + 非零退出码可接告警；顺序执行防跑批互踩。
+- 完整功能与工具对照见仓库 `extension/README.md`（随纯净包分发）。
+- **纯净版验证**：`doctor` 环境自检 + 加载插件实测（悬浮球 / `/console` 全页签走一遍）；测试电池属开发线资产，不随纯净包分发。
 
 ## 五之四、外部真实网站回放规范（实测教训）
 
@@ -177,7 +176,7 @@ node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317�
 | 现象 | 处理 |
 |---|---|
 | `doctor` 报 playwright 不可用 | 在 `mcp` 目录 `npm install`，或复用同工作区已安装的 playwright（会自动搜索） |
-| 所有浏览器启动失败 | `npx playwright install chromium`；或在 `web-rpa.config.json` 设 `browser.channel="msedge"` |
+| 所有浏览器启动失败 | `npx playwright install chromium`；或在 `pagepilot.config.json` 设 `browser.channel="msedge"` |
 | 回放报「定位失败…指纹自愈也未达标」 | 页面确实改版了：`flow_show` 看是哪一步，`flow_step_delete` 删掉后用 `record_start` 只重录那一段 |
 | 回放成功但结果是空的 | 说明还缺「结果非空」校验，`flow_assertion_add` 加 `tableNotEmpty` 或 `download(minLines:2)` |
 | 卡在验证码 | 该步前面插 `humanHandoff`，并用 `headed:true` 跑；无头模式会直接报错提示 |
@@ -189,7 +188,7 @@ node mcp\bridge.mjs    # 第 1 步：启动本地桥接（默认 127.0.0.1:8317�
 ## 八、目录结构
 
 ```
-web-rpa-mcp/
+pagepilot-mcp/
 ├── SKILL.md                  本文档
 ├── README.md                 安装 / 验证 / 用法 / 排障
 ├── install.mjs               安装器：依赖、浏览器探测、自检、注册 JSON、安装技能
@@ -200,7 +199,7 @@ web-rpa-mcp/
 ├── workflows/                录制工作流 / 排障与自愈
 ├── references/               步骤 DSL 与断言参考 / 坑与护栏
 └── mcp/                      MCP 服务器
-    ├── server.mjs            44 个工具（stdio JSON-RPC）
+    ├── server.mjs            45 个工具（stdio JSON-RPC）
     ├── runner.mjs            命令行执行器（任务计划调用）
     ├── lib/                  browser / locators / recorder / player / lint / vars / table / notify / schedule / chain / store / secrets
     ├── page-script.js        注入页面的录制与定位辅助脚本

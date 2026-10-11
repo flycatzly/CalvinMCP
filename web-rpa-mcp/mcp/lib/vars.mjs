@@ -1,4 +1,4 @@
-// web-rpa-mcp — 变量系统：模板解析、参数取值（内置/环境/表格/凭据）、日期自动识别
+// pagepilot-mcp — 变量系统：模板解析、参数取值（内置/环境/表格/凭据）、日期自动识别
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

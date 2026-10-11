@@ -1,4 +1,4 @@
-// web-rpa-mcp — 多流程串联：把「取数 -> 填表 -> 发邮件」接成一条线
+// pagepilot-mcp — 多流程串联：把「取数 -> 填表 -> 发邮件」接成一条线
 import { logger, nowIso } from './core.mjs';
 import { loadFlow } from './store.mjs';
 import { runFlow } from './player.mjs';

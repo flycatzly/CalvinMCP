@@ -24,7 +24,7 @@ async function bridgeBase() {
 
 async function callBridge(path, opts) {
   const base = await bridgeBase();
-  // 桥接启用 WEBRPA_BRIDGE_TOKEN 时，统一在这里注入鉴权头（content script 与控制台共用本中转）
+  // 桥接启用 PAGEPILOT_BRIDGE_TOKEN 时，统一在这里注入鉴权头（content script 与控制台共用本中转）
   const st = await chrome.storage.local.get({ rpaToken: '' });
   const headers = Object.assign({}, (opts && opts.headers) || {});
   if (st.rpaToken) headers['X-RPA-Token'] = st.rpaToken;

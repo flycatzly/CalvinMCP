@@ -446,7 +446,7 @@ node mcp\bench.mjs --n 500000 --sessions 1200
 - **POC 语料纪律**：必须带唯一尾缀（防词表混叠——仅 12 种消息的混叠语料会把共享单遍收益虚增到 1.9×）；短串语料会把「随消息长度增长」的收益误判成零（共享单遍短串 1.00 vs 长消息 0.75）——必须带长消息档再下结论；测惰性建行收益前先量规则命中密度（=行消费率），语料尾缀必须规则中性（含「需求」会让 NEED_RE 100% 命中、惰性无收益）。
 - **真实微信数据的测试红线**：真实 wxid/会话名一律不得进仓库目录（`wai_privacy_scan` 会让 verify 全红——门禁正确行为，探针放仓库外）；测试输出只留数字/布尔；`~/.wechat-ai` 的 store.db 是 mock+scan 产物、不是真实微信内容，别当真实语料证据（真实 4.x 库全加密：只识别、报 `needs_access`，不解密不改动）。机器消费一律取 `structuredContent`（`textResult` 包 summary + fenced json），别解析 text。
 
-> 说明：`node mcp/bench.mjs` 是**测量工具**，不参与门禁；规模回归由 `mcp/tests/scale.test.mjs` 的确定性断言（增量语义 + 耗时上界）守住。
+> 说明：`node mcp/bench.mjs` 是**测量工具**（极纯净版不含，如需规模基准请从源码仓获取），不参与门禁；规模回归由 `mcp/tests/scale.test.mjs`（极纯净版不含）的确定性断言（增量语义 + 耗时上界）守住。
 
 ---
 

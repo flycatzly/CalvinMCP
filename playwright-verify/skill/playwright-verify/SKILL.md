@@ -210,6 +210,10 @@ playwright-verify/
 
 ## 版本记录
 
+- **v1.29.0（2026-10-12）**：悬浮球「✅ 采纳建议断言」一键按钮（r55 导出侧确认流程的 UI 化收尾）——新纯函数 adoptSuggestedAssertion（草稿升正选进 cases[0].steps 末尾、不可变更新、消费即清移除 pv_suggestAssertion 键、非法草稿 no-op 不硬凑）；点按即经真桥走 generate_scripts（write:false 语义不变），goto-only/空录制诚实提示「无交互步可断言」零发出，独立模式与生成按钮同口径停用。取证 realtest-r57 8/8（真桥采纳→门禁 verdict 通过）。floating-check 113→121、floating-e2e 38→39。CORE 763/818/959，全量 990。
+- **v1.28.0（2026-10-11）**：e2e 排障信息口径（r49/r51 截断坑教训工具化）——floating-e2e check() 截断 200→DETAIL_MAX=400 单一常量；「关键字段前置+长 call log 只留首行与 blocker 行」约定四 e2e 文件同款落点（其余三家 check() 全量直出不引入截断）；真机取证实证「只放宽数字救不了排版」（600 字符 log 在 400 上限下仍挤掉后段 blocker 与计数）。H31 三钉（hardened 149→152）。CORE 755/810/950，全量 981。
+- **v1.27.0（2026-10-11）**：悬浮球导出载荷断言建议（r54 全链断层的导出侧延伸）——新纯函数 suggestAssertionStep（最后交互步→assertVisible 草稿，goto/空/异常形态 null 不硬凑），导出 JSON 增 pv_suggestAssertion 键（默认不混入步骤序列，用户挪进 cases[0].steps 采纳或删键放弃）；generate_scripts 拦下带建议键的载荷时给专属指引。floating-check 106→113、floating-e2e 37→38、generate-check 31→32。CORE 752/807/947，全量 978。
+- **v1.26.0（2026-10-11）**：「录制→导出→生成」全链断层修复（全流程实测轮）——录制器只录动作不录断言，悬浮球导出 JSON 载荷喂 generate_scripts 必被 PW007 门禁拦（拦得对但拦得不明）。修复：generate() 检出 PW007 时输出 hints 可执行指引（cases[].steps 补 assertVisible/assertText/assertCount），server 文本通道透出直达悬浮球/console。generate-check 27→31。CORE 744/799/938，全量 969。
 - **v1.25.0（2026-10-08）**：collect_table 推进检测与去重新增解耦（两击制）——added===0 时内容有变继续翻、逐行相同计一击、连续两击才停 no-new-rows（F7 守门原语义保留）；新纯函数 sameRows；r52 纯重复中间页丢数案例修复（realtest-r52 探针 4/4 页账 [[1,2,2],[2,2,0],[3,1,1]]）。nl-agent-check 147→149、flow-check 44→45（browser 套件 +1 只进 mode 3）。CORE 740/795/934，全量 965。
 - **v1.24.0（2026-10-08）**：探索性实测轮 —— 真 stdio+回环靶站（Temp/realtest-r52.mjs 4/4）补齐 collect_table next 翻页与 keyIndex 跨页去重两条零真跑链路；挖出并修复 CSV 公式注入（formatCsv 对 =+-@ TAB CR 开头单元格与 db export_data 同口径加 ' 前缀，真链路 =HYPERLINK 验证不执行）；纯重复中间页保守停边界如实记录（不猜测性修）。nl-agent-check 145→147。CORE 738/793/931，全量 962。
 - **v1.23.0（2026-10-08）**：控制台整页真浏览器全流程验证 + 双修复面 —— floating-e2e 新增控台段 7 钉（桥未起可执行指引/重连 16 工具/lint_spec 真调用+历史预览+回填/面板双模往返/模式钮视口可达性）；修复 A：reconnect 失败带 `node mcp/bridge.mjs` 启动指引；修复 B：install.mjs 下一步新增插件加载引导（加载已解压+extension 目录+起桥命令）。bridge-check 54→56、floating-e2e 30→37。CORE 736/791/929，全量 960。

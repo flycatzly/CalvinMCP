@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// web-rpa-mcp — MCP 服务器（stdio / JSON-RPC 2.0，零依赖协议层）
+// pagepilot-mcp — MCP 服务器（stdio / JSON-RPC 2.0，零依赖协议层）
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -11,7 +11,7 @@ import {
   listFlows, loadFlow, saveFlow, deleteFlow, requireFlow, listRuns, loadRun,
   flowMarkdown, stepLabel, newFlowId, listBackups, restoreFlow, backupFlow,
 } from './lib/store.mjs';
-import { lintFlow } from './lib/lint.mjs';
+import { lintFlow, KNOWN_STEP_OPS } from './lib/lint.mjs';
 import { runFlow, preflightFlow } from './lib/player.mjs';
 import { runChain } from './lib/chain.mjs';
 import {
@@ -30,7 +30,7 @@ import {
 import { resolveParams, describeParams, fromTable } from './lib/vars.mjs';
 import { readTable, resolveColumn } from './lib/table.mjs';
 
-const VERSION = '1.8.3';
+const VERSION = '1.0.7';
 const L = logger('server');
 
 const PROTOCOL_FALLBACK = '2024-11-05';
@@ -325,6 +325,35 @@ tool('flow_step_move', '调整步骤顺序（把某一步移动到另一个位�
     return ok({ steps: steps.map((s, i) => stepLabel(s, i)) }, '已移动第 ' + a.from + ' 步到第 ' + a.to + ' 步');
   });
 
+tool('flow_step_insert',
+  '在指定位置插入一个步骤（index=1 起算，插到该步之前；越界则追加到末尾）。' +
+  '典型用途：在登录步骤之后插 {"op":"humanHandoff","reason":"请扫码完成登录","resumeUrlContains":"业务页关键字","timeoutMs":300000}，' +
+  '或插 {"op":"waitForText","text":"..."} 等页面就绪信号。',
+  {
+    type: 'object',
+    properties: {
+      flowId: S_FLOW,
+      index: S_IDX,
+      step: { type: 'object', description: '步骤对象（与流程 DSL 同构）' },
+    },
+    required: ['flowId', 'index', 'step'],
+  },
+  async (a) => {
+    const flow = requireFlow(a.flowId);
+    const steps = flow.steps || [];
+    const i = Math.max(0, Math.min(a.index - 1, steps.length));
+    // 入口校验 op（L003 同口径）：打错 op 名的步骤在插入时就拦下，不等到回放运行时才爆
+    if (!a.step || typeof a.step.op !== 'string' || !KNOWN_STEP_OPS.has(a.step.op)) {
+      return fail('未知步骤类型: ' + (a.step && a.step.op) + '（合法步骤见《步骤DSL与断言参考》：goto / click / fill / select / check / press / waitForText / humanHandoff 等）');
+    }
+    const step = Object.assign({ seq: 0 }, a.step);
+    steps.splice(i, 0, step);
+    steps.forEach((s, k) => { s.seq = k + 1; });
+    snapshot(a.flowId);
+    saveFlow(flow);
+    return ok({ stepCount: steps.length, insertedAt: i + 1, label: stepLabel(step, i) }, '已在第 ' + (i + 1) + ' 步前插入：' + stepLabel(step, i));
+  });
+
 tool('flow_export', '导出流程定义为 JSON（便于备份、分享、纳入 git）。',
   { type: 'object', properties: { flowId: S_FLOW } },
   async (a) => {
@@ -359,6 +388,7 @@ tool('flow_run',
       allowLintErrors: { type: 'boolean', description: '忽略静态检查的阻断项强制运行' },
       learn: { type: 'boolean', description: '是否把自愈成功的定位符回写进流程文件，默认 true' },
       evidenceOn: { type: 'string', enum: ['always', 'failure', 'never'] },
+      keepOpen: { type: 'boolean', description: 'v1.22.4：headed 模式下回放结束后不自动关窗，弹确认框等人工查看页面后点确定再继续（无头模式忽略此参数）' },
       maxDurationMs: { type: 'integer', minimum: 0, description: '本次运行总时限（毫秒），到期后优雅收尾（截图+报告+告警+释放锁）；不传用配置 run.maxDurationMs（默认 0=不限）。计时自运行开始，含 profile 锁等待（被剩余预算夹取）与浏览器启动（不可中断，越线≤启动时长）；报告与响应带 budgetOverrunMs/budgetSource/launchMs 可观测字段（launchMs=启动耗时）' },
       saveVideo: { type: 'boolean', description: '本次是否全程录像留证；不传用配置 run.saveVideo（流程含敏感输入时自动跳过，防录像泄露密码画面）' },
       videoOn: { type: 'string', enum: ['failure', 'always'], description: '成功时是否保留录像（failure=删成功录像省空间）' },
@@ -604,8 +634,8 @@ tool('notify_test', '发送一条测试告警，验证 Webhook 是否配置正�
   { type: 'object', properties: { message: { type: 'string' } } },
   async (a) => {
     const cfg = readConfig();
-    const text = a.message || ('Web RPA 测试消息 ' + nowIso());
-    const res = await sendNotify({ title: 'Web RPA 测试', text, markdown: '**Web RPA 测试**\n' + text, data: { test: true } }, cfg, { force: true });
+    const text = a.message || ('PagePilot 测试消息 ' + nowIso());
+    const res = await sendNotify({ title: 'PagePilot 测试', text, markdown: '**PagePilot 测试**\n' + text, data: { test: true } }, cfg, { force: true });
     return res.sent ? ok(res, '✅ 测试告警已发送') : fail('发送失败：' + (res.error || res.skipped), res);
   });
 
@@ -760,7 +790,7 @@ tool('doctor',
     }
     if (plan.kind === 'none' || plan.kind === 'chromium-missing') {
       out.problems.push('没有可用浏览器');
-      out.hints.push('npx playwright install chromium，或在 web-rpa.config.json 设置 browser.channel="msedge"');
+      out.hints.push('npx playwright install chromium，或在 pagepilot.config.json 设置 browser.channel="msedge"');
     }
     if (isWindows()) {
       try { out.schedule.tasks = (await listSchedules()).length; } catch { /* ignore */ }
@@ -777,7 +807,7 @@ tool('doctor',
     if (!Number(cfg.run.maxDurationMs) && !Number(cfg.run.unattendedMaxDurationMs)) {
       out.hints.push('run.maxDurationMs 与 run.unattendedMaxDurationMs 都是 0：没有任何总超时保护，卡死的运行会一直挂着（建议至少配一个；定时运行默认有 ' + Math.round((DEFAULT_CONFIG.run.unattendedMaxDurationMs || 0) / 60000) + ' 分钟上限）');
     }
-    if (!fs.existsSync(DIRS.configFile)) out.hints.push('还没有 web-rpa.config.json，当前使用内置默认值（需要时用 config_set 生成）');
+    if (!fs.existsSync(DIRS.configFile)) out.hints.push('还没有 pagepilot.config.json，当前使用内置默认值（需要时用 config_set 生成）');
     return ok(out, out.problems.length ? '自检发现 ' + out.problems.length + ' 个问题' : '环境自检通过，可以开始录制/回放');
   });
 
@@ -804,7 +834,7 @@ async function handle(msg) {
         reply(id, {
           protocolVersion: version,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'web-rpa-mcp', version: VERSION },
+          serverInfo: { name: 'pagepilot-mcp', version: VERSION },
         });
         return;
       }
@@ -878,7 +908,7 @@ function startServer() {
     try { await closeAll(); } catch { /* ignore */ }
     process.exit(0);
   });
-  L.info('web-rpa-mcp 已启动', { version: VERSION, tools: TOOLS.length, pid: process.pid });
+  L.info('pagepilot-mcp 已启动', { version: VERSION, tools: TOOLS.length, pid: process.pid });
 }
 
 const arg = process.argv[2];

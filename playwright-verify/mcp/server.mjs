@@ -1366,6 +1366,12 @@ const TOOLS = [
       } catch (e) {
         return fail(`生成失败：${e.message}`, { error: 'GENERATE_FAILED', message: e.message });
       }
+      // 悬浮球导出载荷自带建议断言步骤（pv_suggestAssertion 键，r55 扩展侧约定）：门禁拦下时
+      // 指引用户把它挪进 cases[0].steps——载荷里已经有修法，别让用户再从头补。
+      const pvSug = args.pv_suggestAssertion;
+      if (!gen.lint.passed && pvSug && typeof pvSug === 'object' && typeof pvSug.act === 'string') {
+        gen.hints = (gen.hints || []).concat([`载荷已带建议断言步骤 pv_suggestAssertion（act=${pvSug.act}）——把它挪进 cases[0].steps 后重新生成即可；不采纳则删除该键。`]);
+      }
       let writeInfo = null;
       if (boolArg(args.write, 'write', false)) {
         const outDir = path.resolve(args.cwd || DEFAULT_CWD, args.outDir || 'generated');
@@ -1375,6 +1381,8 @@ const TOOLS = [
       }
       const text = [
         gen.verdict,
+        // PW007 等拦截指引（录制/导出链路零断言时给可执行修法）——文本通道直达悬浮球/console
+        ...(gen.hints || []).map((h) => `指引: ${h}`),
         `语法: ${gen.syntax.passed ? 'OK' : 'FAIL'}　lint: ERROR ${gen.lint.errorCount} / WARN ${gen.lint.warnCount}`,
         `文件: ${gen.files.map((f) => f.path).join(', ')}`,
         '',

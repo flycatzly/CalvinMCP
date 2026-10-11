@@ -1,4 +1,4 @@
-// web-rpa-mcp — 共享核心：路径 / 配置 / 原子 JSON IO / ID / 日志 / 时间
+// pagepilot-mcp — 共享核心：路径 / 配置 / 原子 JSON IO / ID / 日志 / 时间
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -8,10 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const MCP_DIR = path.resolve(__dirname, '..');
-// WEBRPA_ROOT：实例隔离用的数据根注入（测试/多实例并跑场景）。缺省仍是代码所在的项目根；
+// PAGEPILOT_ROOT：实例隔离用的数据根注入（测试/多实例并跑场景）。缺省仍是代码所在的项目根；
 // 只改 flows/runs/logs/.work/配置 的落点，mcp/、demo/ 等代码位置仍按文件相对解析不受影响。
-export const ROOT = process.env.WEBRPA_ROOT
-  ? path.resolve(process.env.WEBRPA_ROOT)
+export const ROOT = process.env.PAGEPILOT_ROOT
+  ? path.resolve(process.env.PAGEPILOT_ROOT)
   : path.resolve(MCP_DIR, '..');
 
 export const DIRS = {
@@ -21,7 +21,7 @@ export const DIRS = {
   runs: path.join(ROOT, 'runs'),
   logs: path.join(ROOT, 'logs'),
   work: path.join(ROOT, '.work'),
-  configFile: path.join(ROOT, 'web-rpa.config.json'),
+  configFile: path.join(ROOT, 'pagepilot.config.json'),
 };
 
 export function ensureDirs() {
@@ -50,7 +50,7 @@ export function resolveRunBudget(optsMax, runCfg = {}, trigger = 'manual') {
 
 /* ---------------- id / 时间戳安全闸 ----------------
    流程 id 与运行时间戳会拼进 flows/、runs/、locks/ 下的文件路径。不设闸时
-   flow_get('../web-rpa.config') 能读到 flows/ 之外的任意 .json（含 webhook 配置），
+   flow_get('../pagepilot.config') 能读到 flows/ 之外的任意 .json（含 webhook 配置），
    flow_save 能覆盖、flow_delete 能删——路径穿越是真实可达的攻击面（已实测）。
    规则：拒绝空/超长、路径分隔符与 Windows 非法字符、控制符、'..'、点号开头、点或空格收尾。 */
 export function assertSafeId(id, what = 'id') {
@@ -72,7 +72,7 @@ export function pidAlive(pid) {
   catch (e) { return !!(e && e.code === 'EPERM'); }
 }
 
-/** 默认配置：全部可在 web-rpa.config.json 覆盖 */
+/** 默认配置：全部可在 pagepilot.config.json 覆盖 */
 export const DEFAULT_CONFIG = {
   browser: {
     // auto | chromium | msedge | chrome | custom
@@ -85,6 +85,10 @@ export const DEFAULT_CONFIG = {
     persistProfile: false,
     profileDir: null,            // 默认 <项目>/.work/profile
     slowMo: 0,
+    // CDP 远程调试端口（browser.debugPort）：0=不开（默认，行为与旧版一致）；
+    // >0 时浏览器以 --remote-debugging-port=<N> 启动，外部工具（如自动化测试驱动）可
+    // chromium.connectOverCDP 连入录制窗合成事件。仅建议本机测试场景临时开启。
+    debugPort: 0,
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
     recordViewport: { width: 1440, height: 900 },
@@ -118,7 +122,7 @@ export const DEFAULT_CONFIG = {
     timeoutMs: 8000,
     mention: '',
   },
-  schedule: { taskPrefix: 'WebRPA' },
+  schedule: { taskPrefix: 'PagePilot' },
   security: {
     maskSecrets: true,               // 参数值/日志脱敏总开关；false 仅放开参数值与日志便于调试（secret 凭据值、webhook 回显永远打码，不可关闭）
     maskFieldsInScreenshots: true,   // 截图前把密码框等敏感字段打码，避免证据图里泄露
@@ -233,7 +237,7 @@ export function log(scope, level, msg, extra) {
   } catch { /* 脱敏失败不阻断日志本身 */ }
   const line = `[${new Date().toISOString()}] [${level}] [${scope}] ${msg}${safe ? ' ' + safeJson(safe) : ''}`;
   if (level === 'error' || level === 'warn') process.stderr.write(line + '\n');
-  else if (process.env.WEBRPA_DEBUG) process.stderr.write(line + '\n');
+  else if (process.env.PAGEPILOT_DEBUG) process.stderr.write(line + '\n');
   try {
     ensureDirs();
     fs.appendFileSync(path.join(DIRS.logs, `${formatDate(new Date())}.log`), line + '\n', 'utf8');
@@ -293,7 +297,7 @@ export function redactByKey(value, keys, on = true) {
 
 /** 路径脱敏：把文本里的本地绝对路径压成「mcp 相对段 / 文件名」，:line:col 原样保留。
  *  错误回包与日志同走这一出口——stack 帧曾把安装绝对路径（file:///D:/...）回给外部 MCP 客户端。
- *  包内路径（含 web-rpa-mcp/mcp/）保留 mcp/ 之后的相对段便于定位；其余只留文件名。
+ *  包内路径（含 pagepilot-mcp/mcp/）保留 mcp/ 之后的相对段便于定位；其余只留文件名。
  *  正则要点：路径段内不含冒号（不吞 :line:col）；空格仅在其后仍接路径分隔符时算路径内部
  *  （"C:\Program Files\app" 整体脱敏，"读取 /a/b.csv 失败" 不吞尾部中文）；lookbehind 挡住
  *  URL 里的伪路径（https://x/home/y 不命中 /home/）。 */
@@ -302,8 +306,8 @@ const PATH_RE = /(?<![\w/.])(?:(?:file:\/\/\/)?[A-Za-z]:[\\/]|(?:file:\/\/)?\/(?
 export function redactPath(text) {
   return String(text ?? '').replace(PATH_RE, (m) => {
     const norm = m.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/');
-    const i = norm.toLowerCase().indexOf('web-rpa-mcp/mcp/');
-    if (i >= 0) return norm.slice(i + 'web-rpa-mcp/mcp/'.length);
+    const i = norm.toLowerCase().indexOf('pagepilot-mcp/mcp/');
+    if (i >= 0) return norm.slice(i + 'pagepilot-mcp/mcp/'.length);
     const segs = norm.split('/').filter(Boolean);
     return segs[segs.length - 1] || m;
   });

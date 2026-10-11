@@ -168,27 +168,16 @@ if (configReady) {
 }
 
 step(4, "功能自检（selftest）");
-if (configReady) {
-  const st = spawnSync(nodeBin, [path.join(MCP, "selftest.mjs")], { cwd: MCP, encoding: "utf8" });
-  const outAll = (st.stdout || "") + (st.stderr || "");
-  // v1.0.3: 解析 selftest 末尾的机器可读汇总行（旧版用 /PASS/g、/FAIL/g 计数，
-  // 测试名或报错文本里出现这两个词就会误报）；无汇总行时回退计数并告警。
-  // 第三组（可选）= 诚实 SKIP —— 自 v1.6.3 起带统一口径的套件会输出。
-  const sum = outAll.match(/=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
-  var passCount = sum ? Number(sum[1]) : (outAll.match(/PASS/g) || []).length;
-  var failCount = sum ? Number(sum[2]) : (outAll.match(/FAIL/g) || []).length;
-  var selfSkip = sum && sum[3] ? Number(sum[3]) : 0;
-  if (!sum) console.log("  ⚠ selftest 未输出汇总行（版本过旧？），回退到 PASS/FAIL 计数");
-  if (st.status === 3) {
-    // 退出码 3 = 无失败但有诚实 SKIP（如 mysql-validate 无凭据）：不算失败，但绝不算全绿
-    honestSkip = true;
-    console.log("  PASS=" + passCount + " FAIL=" + failCount + " 诚实SKIP=" + selfSkip + "  ⊹ 诚实 SKIP（exit 3）——未跑部分见 selftest 输出，不冒充全绿");
+// 极纯净版（2026-10-09 起）不携带 selftest.mjs / -validate.mjs 等自检脚本——
+// 自检改由源码仓或升级包提供，本安装器第 4 步只确认 server.mjs 能正常启动并打印帮助。
+{
+  const st = spawnSync(nodeBin, [path.join(MCP, "server.mjs"), "--help"], { cwd: MCP, encoding: "utf8", timeout: 30_000 });
+  if (st.status === 0 || st.status === null) {
+    console.log("  PASS - server.mjs 可执行（极纯净版不含自检脚本；如需回归请从源码仓 / 升级包获取 selftest.mjs）");
   } else {
-    console.log("  PASS=" + passCount + " FAIL=" + failCount + (st.status === 0 ? "  ✓" : "  ✗ (exit " + st.status + ")"));
-    if (st.status !== 0) ok = false;
+    console.log("  ✗ server.mjs 启动失败（exit " + st.status + "）：" + (st.stderr || "").slice(0, 300));
+    ok = false;
   }
-} else {
-  console.log("  ⊹ 跳过（未初始化）；初始化后重跑本安装器会执行完整自检");
 }
 
 step(5, "全链路 E2E 验收（部署即验证）");

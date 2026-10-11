@@ -1,4 +1,4 @@
-// web-rpa-mcp — 凭据加密存储（AES-256-GCM + 本机密钥文件）
+// pagepilot-mcp — 凭据加密存储（AES-256-GCM + 本机密钥文件）
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

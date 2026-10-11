@@ -82,31 +82,20 @@ try {
 }
 
 step(4, "功能自检（selftest）");
-let pass = 0;
-let failC = 0;
-let skipC = 0;
+// 极纯净版（2026-10-09 起）不携带 selftest.mjs / verify.mjs / bench.mjs / e2e.mjs 等自检脚本——
+// 自检改由源码仓或升级包提供。本安装器第 4 步只确认 server.mjs 能正常启动并打印工具清单。
 let honestSkip = false;
 try {
-  const r = spawnSync(nodeBin, [SELFTEST], { encoding: "utf8", env: { ...process.env } });
+  const r = spawnSync(nodeBin, [SERVER, "--list-tools"], { encoding: "utf8", env: { ...process.env } });
   const all = (r.stdout || "") + (r.stderr || "");
-  const sum = all.match(/=== (\d+) passed, (\d+) failed(?:, (\d+) 诚实SKIP)? ===/);
-  pass = sum ? Number(sum[1]) : (all.match(/PASS/g) || []).length;
-  failC = sum ? Number(sum[2]) : (all.match(/FAIL/g) || []).length;
-  skipC = sum && sum[3] !== undefined ? Number(sum[3]) : 0;
-  if (!sum) {
-    console.log("  ⚠ 未找到汇总行，回退到计数");
-    console.log(all.split("\n").slice(-25).join("\n"));
-  }
-  // 退出码 3 = 无失败但有诚实 SKIP（模块未就绪 / 能力未提供）：不算失败，但绝不算全绿
-  if (r.status === 3) {
-    honestSkip = true;
-    console.log("  PASS=" + pass + " FAIL=" + failC + " 诚实SKIP=" + skipC + "  ⊹ 诚实 SKIP（exit 3）——未跑部分见 selftest 输出，不冒充全绿");
+  const m = all.match(/已注册\s+(\d+)\s+个工具|count["']?\s*:\s*(\d+)/);
+  const toolCount = m ? Number(m[1] || m[2]) : 0;
+  if (r.status === 0 && toolCount > 0) {
+    console.log("  ✓ server.mjs 可执行，已注册 " + toolCount + " 个工具（极纯净版不含自检脚本；如需回归请从源码仓 / 升级包获取 selftest.mjs）");
   } else {
-    console.log("  PASS=" + pass + " FAIL=" + failC + " 诚实SKIP=" + skipC + (r.status === 0 ? "  ✓" : "  ✗ (exit " + r.status + ")"));
-    if (r.status !== 0) {
-      console.error(all.split("\n").filter((l) => l.includes("✗")).slice(0, 20).join("\n"));
-      ok = false;
-    }
+    console.error("  ✗ server.mjs 启动失败或未识别工具清单（exit " + r.status + "）");
+    console.error(all.split("\n").slice(-5).join("\n"));
+    ok = false;
   }
 } catch (e) {
   console.error("  ✗ 自检执行失败：" + String(e.message ?? e));

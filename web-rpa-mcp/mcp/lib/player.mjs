@@ -1,4 +1,4 @@
-// web-rpa-mcp — 回放引擎：执行步骤 / 结果校验 / 自愈学习 / 证据截图 / 运行报告
+// pagepilot-mcp — 回放引擎：执行步骤 / 结果校验 / 自愈学习 / 证据截图 / 运行报告
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, readConfig, logger, stampId, maskSecret, maskingEnabled, redactKeyList, nowIso, resolveRunBudget } from './core.mjs';
@@ -78,6 +78,45 @@ function installCrashHandlers() {
 }
 
 const MASK_CSS = 'input[type="password"],[data-rpa-mask]{filter:blur(6px) !important}';
+
+/* v1.22.6 浮层/弹窗自动关闭：点击被「其它元素拦截指针事件」时的恢复手段。
+ * 页面常弹出录制时没有的浮层（登录/验证码/Cookie/广告），盖住目标导致 locator.click 超时。
+ * 这里先按 ESC、再点常见关闭按钮尝试关掉浮层，然后重试一次；关不掉就诚实报错（不盲目 force-click 点穿）。 */
+const CLOSE_SELECTORS = [
+  '[aria-label*="关闭"]', '[aria-label*="close" i]', '.close', '.dialog-close', '.modal-close',
+  'button[class*="close" i]', '[class*="close-btn" i]', '[class*="closeBtn"]', '[id*="closeBtn"]', '[id*="Close"]',
+  '.ant-modal-close', '.el-dialog__close', '.vxe-modal--close',
+];
+async function dismissOverlays(page) {
+  try { await page.keyboard.press('Escape'); } catch { /* ignore */ }
+  await sleep(250);
+  for (const sel of CLOSE_SELECTORS) {
+    let n = 0;
+    try { n = await page.locator(sel).count(); } catch { continue; }
+    for (let i = 0; i < n; i++) {
+      try {
+        const b = page.locator(sel).nth(i);
+        if (await b.isVisible({ timeout: 300 })) { await b.click({ timeout: 800 }); await sleep(180); }
+      } catch { /* 点不动就下一个 */ }
+    }
+  }
+  await sleep(250);
+}
+async function clickWithRecovery(page, locator, opts, ctx) {
+  try { await locator.click(opts); return; } catch (e) {
+    if (!/intercepts pointer events/i.test(String(e && e.message ? e.message : e))) throw e;
+    if (ctx) (ctx.notes = ctx.notes || []).push('点击被浮层遮挡，尝试自动关闭浮层后重试');
+    await dismissOverlays(page);
+    try {
+      await locator.click(opts);
+      if (ctx) (ctx.notes = ctx.notes || []).push('已关闭遮挡浮层并完成点击');
+      return;
+    } catch (e2) {
+      throw new Error('点击被浮层遮挡（目标元素已找到，但上方有弹窗/遮罩拦截点击；已尝试按 ESC 与关闭常见弹窗仍失败）：'
+        + String(e2 && e2.message ? e2.message : e2).split('\n')[0]);
+    }
+  }
+}
 
 /* evaluate/title 这类原语没有超时参数：页面卡在"永不完成的导航"上时会无限等
    （goto 超时只中止等待方，请求本身还挂在浏览器里）。失败收尾被它拖死时，
@@ -380,10 +419,35 @@ export function redirectAttribution({ finalUrl, startUrl, steps } = {}) {
   if (a.origin === b.origin && a.pathname === b.pathname && a.search === b.search) return null;
   const hasClick = (steps || []).some((s) => s && (s.op === 'click' || s.op === 'clickAndDownload' || s.op === 'hover'));
   if (!hasClick) return null;
-  const captchaLike = /captcha|verify|challenge|security/i.test(a.pathname);
+  function safeHost(u) { try { const x = new URL(u); return x.hostname + '/' + x.pathname; } catch { return u || ''; } }
+  // v1.22.3：登录态重定向（先于风控判定）——起始页是登录/SSO 页、最终 URL 离开它，
+  // 是「回放时已有登录态被 SSO 重定向」最典型的形状（unidesk 实测），
+  // 登录页上的步骤此时已无意义；这与外部站风控重定向是两种不同病因，给不同的修复指引。
+  // v1.0.5：只测路径段不测查询串——业务页带 ?from=login / ?sso=0 这类参数曾误入此分支。
+  const loginLike = (u) => {
+    let s = String(u == null ? '' : u);
+    try { if (/^https?:\/\//i.test(s)) s = new URL(s).pathname; } catch { /* 裸串按原样测 */ }
+    return /login|sso|signin|auth|oauth|passport/i.test(s);
+  };
+  const finalIsLogin = loginLike(finalUrl);
+  const startIsLogin = loginLike(startUrl);
+  if (startIsLogin && !finalIsLogin) {
+    const onLogin = (steps || []).filter((s) => s && s.pageUrl && loginLike(safeHost(s.pageUrl))).length;
+    return '最终 URL（' + finalUrl + '）已离开登录起始页（' + startUrl + '）——最常见原因：回放时浏览器已有登录态，SSO 自动重定向到业务页，' +
+      '录制于登录页上的步骤（登录方式选择/公司选择等' + (onLogin ? '，共 ' + onLogin + ' 步' : '') + '）此时已无意义。' +
+      '修复：用 flow_step_delete 删除登录页上的步骤（保留第 1 步 goto 即可自动跳转），并配合 profile_login 持久化登录态；' +
+      '若确需回放登录过程，请保持未登录（清空 .work/profile）并以 headed 模式人工接管。';
+  }
+  // v1.22.6：验证码页单独一支——这是「人机验证」硬边界，与普通风控跳转/改版给不同的指引
+  const captchaLike = /captcha|verify|challenge|security|tuxing|geetest/i.test(a.hostname + a.pathname);
+  if (captchaLike) {
+    return '最终 URL 是验证码页（' + finalUrl + '）——回放触发了站点的**人机验证/图形验证码**（反爬风控），' +
+      '这类验证无法无人值守自动通过（需人工识别图形/滑块）。可选：① 在触发验证码的那一步之后插入 humanHandoff（headed 模式，人工识别后自动继续）；' +
+      '② 改用无此类风控的内网/业务站点（如 unidesk）。录制于验证码之后的步骤可能已失效，需一并重录。';
+  }
   const deepToRoot = a.origin === b.origin && a.pathname === '/' && b.pathname !== '/';
   const originChanged = a.origin !== b.origin;
-  if (!deepToRoot && !originChanged && !captchaLike) return null;
+  if (!deepToRoot && !originChanged) return null;
   return '最终 URL（' + finalUrl + '）偏离流程起始地址（' + startUrl + '），且流程含点击类步骤——' +
     '疑似外部真实站风控重定向（gitee 类站点可能把可信点击导航重定向到首页/验证码页，URL 直接访问通常不受影响）。' +
     '建议改用 URL 导航型流程（goto 链）+ url 断言兜底，详见 SKILL.md 五之四。';
@@ -493,7 +557,7 @@ async function runStep(page, step, ctx) {
         const dlDir = ctx.downloadsDir;
         const [dl] = await Promise.all([
           page.waitForEvent('download', { timeout: Math.min(Number(step.downloadTimeoutMs || 60000), remainingMs(ctx) === Infinity ? Infinity : Math.max(1, remainingMs(ctx))) }),
-          r.locator.click({ timeout, button: step.button || 'left' }),
+          clickWithRecovery(page, r.locator, { timeout, button: step.button || 'left' }, ctx),
         ]);
         const name = step.saveAs ? path.basename(step.saveAs) : dl.suggestedFilename();
         const dest = step.saveAs ? path.resolve(step.saveAs) : path.join(dlDir, name);
@@ -505,7 +569,8 @@ async function runStep(page, step, ctx) {
         downloadInfo = info;
         if (size === 0) throw new Error('下载文件为 0 字节：' + dest);
       } else {
-        await r.locator.click({ timeout, button: step.button || 'left' });
+        // v1.22.6：浮层遮挡时自动关浮层 + 重试一次，仍失败则抛清晰错误
+        await clickWithRecovery(page, r.locator, { timeout, button: step.button || 'left' }, ctx);
       }
       const after = step.waitForNav || step.waitFor ? activePage(ctx.context, page) : page;
       if (step.waitForNav) await after.waitForLoadState(step.waitForNav === true ? 'load' : step.waitForNav, { timeout: timeout }).catch(() => {});
@@ -659,7 +724,8 @@ async function runStep(page, step, ctx) {
       return { page, detail: '串联流程 ' + step.flow + ' 状态=' + out.status };
     }
     default:
-      throw new Error('未知步骤类型: ' + step.op);
+      // 正常流程会被 L003 静态检查拦住；走到这里说明 allowLintErrors=true 强跑——报错仍给出路
+      throw new Error('未知步骤类型: ' + step.op + '（合法步骤见《步骤DSL与断言参考》：goto / click / fill / select / check / press / waitForText / humanHandoff 等）');
   }
 }
 
@@ -852,6 +918,13 @@ export async function runFlow(flow, opts = {}) {
       const pol = ctx.dialogPolicy;
       const rec = { step: ctx.currentStep, type: d.type(), message: String(d.message() || '').slice(0, 200), action: null, handled: !!pol, unhandled: !pol, at: nowIso() };
       try {
+        // v1.22.4：keepOpen 确认框——不做任何 accept/dismiss，弹窗保持打开，
+        // 由用户在浏览器里亲自点「确定/取消」（confirm() 因此阻塞直到用户操作）
+        if (pol && pol.manual) {
+          rec.action = 'manual';
+          ctx.dialogs.push(rec);
+          return;
+        }
         if (pol && pol.accept) { rec.action = 'accept'; await d.accept(pol.promptText || undefined); }
         else { rec.action = 'dismiss'; await d.dismiss(); }
       } catch (e) { rec.error = String(e && e.message ? e.message : e); }
@@ -936,6 +1009,14 @@ export async function runFlow(flow, opts = {}) {
           // 步骤失败本身就是总超时抛出的就别再追加一遍收尾文案——否则报告里"总超时"会出现两遍
           if (!(lastErr && lastErr.code === 'RUN_TIMEOUT')) stepRec.error += '  —— ' + runTimeoutError(ctx).message;
         }
+        // v1.22.3：上下文对照——步骤带 pageUrl（录制时所在页）且与当前页不同时明示，
+        // 最常见的两类原因：回放时已有登录态被 SSO 重定向 / 页面改版
+        try {
+          const cur = page.url();
+          if (step.pageUrl && cur && step.pageUrl !== cur) {
+            stepRec.error += '\n上下文提示：该步录制于 ' + step.pageUrl + '，失败时所在页是 ' + cur + '——页面上下文不符（常见原因：回放时已有登录态被 SSO 重定向到业务页，登录页上的步骤已无意义；或页面改版）。';
+          }
+        } catch { /* ignore */ }
         report.failedStep = i + 1;
         report.error = stepRec.error;
         try {
@@ -1052,6 +1133,21 @@ export async function runFlow(flow, opts = {}) {
   report.dialogs = ctx.dialogs || [];
   report.evidenceMasked = !!report.evidenceMasked || !!ctx.evidenceMasked;
   report.notes = (report.notes || []).concat(ctx.notes);
+
+  // v1.22.4：keepOpen——headed 运行结束后不自动关窗，在页面上弹确认框等人工确认。
+  // 报告/截图已在上方落盘；用户点「确定」（或直接关窗）后继续收尾；无头/窗口已关则跳过。
+  if (opts.keepOpen && ctx.headed && ctx.page && !ctx.page.isClosed()) {
+    try {
+      report.notes = report.notes || [];
+      report.notes.push('[keepOpen] 确认框等待中（headed=' + !!ctx.headed + '）');
+      await ctx.page.bringToFront().catch(() => {});
+      const verdict = report.status === 'pass' ? '✅ 通过' : ('❌ 失败' + (report.failedStep ? '（第 ' + report.failedStep + ' 步）' : ''));
+      ctx.dialogPolicy = { manual: true, once: true }; // 确认框保持打开，等用户在浏览器里亲自点「确定」
+      await ctx.page.evaluate((m) => confirm(m), '回放已结束：' + verdict + '\n检查页面后点「确定」关闭浏览器。').catch(() => {});
+      ctx.dialogPolicy = null;
+    } catch { /* 用户直接关窗/页面已跳转：照常收尾 */ }
+  }
+
   report.finishedAt = nowIso();
   report.durationMs = Date.now() - t0;
 

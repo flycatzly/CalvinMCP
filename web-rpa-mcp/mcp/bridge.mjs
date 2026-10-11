@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// web-rpa-mcp 桥接服务：把 stdio MCP 服务器暴露成本地 HTTP REST，供浏览器插件「Web RPA 控制台」调用。
+// pagepilot-mcp 桥接服务：把 stdio MCP 服务器暴露成本地 HTTP REST，供浏览器插件「PagePilot 控制台」调用。
 //
-//   node mcp/bridge.mjs [端口]     默认 8317（或 WEBRPA_BRIDGE_PORT）
+//   node mcp/bridge.mjs [端口]     默认 8317（或 PAGEPILOT_BRIDGE_PORT）
 //
 // 端点：
 //   GET  /            说明页（含端点清单）
@@ -12,7 +12,7 @@
 // 安全：只绑定 127.0.0.1；校验 Host（防 DNS rebinding）与 Origin（只放行 chrome-extension://
 // 与本机同源）；不带任何 CORS 放行头——跨源网页拿不到响应体。回放/录制是本机强操作，
 // 不要把这个端口暴露到局域网。
-// 可选 token 鉴权（公网/跨机转发场景的兜底）：启动时设置 WEBRPA_BRIDGE_TOKEN 后，
+// 可选 token 鉴权（公网/跨机转发场景的兜底）：启动时设置 PAGEPILOT_BRIDGE_TOKEN 后，
 // /health /tools /api/call 三个端点必须带有效凭证——请求头 `X-RPA-Token: <token>`，
 // 或（网页版 /console 场景）URL 参数 `?token=<token>`；不匹配一律 403 并提示配置方法。
 // 未设置该环境变量时行为逐字节不变（向后兼容）。/ 说明页与 /console 静态文件不校验
@@ -28,11 +28,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = path.join(__dirname, 'server.mjs');
 const EXTENSION_DIR = path.resolve(__dirname, '..', 'extension');
-const BRIDGE_VERSION = '1.0.0';
-const PORT = Number(process.argv[2] || process.env.WEBRPA_BRIDGE_PORT || 8317);
+// 桥接版本跟随 mcp/package.json（显示面与主版本一致；读取失败回退 1.0.0 不阻断启动）
+let BRIDGE_VERSION = '1.0.0';
+try { BRIDGE_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || BRIDGE_VERSION; } catch {}
+const PORT = Number(process.argv[2] || process.env.PAGEPILOT_BRIDGE_PORT || 8317);
 const HOST = '127.0.0.1';
 const MAX_BODY = 10 * 1024 * 1024; // flow_import 等大 JSON 的上限
-const TOKEN = process.env.WEBRPA_BRIDGE_TOKEN || ''; // 空 = 不启用鉴权（默认行为不变）
+const TOKEN = process.env.PAGEPILOT_BRIDGE_TOKEN || ''; // 空 = 不启用鉴权（默认行为不变）
 
 const startedAt = Date.now();
 let lastError = null;
@@ -128,7 +130,7 @@ async function mcpEnsure() {
       const init = await mcpRequest('initialize', {
         protocolVersion: '2025-06-18',
         capabilities: {},
-        clientInfo: { name: 'web-rpa-bridge', version: BRIDGE_VERSION },
+        clientInfo: { name: 'pagepilot-bridge', version: BRIDGE_VERSION },
       }, 20000);
       mcp.serverInfo = init.serverInfo || null;
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
@@ -211,7 +213,7 @@ function requireToken(req, url, res) {
   if (tokenOk(req, url)) return true;
   send(res, 403, {
     ok: false,
-    error: '已启用 token 鉴权：本请求未带有效的 X-RPA-Token 头（桥接启动时设置了 WEBRPA_BRIDGE_TOKEN）。' +
+    error: '已启用 token 鉴权：本请求未带有效的 X-RPA-Token 头（桥接启动时设置了 PAGEPILOT_BRIDGE_TOKEN）。' +
       '请在浏览器插件设置里配置同一 token，或网页版访问 /console?token=<token>。',
   });
   return false;
@@ -232,12 +234,12 @@ function readBody(req) {
 }
 
 const INDEX_HTML = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>web-rpa-mcp 桥接服务</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>pagepilot-mcp 桥接服务</title>
 <style>body{font-family:system-ui,sans-serif;max-width:680px;margin:40px auto;padding:0 16px;color:#1f2937}
 code,pre{background:#f3f4f6;border-radius:6px;padding:2px 6px}pre{padding:12px;overflow:auto}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#9ca3af;margin-right:6px}
 .dot.ok{background:#16a34a}.dot.bad{background:#dc2626}</style></head><body>
-<h1><span class="dot" id="d"></span>web-rpa-mcp 桥接服务</h1>
+<h1><span class="dot" id="d"></span>pagepilot-mcp 桥接服务</h1>
 <p id="s">检查中…</p>
 <h2>端点</h2>
 <pre>GET  /health    桥接与 MCP 服务器状态
@@ -267,6 +269,9 @@ async function route(req, res) {
       '/popup.html': ['popup.html', 'text/html; charset=utf-8'],
       '/popup.css': ['popup.css', 'text/css; charset=utf-8'],
       '/popup.js': ['popup.js', 'text/javascript; charset=utf-8'],
+      // v1.22.5：/console 网页版兜底同样需要 standalone-core.js（popup.html 引用它做本地流程录制/回放/导入）
+      // ——此前漏进 STATIC_FILES，网页版里 window.RpaStandalone 为 undefined，本地流程「导入」报 saveLocal 未定义
+      '/standalone-core.js': ['standalone-core.js', 'text/javascript; charset=utf-8'],
       '/icons/icon16.png': ['icons/icon16.png', 'image/png'],
       '/icons/icon32.png': ['icons/icon32.png', 'image/png'],
       '/icons/icon48.png': ['icons/icon48.png', 'image/png'],
@@ -378,7 +383,7 @@ const server = http.createServer((req, res) => {
 server.requestTimeout = 0;      // 工具调用可能跑几十分钟：不给响应设墙
 server.headersTimeout = 60000;
 server.listen(PORT, HOST, () => {
-  console.error('[bridge] web-rpa-mcp 桥接服务 v' + BRIDGE_VERSION + ' 已启动: http://' + HOST + ':' + PORT + '（只监听本机）');
+  console.error('[bridge] pagepilot-mcp 桥接服务 v' + BRIDGE_VERSION + ' 已启动: http://' + HOST + ':' + PORT + '（只监听本机）');
   console.error('[bridge] 浏览器插件加载 extension/ 目录即可控制录制/回放/定时等全部工具');
 });
 

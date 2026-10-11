@@ -1,4 +1,4 @@
-// web-rpa-mcp — 零依赖表格读取：CSV/TSV/JSON + 最小 XLSX(ZIP+inflateRaw) 解析
+// pagepilot-mcp — 零依赖表格读取：CSV/TSV/JSON + 最小 XLSX(ZIP+inflateRaw) 解析
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import path from 'node:path';

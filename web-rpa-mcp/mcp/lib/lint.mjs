@@ -1,4 +1,4 @@
-// web-rpa-mcp — 步骤清单静态检查（把文章里作者踩过的坑变成可自动拦截的规则）
+// pagepilot-mcp — 步骤清单静态检查（把文章里作者踩过的坑变成可自动拦截的规则）
 import { stepLabel } from './store.mjs';
 
 const PLACEHOLDER_RE = /\$\{([^}]+)\}/g;
@@ -33,6 +33,12 @@ function textOf(step) {
   return parts.join(' ');
 }
 
+/* 合法步骤 op 全集（与 player.mjs runStep 的 switch 一一对应）。
+ * 供 L003 静态拦截未知 op 与 flow_step_insert 入口校验共用——单一事实源。 */
+export const KNOWN_STEP_OPS = new Set(['goto', 'sleep', 'scrollTo', 'dialog', 'click', 'clickAndDownload', 'hover',
+  'scrollIntoView', 'fill', 'select', 'check', 'press', 'setInputFiles', 'waitFor', 'waitForText',
+  'humanHandoff', 'screenshot', 'extract', 'download', 'assert', 'chain']);
+
 /**
  * 检查一个流程定义。
  * @returns {{errors:Array, warnings:Array, infos:Array, ok:boolean, hasAssertion:boolean}}
@@ -64,6 +70,22 @@ export function lintFlow(flow, config = {}) {
     if (u.indexOf('$' + '{') >= 0) return;   // 变量形式，运行时再判断
     if (/^https?:\/\//i.test(u) || /^file:\/\//i.test(u)) return;
     add(errors, 'L002', i, 'goto 指向的不是网页地址: ' + u, 'edge:// / chrome:// / about: / devtools:// 这类浏览器内置页不应被录进流程');
+  });
+
+  /* 未知步骤类型（L003）：手写/LLM 生成的流程常把 op 打错（fills / uncheck / clic），
+   * 旧口径要到回放运行时才爆「未知步骤类型」——浪费整次浏览器启动后才看到失败。
+   * 这里在静态检查就拦下，并给出最接近的合法 op 纠错建议。
+   * 集合与 player.mjs runStep 的 switch 一一对应：新增 op 必须同步这里（否则新流程会被误拦）。 */
+  steps.forEach((s, i) => {
+    if (!s || !s.op || KNOWN_STEP_OPS.has(s.op)) return;
+    const b = String(s.op);
+    const near = [...KNOWN_STEP_OPS].filter((o) => {
+      if (Math.abs(o.length - b.length) > 3) return false;
+      return o.slice(0, 3) === b.slice(0, 3) || o.indexOf(b) >= 0 || b.indexOf(o) >= 0;
+    }).slice(0, 3);
+    add(errors, 'L003', i, '未知步骤类型: ' + b, near.length
+      ? '是不是想写 ' + near.join(' / ') + '？合法步骤见《步骤DSL与断言参考》'
+      : '合法步骤见《步骤DSL与断言参考》（goto / click / fill / select / check / press / waitForText / humanHandoff 等）');
   });
 
   /* 断言检查：文章强调「缺了结果校验」 */

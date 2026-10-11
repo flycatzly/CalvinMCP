@@ -1,4 +1,4 @@
-// web-rpa-mcp — 定位符解析 + 多策略降级 + 指纹自愈
+// pagepilot-mcp — 定位符解析 + 多策略降级 + 指纹自愈
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,7 +1,7 @@
 # calvin-db-mcp 工具映射（取证手册）
-> 版本 v1.4.46 · sql-check-script · 更新记录见 README.md「更新记录」
+> 版本 v1.4.47 · sql-check-script · 更新记录见 README.md「更新记录」
 
-calvin-db-mcp v1.6 提供 **16 个工具**：12 个只读分析工具（本 Skill 全部可用）、3 个写类工具（`execute` / `create_table` / `import_data` 一律禁用）、1 个导出工具（`export_data` 仅导出只读查询结果到文件，按需）。
+calvin-db-mcp v1.6 提供 **18 个工具**：12 个只读分析工具 + `server_stats`（观测快照，只读）共 13 个只读（本 Skill 全部可用）、`reload_config`（热载配置，非只读非破坏，排障按需）、3 个写类工具（`execute` / `create_table` / `import_data` 一律禁用）、1 个导出工具（`export_data` 仅导出只读查询结果到文件，按需）。
 
 - 模式 A（质量检测）：只读工具全用，核心是 `describe_table` + `query_plan` / `query(EXPLAIN)` + `count_rows`
 - 模式 B（数据分析）：用 `list_sources` / `find_database` / `describe_table` / `query` / `sample_data` / `distinct_values` / `count_rows`，不跑 EXPLAIN
@@ -23,6 +23,8 @@ calvin-db-mcp v1.6 提供 **16 个工具**：12 个只读分析工具（本 Skil
 | `distinct_values` | source / table / column / where | 单列 Top-N 取值分布 + 精确 distinct 总数 |
 | `column_stats` | source / table / column / where | 单列画像（stats 六字段：row_count / non_null / distinct_values / min_value / max_value / avg_value） |
 | `export_data` | source / sql / filename / format / overwrite / limit | ⚠️ 只读结果导出 CSV/JSON（需服务端 DBMCP_EXPORT_DIR），按需 |
+| `server_stats` | — | 服务端观测快照：逐源计数/慢查询/错误码分布（排障先看这个，免翻日志） |
+| `reload_config` | — | 热载 `dbmcp.config.json`（多环境切换/导入后刷新；校验失败自动回滚旧配置） |
 | `execute` | — | ❌ 本 Skill 禁用（写操作，且默认 allowWrites=false 双层拒绝） |
 | `create_table` | — | ❌ 本 Skill 禁用（DDL，需 allowCreateTable） |
 | `import_data` | — | ❌ 本 Skill 禁用（批量写入） |

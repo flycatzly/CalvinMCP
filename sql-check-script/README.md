@@ -2,7 +2,7 @@
 
 SQL 全链路质量检测 + 只读数据分析 Skill（结合本地 MCP `calvin-db-mcp`）。
 
-> 版本 v1.4.46 · 仅只读 · 依赖 `calvin-db-mcp`（v1.6.51，同级目录部署）· 更新记录见下文「更新记录」
+> 版本 v1.4.47 · 仅只读 · 依赖 `calvin-db-mcp`（v1.6.56，同级目录部署）· 更新记录见下文「更新记录」
 
 ## 安装
 
@@ -28,10 +28,10 @@ SQL 全链路质量检测 + 只读数据分析 Skill（结合本地 MCP `calvin-
 | 检查 | 通过标准 |
 |------|----------|
 | 技能被发现 | 客户端技能列表出现 `sql-check-script` |
-| MCP 已注册 | 工具列表出现 `list_sources` 等 16 个 `db` 工具 |
+| MCP 已注册 | 工具列表出现 `list_sources` 等 18 个 `db` 工具 |
 | MCP 已初始化 | 调 `list_sources` 返回源列表（非 `init_required`） |
 | 依赖自检 | `node mcp\selftest.mjs` → `0 failed`（用例数随版本/源连通性增长，勿以 passed 数为验收线） |
-| 全链路 E2E | `node tests\fullchain_test.mjs` → `108 passed, 0 failed`（93 核心 + 15 live：8 live-MySQL + 7 live-PG；live 段自动门控：配置有 mysql/PG 源即跑，`FULLCHAIN_MYSQL=1`/`FULLCHAIN_PG=1` 强开、`=0` 关；无源干净 SKIP） |
+| 全链路 E2E | `node tests\fullchain_test.mjs` → `120 passed, 0 failed`（105 核心 + 15 live：8 live-MySQL + 7 live-PG；live 段自动门控：配置有 mysql/PG 源即跑，`FULLCHAIN_MYSQL=1`/`FULLCHAIN_PG=1` 强开、`=0` 关；无源干净 SKIP） |
 | 一键验收 | `node tests\run_all.mjs` → 末行 `RUN_ALL selftest=… sqlite-val=… mysql-val=… docsync=… config-lint=… inspect=… e2e=… … => OK`（selftest + sqlite-validate 全工具面 + docsync 文档一致性门禁 + config-lint 护栏配置门禁 + inspect 巡检一键 CLI 门禁 + E2E 合并裁决，mysql-validate 随 `FULLCHAIN_MYSQL=1`；也是安装后快速回归入口） |
 | 部署即验证 | `calvin-db-mcp` 的 `node install.mjs` 步骤 5 自动跑核心 E2E（找到 `DBMCP_E2E` 或同级 `sql-check-script` 时；缺 demo fixture 时 E2E 自供给 `../demo.db`，两者皆缺则干净 SKIP） |
 
@@ -124,10 +124,10 @@ sql-check-script/
 ├── distribute.mjs                     # 发布打包：纯净化副本生成
 ├── 巡检一键.mjs                        # 巡检自动化：SQL 清单→只读预审→EXPLAIN/行数/样例取证→报告骨架（六节对齐模板）
 ├── tests/
-│   ├── fullchain_test.mjs             # 全链路 E2E 测试（108 用例：传输/声明钉/发现/取证/双模式/红线/真实面铠甲/HTML 高亮 + live 段自动门控）
+│   ├── fullchain_test.mjs             # 全链路 E2E 测试（120 用例：传输/声明钉/发现/取证/双模式/红线/真实面铠甲/HTML 高亮 + live 段自动门控）
 │   ├── config_lint_test.mjs           # 护栏配置门禁（21 检查项：解析 fail-closed / 结构 / 白名单红线 / environment 口径 / manifest 契约互证 / 示例互证 / 跨文件一致性）
 │   ├── docsync_test.mjs               # 文档一致性门禁（15 检查项：版本标记/口径数字/汇总行引文/树与引用完整性/示例结构/格式模板骨架/工作流口径/巡检示例对齐/产物防混入）
-│   ├── inspect_one_test.mjs           # 巡检一键 CLI 门禁（免 DB 28 用例：预审四门/落盘守门/manifest 门/consistency 门/jobs 门/增量门/基线门/compare 门/参数面）
+│   ├── inspect_one_test.mjs           # 巡检一键 CLI 门禁（免 DB 33 用例：预审四门/落盘守门/manifest 门/consistency 门/jobs 门/增量门/基线门/compare 门/参数面）
 │   └── run_all.mjs                    # 一键验收：selftest + sqlite-validate + mysql-validate(门控) + docsync + config-lint + inspect + E2E 合并裁决
 ├── workflows/
 │   ├── 01_项目SQL探查.md               # 模式 A：扫代码定位 SQL + 调用链
@@ -173,6 +173,8 @@ sql-check-script/
 4. **发版自检**：`node tests\run_all.mjs` 全绿（0 failed）后版本才可发布/重打发布包。
 
 ## 更新记录
+
+- **v1.4.47**：全流程实测排障——live 源 fixture 缺口 + json-reg delta 两连跑修复 + 契约钉 16→18 + clamp 注记补齐（第 45 轮「全流程测试」）——①**fullchain 自供给 fixture 并入部署配置 live 源**：部署配置无 `sqlite_demo` 时临时 fixture 曾只含 demo 源，把部署配置里的 mysql/PG 源挡在门外（`FULLCHAIN_MYSQL=1` + `FULLCHAIN_MYSQL_SRC=real_mysql` → `Unknown source`，env 覆盖成了死字母）；现把部署配置其余源原样并入临时配置（demo 一律删去、仍以专用副本为准），live 双段自动门控照常发现；部署配置不可读时行为退回 demo-only 零回归。②**json-reg delta 两连跑修复**：首轮曾不带 `--baseline-dir`——基线文件从未创建，次轮带参数时目录为空 → `delta` 恒 null（v1.4.45 引入的三断言自落地起从未真正通过，被 FATAL 崩溃掩盖）；首轮补齐参数后两连跑真正成立，另修 `jo2.delta.addedSql` 无空值防护的 FATAL（改 `?.` 可选链，崩溃曾吞掉其后 report-index 三断言）。③**契约钉 16→18**：calvin-db-mcp v1.6.56 新增 `server_stats`（观测快照，readOnly/openWorld:false）/ `reload_config`（热载配置，非只读非破坏/idempotent/openWorld:false）——CONTRACT_TOOLS 扩编 + golden 注解表补两行 + 角色注释更新；SKILL.md/工具映射.md/部署说明 工具面同步 18 个并补两行用途。④**clamp 注记补齐（对侧修，随其发版）**：`query.offset` / `sample_data.offset` 的 `maximum` 声明缺 clamp 语义注记（v1.6.53 加 offset 参数时漏带），armor 注记门复绿；对侧 selftest 380/0 复验零破坏。⑤**文档实态对账**：fullchain 口径 108/93 → **120 用例 = 105 核心 + 15 live（8 live-MySQL + 7 live-PG）**——108/93 自 v1.4.44/45 各加断言起就未随滚（docsync 机械门只查内部一致不查实态，本轮人工对齐实测）；inspect-one 树注释「免 DB 25/28 用例」→ 33。⑥**OBS-1/2/3 复测**：v1.6.56 三项均未收口（fk_relationships 缺表静默 `fk_count:0` / 纯注释报文仍误导 / PG `VALUES (1)` 仍拒），`故障处理.md` 已知限制三行复测版本同步 v1.6.56（连续第 11 轮）。⑦**测试面**：fullchain 120/0（含 live 双段真跑）、selftest（对侧）380/0、docsync 15/0、config-lint 21/0、inspect-one 33/0；标记 22 处同升 v1.4.47；依赖引用同步 `calvin-db-mcp` v1.6.56。
 
 - **v1.4.46**：--report-index 回归钉 + fixture 复用 + --trend-cols 自定义聚合列 + 趋势图动画渐变（第 44 轮「继续优化」）——①**--report-index 回归钉**：inspect-one +1 用例（32→33，无真实源时不误生成 _index.json 负向门）+ fullchain +3 断言（--baseline-dir 轮生成 _index.json 且合法 JSON / generatedAt+projects 数组 / projects[0] 三字段）——正向断言属连接后基线写回面，落 fullchain。②**fixture 复用**：inspect-one mock 报告生成提取为共享 `mkReport(cardName, explain, tableRows)` 函数（含生成标记+二节卡片+EXPLAIN+表行数），基线对比门与后续测试共用，减少重复。③**`--trend-cols a,b` 自定义聚合列**：history.csv 从固定三列（time/sql_count/total_rows）扩展为可声明额外指标列——可用指标：plan_err/plan_ok/table_total/table_err/consistency_count/consistency_diff_total；未知指标 fail-closed exit 2；列数/列名变更时旧数据按新表头自动补齐（缺失列填空），滚动淘汰同步适配。④**趋势图动画+面积渐变**：SVG `<defs>` 双 linearGradient（总行数蓝/SQL 数绿，25%→2% 透明度渐变）+ `<polygon>` 面积填充 + polyline `stroke-dasharray` 入场绘制动画（1.2s ease，零依赖纯 SVG/CSS）。⑤**测试面**：inspect-one 33/0、docsync 15/0、config-lint 21/0；标记 24 处同升 v1.4.46。OBS-1/2/3 于 v1.6.51 复测仍未收口（连续第 10 轮，本轮无新记账）。
 

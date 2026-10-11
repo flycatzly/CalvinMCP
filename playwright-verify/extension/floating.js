@@ -287,6 +287,7 @@
     var local = mode === 'local';
     if (btnReplay) btnReplay.disabled = !has;
     if (btnGenerate) btnGenerate.disabled = !has || local; // 生成走桥：独立模式停用
+    if (btnAdopt) btnAdopt.disabled = !has || local; // 采纳建议断言（r57）：同样是桥上生成，与生成按钮同口径
     if (btnExport) btnExport.disabled = !has; // 导出是本地能力：独立模式照常可用
   }
   /** 双模应用（r49）：独立模式停用桥依赖按钮、状态点转橙、日志如实；切回走健康探活。 */
@@ -496,6 +497,8 @@
     panelEl.appendChild(goalEl);
     btnGenerate = mkBtn('generate', '📝 用录制生成脚本');
     btnGenerate.disabled = true;
+    btnAdopt = mkBtn('adopt', '✅ 采纳建议断言');
+    btnAdopt.disabled = true;
     btnExport = mkBtn('export', '📤 导出录制 JSON');
     btnExport.disabled = true;
     btnExplore = mkBtn('explore', '🔍 页面巡检');
@@ -615,6 +618,17 @@
         var input = core.stepsToGenerateInput(genRec.steps, { navPath: navPathOf(genRec.url), write: false });
         logLine('生成中…');
         bridgeCall('generate_scripts', input).then(function (r) { logLine(resultTextOf(r)); });
+      } else if (act === 'adopt') {
+        // 采纳建议断言（r57）：r55 草稿的 UI 化收尾——点按即并入 cases[0].steps 走生成，
+        // 免手改导出 JSON。与生成按钮同口径：走桥、独立模式停用、无录制/无草稿诚实提示。
+        if (mode === 'local') { logLine('独立模式：采纳建议断言需要 MCP 桥（点 ⚡ 切回依赖模式）。'); return; }
+        var adRec = findActive();
+        var adSug = (adRec && adRec.steps && adRec.steps.length) ? core.suggestAssertionStep(adRec.steps) : null;
+        if (!adSug) { logLine('无交互步可断言：当前录制没有带定位器的交互步（goto-only 或空录制），采纳无从谈起。'); return; }
+        var adInput = core.stepsToGenerateInput(adRec.steps, { navPath: navPathOf(adRec.url), write: false });
+        var adMerged = core.adoptSuggestedAssertion(adInput, adSug);
+        logLine('生成中（已采纳建议断言）…');
+        bridgeCall('generate_scripts', adMerged).then(function (r) { logLine(resultTextOf(r)); });
       } else if (act === 'export') {
         // 导出录制为 generate_scripts 输入 JSON（r48）：纯本地下载，不走桥不写盘——
         // 文件落在浏览器下载目录，用户直接带进自己项目的生成流（write/overwrite 恒 false 语义见 core）。
@@ -623,6 +637,10 @@
           var expRec = findActive();
           if (!expRec || !expRec.steps || !expRec.steps.length) { logLine('没有可导出的录制。'); return; }
           var expInput = core.stepsToGenerateInput(expRec.steps, { navPath: navPathOf(expRec.url), write: false });
+          // r55 建议断言步骤：只进导出 JSON 的 pv_suggestAssertion 键（默认不混入步骤序列）——
+          // 用户在导出文件里确认：挪进 cases[0].steps 采纳，或删键放弃。快捷生成路径不带此键。
+          var expSug = core.suggestAssertionStep(expRec.steps);
+          if (expSug) expInput.pv_suggestAssertion = expSug;
           var expJson = JSON.stringify(expInput, null, 2);
           var expName = core.exportFileName(expRec.name, Date.now().toString(36));
           var blob = new Blob([expJson], { type: 'application/json' });
@@ -634,7 +652,9 @@
           a.click();
           a.remove();
           setTimeout(function () { try { URL.revokeObjectURL(expUrl); } catch (e2) { /* 已回收 */ } }, 10000);
-          logLine('已导出 ' + expName + '（' + expInput.pages[0].steps.length + ' 步 · generate_scripts 输入形态 · write:false）——在浏览器下载目录，可直接带进项目的生成流。');
+          logLine('已导出 ' + expName + '（' + expInput.pages[0].steps.length + ' 步 · generate_scripts 输入形态 · write:false'
+            + (expSug ? ' · 含建议断言步骤 pv_suggestAssertion：挪进 cases[0].steps 可过 PW007 门禁，不用则删该键' : '')
+            + '）——在浏览器下载目录，可直接带进项目的生成流。');
         } catch (e) { logLine('导出失败：' + (e && e.message || e)); }
       } else if (act === 'explore') {
         if (mode === 'local') { logLine('独立模式：巡检需要 MCP 桥（点 ⚡ 切回依赖模式）。'); return; }
@@ -719,7 +739,7 @@
   globalThis.pvFactsLine = pvFactsLine;
 
   var hostEl = null, panelEl = null, ballEl = null, badgeEl = null, logEl = null, dotEl = null, goalEl = null;
-  var btnReplay = null, btnGenerate = null, btnExport = null, recListEl = null;
+  var btnReplay = null, btnGenerate = null, btnAdopt = null, btnExport = null, recListEl = null;
   var btnExplore = null, btnCollect = null, btnNl = null, btnMode = null;
   // 插拔式双模（r49）：mcp=依赖桥（巡检/采集/生成/NL 走中转）；local=独立模式
   // （录制/回放/导出/console 开控制台=本地能力照常；桥依赖按钮停用+诚实提示）。

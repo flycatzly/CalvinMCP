@@ -8,7 +8,7 @@
 <body>
   <header>
     <span class="dot" id="conn-dot"></span>
-    <b>Web RPA 控制台</b>
+    <b>PagePilot 控制台</b>
     <span id="conn-text" class="muted">连接中…</span>
     <span class="spacer"></span>
     <span id="zoom-bar" class="hide" title="页面缩放（仅网页版）">
@@ -25,14 +25,14 @@
     <label>桥接地址
       <input id="bridge-url" type="text" placeholder="http://127.0.0.1:8317">
     </label>
-    <label>访问令牌（桥接设置 WEBRPA_BRIDGE_TOKEN 时才需要；网页版也可用 /console?token=xxx 打开）
+    <label>访问令牌（桥接设置 PAGEPILOT_BRIDGE_TOKEN 时才需要；网页版也可用 /console?token=xxx 打开）
       <input id="rpa-token" type="password" placeholder="留空=不启用鉴权">
     </label>
     <div class="row">
       <button id="btn-save-settings" class="primary">保存并重连</button>
       <span id="settings-msg" class="muted"></span>
     </div>
-    <p class="hint">桥接服务未启动时，在仓库目录执行：<code>node mcp/bridge.mjs</code>（默认端口 8317，只监听本机 127.0.0.1）。启用 token：<code>WEBRPA_BRIDGE_TOKEN=你的令牌 node mcp/bridge.mjs</code></p>
+    <p class="hint">桥接服务未启动时，在仓库目录执行：<code>node mcp/bridge.mjs</code>（默认端口 8317，只监听本机 127.0.0.1）。启用 token：<code>PAGEPILOT_BRIDGE_TOKEN=你的令牌 node mcp/bridge.mjs</code></p>
   </div>
 
   <nav id="tabs">

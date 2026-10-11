@@ -1,4 +1,4 @@
-/* Web RPA 控制台 — 通过本地桥接服务调用 web-rpa-mcp 的全部工具 */
+/* PagePilot 控制台 — 通过本地桥接服务调用 pagepilot-mcp 的全部工具 */
 'use strict';
 
 const $ = (sel, el) => (el || document).querySelector(sel);
@@ -529,6 +529,9 @@ async function startRecording() {
       const r = await tool('record_start', args);
       toast(r.summary || '录制已开始', 'ok');
       if (r.data && r.data.sessionId) setMyRecSession(r.data.sessionId);
+      // v1.22.0：弹窗一点别处就关，sessionStorage 标记随之蒸发——写入扩展级标记，
+      // 悬浮框在任意页面都能认领并结束这次录制（否则录制必然变成「其他会话」僵尸）
+      try { chrome.storage.local.set({ rpaPanelSession: { sessionId: (r.data && r.data.sessionId) || '', url: url, ts: Date.now() } }); } catch (e) { /* ignore */ }
       renderRecordStatus(r.data && r.data.ok !== false ? Object.assign({ recording: true }, r.data) : {});
       pollRecordStatus();
     } catch (e) { toast(e.message, 'err'); }
@@ -543,6 +546,7 @@ async function stopRecording() {
     try {
       const r = await tool('record_stop', args);
       setMyRecSession('');
+      try { chrome.storage.local.remove('rpaPanelSession'); } catch (e) { /* ignore */ }
       const d = r.data || {};
       const lint = d.lint || {};
       showOut($('#rec-stop-out'),
@@ -571,6 +575,7 @@ async function cancelRecording() {
     try {
       const r = await tool('record_cancel', {});
       setMyRecSession('');
+      try { chrome.storage.local.remove('rpaPanelSession'); } catch (e) { /* ignore */ }
       toast(r.summary || '已取消', 'ok');
       pollRecordStatus();
     } catch (e) { toast(e.message, 'err'); }
@@ -594,6 +599,7 @@ async function startSplice() {
       // 记住本页发起的会话 id：否则自己的片段重录会被 renderRecordStatus 判成「外部会话」，
       // 停止/取消按钮永不出现（popup 发起却无法从 popup 停止——观察轮实锤的产品 bug）
       if (r.data && r.data.sessionId) setMyRecSession(r.data.sessionId);
+      try { chrome.storage.local.set({ rpaPanelSession: { sessionId: (r.data && r.data.sessionId) || '', url: '', ts: Date.now() } }); } catch (e) { /* ignore */ }
       toast(r.summary || '片段重录已开始', 'ok');
       pollRecordStatus();
     } catch (e) { toast(e.message, 'err'); }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// web-rpa-mcp — 命令行执行器（供 Windows 任务计划程序与手工一键运行）
+// pagepilot-mcp — 命令行执行器（供 Windows 任务计划程序与手工一键运行）
 // 退出码：0=成功 1=失败 2=被阻断（静态检查/缺参数）3=用法错误
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,7 +63,7 @@ async function main() {
 
   if (!cmd || cmd === 'help' || cmd === '--help') {
     process.stdout.write([
-      'Web RPA 执行器',
+      'PagePilot 执行器',
       '',
       '用法:',
       '  node runner.mjs list                     列出流程',

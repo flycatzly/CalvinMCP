@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Web RPA 控制台",
-  "version": "1.21.3",
-  "description": "控制本机 web-rpa-mcp：开始/停止录制、回放与预检流程、变量与断言、定时任务、告警与凭据、运行历史，以及全部 MCP 工具的原始调用。网页悬浮球支持快速录制与快速回放。",
+  "name": "PagePilot 控制台",
+  "version": "1.0.7",
+  "description": "控制本机 pagepilot-mcp：开始/停止录制、回放与预检流程、变量与断言、定时任务、告警与凭据、运行历史，以及全部 MCP 工具的原始调用。网页悬浮球支持快速录制与快速回放。",
   "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": {
@@ -17,7 +17,7 @@
     }
   ],
   "action": {
-    "default_title": "Web RPA 控制台",
+    "default_title": "PagePilot 控制台",
     "default_popup": "popup.html"
   },
   "icons": {

@@ -1,4 +1,4 @@
-// web-rpa-mcp — 定时：Windows 任务计划程序封装（生成 .cmd 包装器 + schtasks 注册）
+// pagepilot-mcp — 定时：Windows 任务计划程序封装（生成 .cmd 包装器 + schtasks 注册）
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -14,15 +14,15 @@ const INDEX_FILE = () => path.join(DIRS.work, 'sched', 'index.json');
 function loadIndex() { return readJson(INDEX_FILE(), {}) || {}; }
 function saveIndex(o) { writeJson(INDEX_FILE(), o); }
 
-/** 默认任务前缀：普通运行恒为 WebRPA；实例隔离（WEBRPA_ROOT 注入）下追加 ROOT 短哈希——
+/** 默认任务前缀：普通运行恒为 PagePilot；实例隔离（PAGEPILOT_ROOT 注入）下追加 ROOT 短哈希——
  *  Windows 任务计划是全局命名空间，两实例同前缀会互相覆盖对方注册的任务，必须实例隔离。 */
 export function defaultTaskPrefix() {
-  if (!process.env.WEBRPA_ROOT) return 'WebRPA';
-  return 'WebRPA-' + crypto.createHash('sha1').update(ROOT).digest('hex').slice(0, 8);
+  if (!process.env.PAGEPILOT_ROOT) return 'PagePilot';
+  return 'PagePilot-' + crypto.createHash('sha1').update(ROOT).digest('hex').slice(0, 8);
 }
 export function taskPrefix() {
   const p = readConfig().schedule && readConfig().schedule.taskPrefix;
-  return (p && p !== 'WebRPA') ? p : defaultTaskPrefix();
+  return (p && p !== 'PagePilot') ? p : defaultTaskPrefix();
 }
 export function taskName(flowId) { return taskPrefix() + '\\' + assertSafeId(flowId, '流程 id'); }
 
@@ -51,7 +51,7 @@ export function writeWrapper(flowId, opts = {}) {
   const q = (s) => '"' + String(s) + '"';
   const line = ['@echo off', 'chcp 65001 >nul'];
   // 实例隔离时把数据根烘焙进包装器：schtasks 触发的进程不带调用方环境变量，不烘焙会回落到默认根
-  if (process.env.WEBRPA_ROOT) line.push('set "WEBRPA_ROOT=' + ROOT + '"');
+  if (process.env.PAGEPILOT_ROOT) line.push('set "PAGEPILOT_ROOT=' + ROOT + '"');
   line.push(
     'cd /d ' + q(ROOT),
     q(process.execPath) + ' ' + q(runner) + ' ' + args.map(q).join(' ') + ' >> ' + q(logFile) + ' 2>&1',
@@ -155,6 +155,8 @@ export async function removeSchedule(flowId) {
   const index = loadIndex();
   delete index[flowId];
   saveIndex(index);
+  // 包装器与参数文件随任务删除一并清理（删除后即死文件，残留会在 .work/sched 累积；尽力而为不影响删除结果）
+  for (const p of [wrapperPath(flowId), paramsPath(flowId)]) { try { fs.rmSync(p, { force: true }); } catch {} }
   return { ok: res.ok, task: name, stdout: res.out, stderr: res.err };
 }
 

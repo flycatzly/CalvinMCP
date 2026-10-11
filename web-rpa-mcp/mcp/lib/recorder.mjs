@@ -1,4 +1,4 @@
-// web-rpa-mcp — 录制器：把人工演示的点击/填写/跳转沉淀成可审阅的步骤清单
+// pagepilot-mcp — 录制器：把人工演示的点击/填写/跳转沉淀成可审阅的步骤清单
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, readConfig, logger, nowIso, shortId } from './core.mjs';
@@ -96,7 +96,28 @@ function pushStep(session, step) {
     if (step.op === last.op && step.op === 'click' && (Date.now() - session.lastClickAt) < 700) return;
   }
   step.seq = session.steps.length + 1;
+  // v1.22.3：步骤带上录制时所在页 URL——回放失败时能对照「录制页 vs 当前页」，
+  // 精准识别两类上下文漂移：登录态重定向（SSO）与页面改版
+  try {
+    const u = session.page && !session.page.isClosed() ? session.page.url() : (session.lastUrl || null);
+    if (u && u !== 'about:blank') step.pageUrl = u;
+  } catch { /* ignore */ }
   session.steps.push(step);
+}
+
+/* 登录/SSO 页判定（v1.0.5 收口）：只匹配 URL 路径段，不匹配查询串——
+ * 业务页带 ?from=login / ?goLogin=1 / ?sso=0 这类参数曾把起始页预警误触发。
+ * urlPathOf 不用 new URL：对 "host:port/path" 这类裸串（safeHost 产物）也能安全取路径。 */
+const LOGIN_URL_RE = /login|sso|signin|auth|oauth|passport/i;
+function urlPathOf(u) {
+  u = String(u || '');
+  const dl = u.indexOf('//');
+  let rest = dl >= 0 ? u.slice(dl + 2) : u;
+  const sl = rest.indexOf('/');
+  if (sl < 0) return '/';
+  rest = rest.slice(sl);
+  const q = rest.indexOf('?');
+  return q >= 0 ? rest.slice(0, q) : rest;
 }
 
 async function capturePageShape(page) {
@@ -148,6 +169,7 @@ export async function startRecording({ url, name, viewport } = {}) {
     firstShape: null,
     lastShape: null,
     notes: [],
+    midSessionLoginAlerted: false,   // v1.22.7：流程中段被导航到登录页时一次性预警的开关
     recordingEnabled: false,
     splice: null,          // 非空表示这是一次"片段重录"会话
     lockFlowId: null,      // 片段重录期间持有的流程锁
@@ -174,6 +196,13 @@ export async function startRecording({ url, name, viewport } = {}) {
       session.steps[0].url = landed;
       session.steps[0].redirectedFrom = url;
       session.startUrl = landed;
+    }
+    // v1.22.3：从登录/SSO 页开始录制是最常见的「回放即失效」来源——录制时就预警，
+    // 不等回放失败才排查（unidesk 实测：登录页上录的企微登录/公司选择步骤，
+    // 回放时已有登录态被 SSO 重定向到业务页而全部失效）。
+    // v1.0.5：只测路径不测查询串——业务页带 ?from=login / ?goLogin=1 这类参数曾误报
+    if (landed && LOGIN_URL_RE.test(urlPathOf(landed))) {
+      session.notes.push('起始页是登录/SSO 页（' + landed.slice(0, 80) + '）：若录制中完成登录，回放时已有登录态会被重定向到业务页，登录页上的步骤会失效——建议 profile_login 持久化登录态后从业务页录制，或回放前保持未登录');
     }
     session.lastUrl = landed;
     session.suppressedUntil = Date.now() + 1500;
@@ -229,6 +258,16 @@ async function wireSession(session, handle) {
       if (!session.recordingEnabled) return;
       if (session.page && p === session.page) return;   // 主录制页的跳转要推断 waitForNav，交给 onNavigate
       const u = frame.url();
+      // v1.22.7：流程中段被动跳到登录/SSO 页——典型 SSO re-auth 与会话过期——
+      // 起始页预警已在 v1.22.3 处理，重复同域不报；只在跳到登录域时一次性提示
+      // （v1.0.5：路径段判定，查询串里的 login 字样不算）
+      if (!session.midSessionLoginAlerted && LOGIN_URL_RE.test(urlPathOf(u))) {
+        const startIsLogin = session.startUrl && LOGIN_URL_RE.test(urlPathOf(session.startUrl));
+        if (!startIsLogin) {
+          session.notes.push('流程中段被导航到登录/SSO 页（' + u.slice(0, 80) + '）——常见原因=会话过期 SSO re-auth 或站点主动重定向；若此前录的步骤含业务操作，回放时这些步骤可能失效，可考虑 profile_login 持久化登录态后从业务页重启录制');
+          session.midSessionLoginAlerted = true;
+        }
+      }
       if (!isRecordableUrl(u)) return;   // edge://downloads-hub 之类的内置页不录
       if (entry && (Date.now() - entry.at) < 1500) { entry.step.url = u; return; }   // 重定向链收敛到最终地址
       if (entry && (!session.page || session.page.isClosed())) {
@@ -417,6 +456,16 @@ function onNavigate(session, url, page) {
   if (!isRecordableUrl(url)) { if (isPrimary) session.lastUrl = url; return; }
   if (session.booting) { if (isPrimary) session.lastUrl = url; return; }
   if (!isPrimary) return;
+  // v1.0.5：主录制页中段被动跳到登录/SSO 页——会话过期 re-auth 最典型的形状。
+  // 旧版只在「别的标签页/iframe 跳登录页」的 handler 里有此预警（v1.22.7），
+  // 主页面跳转走 onNavigate 却没有——恰是最常见的路径漏了。一次性提示，起始页是登录页则不重复报。
+  if (!session.midSessionLoginAlerted && LOGIN_URL_RE.test(urlPathOf(url))) {
+    const startIsLogin = session.startUrl && LOGIN_URL_RE.test(urlPathOf(session.startUrl));
+    if (!startIsLogin) {
+      session.notes.push('流程中段被导航到登录/SSO 页（' + url.slice(0, 80) + '）——常见原因=会话过期 SSO re-auth 或站点主动重定向；若此前录的步骤含业务操作，回放时这些步骤可能失效，可考虑 profile_login 持久化登录态后从业务页重启录制');
+      session.midSessionLoginAlerted = true;
+    }
+  }
   const now = Date.now();
   const fromClick = (now - session.pendingNavFromClick) < 12000;
   const sameUrl = session.lastUrl === url;

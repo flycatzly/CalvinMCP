@@ -238,6 +238,45 @@ var pvRecorderCore = (function () {
   }
 
   /**
+   * 建议断言步骤（纯函数，r55）：录制只有动作不产断言，「录制→导出→生成」全链会被
+   * PW007 门禁拦（拦得对，r54 已给指引）。这里对**最后一个带定位器的交互步**生成
+   * assertVisible 草稿——刚交互过的元素就在页面上，可见性断言语义成立；goto 无定位、
+   * press 无锚，都不产草稿。返回值恒不带敏感值（locator 只有定位信息）。
+   * 调用方（floating.js 导出）把它放进 pv_suggestAssertion 键、默认不混入步骤序列，
+   * 由用户在导出 JSON 里确认：挪进 cases[0].steps 采纳，或删键放弃。
+   */
+  function suggestAssertionStep(steps) {
+    var clean;
+    try { clean = normalizeRecordedSteps(steps || []); } catch (e) { return null; }
+    for (var i = clean.length - 1; i >= 0; i--) {
+      var s = clean[i];
+      if (s && s.act !== 'goto' && s.locator && s.locator.kind) {
+        return { act: 'assertVisible', locator: s.locator, suggested: true };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 采纳建议断言（纯函数，r57）：把 suggestAssertionStep 的草稿并入生成输入的
+   * cases[0].steps 末尾——升为正式断言步（只留 act/locator，去掉 suggested 草稿标记），
+   * 同时移除 pv_suggestAssertion 键（消费即清）。不可变更新：原 input 一字不改；
+   * 草稿非法或输入残缺时原样返回（no-op 不硬凑）。
+   */
+  function adoptSuggestedAssertion(input, suggestion) {
+    if (!input || typeof input !== 'object' || !Array.isArray(input.cases) || !input.cases.length) return input;
+    if (!suggestion || typeof suggestion !== 'object' || suggestion.act !== 'assertVisible') return input;
+    if (!suggestion.locator || !suggestion.locator.kind) return input;
+    var cases = input.cases.slice();
+    var c0 = cases[0] || {};
+    var step = { act: suggestion.act, locator: suggestion.locator };
+    cases[0] = Object.assign({}, c0, { steps: (c0.steps || []).concat([step]) });
+    var out = Object.assign({}, input, { cases: cases });
+    delete out.pv_suggestAssertion;
+    return out;
+  }
+
+  /**
    * 定位器 → DOM 查询计划（回放用）。与 buildLocator 互为逆向：
    * buildLocator 从元素描述收敛成定位器，locatorToQuery 再把定位器展开成查询策略。
    * kind 非法直接抛错 —— 回放绝不「猜一个元素接着点」，宁可诚实失败。
@@ -280,6 +319,8 @@ var pvRecorderCore = (function () {
     describeStep: describeStep,
     normalizeRecordedSteps: normalizeRecordedSteps,
     stepsToGenerateInput: stepsToGenerateInput,
+    suggestAssertionStep: suggestAssertionStep,
+    adoptSuggestedAssertion: adoptSuggestedAssertion,
     exportFileName: exportFileName,
     makeRecording: makeRecording,
     addRecording: addRecording,

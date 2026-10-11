@@ -577,12 +577,20 @@ export function generate(input, opts = {}) {
   const syntaxErrors = syntax.filter((s) => !s.ok);
   const selfVerify = opts.selfVerify !== false;
 
+  // PW007（用例无断言）拦截时的可执行指引：录制/导出的动作序列天然不产断言，
+  // 「录制 → 导出 JSON → generate_scripts」全链在这里必拦 —— 拦得对但要拦得明白。
+  const zeroAssert = lintRuns.some((r) => r.result.findings.some((f) => f.id === 'PW007' && f.severity === 'ERROR'));
+  const hints = zeroAssert
+    ? ['PW007 修复指引：用例层没有断言步骤（录制/导出的载荷只含动作）——在 cases[].steps 补 assertVisible / assertText / assertCount 断言步骤（对最后交互目标或页面标题），再重新生成。']
+    : [];
+
   return {
     tool: 'generate_scripts',
     version: 1,
     files,
     claims: caseBodies.map((c) => ({ title: c.title, claims: c.claims })),
     syntax: { passed: syntaxErrors.length === 0, results: syntax },
+    hints,
     lint: {
       errorCount,
       warnCount,
